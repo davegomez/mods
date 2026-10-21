@@ -210,9 +210,10 @@ async function compacted($: EngineInterface, live: Live): Promise<void> {
     const out = noteCompaction(live.agg, live.main, nowMs)
     live.agg = out.agg
     live.main = out.main
-    // A new transcript replaces the cached prefix: refreshing the old one would buy nothing.
+    // A new transcript replaces the cached prefix: refreshing the old one would buy nothing. A pause left to
+    // idle compaction keeps its reason, so /ember-refresh can replay it.
     const p = stateOf(live).pause
-    if (p !== undefined) live.agg = { ...live.agg, refresh: { ...stateOf(live), pause: { ...p, skip: skipCode('compacted') } } }
+    if (p !== undefined && p.skip !== skipCode('idle compaction')) live.agg = { ...live.agg, refresh: { ...stateOf(live), pause: { ...p, skip: skipCode('compacted') } } }
     save($, live)
   } catch {
     $.ui.log('ember: could not record a compaction', { to: 'debug' })

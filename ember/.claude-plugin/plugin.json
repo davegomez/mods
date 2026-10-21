@@ -1,6 +1,6 @@
 {
   "name": "ember",
-  "version": "0.2.1",
+  "version": "0.3.0",
   "description": "Measures how warm the prompt cache stays across your idle gaps, and refreshes it before it expires.",
   "author": { "name": "David" },
   "userConfig": {

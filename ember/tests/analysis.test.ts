@@ -160,6 +160,102 @@ describe('analysis output on fixture logs', () => {
     expect(headLine(config(false, false), ttl(5))).toMatch(/^Refresh off · /)
   })
 
+  test('with no pause left to idle compaction there is no idle compaction section', () => {
+    expect(analyze(view(FIXTURE))).not.toContain('Idle compaction')
+  })
+
+  const idle = (ageMs: number, over: Partial<PauseRec> = {}) => pause(ageMs, { prefix: 250_000, skip: 3, ...over })
+  const idleOpen = (ageMs: number) =>
+    session([], { updatedAt: T0 + ageMs, state: { ...emptyRefresh, pause: { startMs: T0, anchorMs: T0, readMs: T0, ttlMinutes: 60, source: 0, leadMs: 5 * MIN, prefix: 250_000, refreshes: 0, tries: 0, cost: 0, skip: 3 } } })
+
+  // 15 warm returns at 10 min, 5 cold returns at 70 min, and 1 pause left open for 10 h (an exit); prefix 250k.
+  const IDLE_LOG = [session([...Array.from({ length: 15 }, () => idle(10 * MIN)), ...Array.from({ length: 5 }, () => idle(70 * MIN, { end: 1 }))]), idleOpen(10 * 60 * MIN)]
+
+  test('it prices keeping the full conversation against a lower bound of idle compaction, and never claims a saving', () => {
+    const md = analyze(view(IDLE_LOG))
+    expect(md).toContain('Pauses not refreshed or stopped: idle compaction 20')
+    // Only the 6 pauses past 54 min count (5 at 70 min, the 10 h one); the 15 at 10 min cost the same either way.
+    // X, refresh at 5 min lead: 5 x (refresh 0.1 + warm 0.1) + 10 refreshes (55, 110, ..., 550 min) x 0.1 = 2.0 prefixes = 500k.
+    // Y, no refresh: 5 x 2 + exit 0 = 10 prefixes = 2.5M.
+    expect(md).toContain(
+      'Idle compaction: 21 pauses skipped (20 returned, 1 exits). 6 of 21 pauses lasted past 54m00s; shorter pauses cost the same either way. With "idleCompaction": false, which keeps the full conversation: refresh at lead 5m00s (auto) 500k · no refresh 2.5M tokens.',
+    )
+    // Z: the 6 pauses past 54 min (5 at 70 min, the 10 h one) x 0.1 = 0.6 prefixes = 150k.
+    expect(md).toContain(
+      "Idle compaction on the same pauses: at least 150k tokens, one cache read of the conversation for each of the 6 pauses past 54m00s. Not measured: the summary's output and its write at return.",
+    )
+    // X - Z = 350k; per long pause 350k / 6 = 58.3k. Y - X = 2.0M.
+    expect(md).toContain('Keeping the full conversation costs at most 350k tokens more (58k per pause). Not priced: what a summary loses (the detail of the conversation).')
+    expect(md).toContain(
+      'Recommendation: keep idle compaction on unless the full conversation is worth about 58k tokens per pause to you. If you set "idleCompaction": false, keep refresh on: it costs 2.0M tokens less than no refresh.',
+    )
+    expect(md).not.toContain('"idleCompaction": false in')
+    expect(md).not.toContain('/ember-probe')
+    expect(md.indexOf('Idle compaction:')).toBeGreaterThan(md.indexOf('Recommendation: keep refresh on'))
+  })
+
+  test('it replays at the configured lead', () => {
+    // Refreshes at 58, 116, ..., 580 min: the same counts as at 5 min, so X = 500k.
+    expect(analyze({ ...view(IDLE_LOG), config: { isOn: true, leadSeconds: 120, isShortTtlOn: true } })).toContain('refresh at lead 2m00s 500k')
+  })
+
+  test('pauses shorter than the idle compaction time are left out of X, Y and Z, and no refresh advice when refresh costs no less', () => {
+    // 20 warm returns at 53 min (left out) and 1 exit at 54 min. X: the exit, no refresh before 55 min = 0; Y: 0; Z: 0.1 x 250k = 25k.
+    const md = analyze(view([session([...Array.from({ length: 20 }, () => idle(53 * MIN)), idle(54 * MIN, { end: 2 })])]))
+    expect(md).toContain('1 of 21 pauses lasted past 54m00s; shorter pauses cost the same either way.')
+    expect(md).toContain('refresh at lead 5m00s (auto) 0 · no refresh 0 tokens.')
+    expect(md).toContain('at least 25k tokens, one cache read of the conversation for each of the 1 pauses past 54m00s.')
+    expect(md).toContain("Keeping the full conversation cost no more than idle compaction's own reads on these pauses.")
+    expect(md).not.toContain('keep refresh on: it costs')
+  })
+
+  test('when no pause lasted until idle compaction runs, it says the setting made no difference', () => {
+    // 20 warm returns at 10 min and 1 exit at 30 min: none reaches 54 min.
+    const md = analyze(view([session([...Array.from({ length: 20 }, () => idle(10 * MIN)), idle(30 * MIN, { end: 2 })])]))
+    expect(md).toContain(
+      'Idle compaction: 21 pauses skipped (20 returned, 1 exits). None lasted past 54m00s, so idle compaction did not run on these pauses and the setting made no difference. Keep idle compaction on.',
+    )
+    expect(md).not.toContain('refresh at lead')
+    expect(md).not.toContain('at least')
+    expect(md).not.toContain('Recommendation: keep idle compaction')
+    expect(md).not.toContain('"idleCompaction": false')
+  })
+
+  test('when keeping the full conversation costs no more than idle compaction reads, it says so', () => {
+    // 20 warm returns and 2 exits, all at 54.5 min, all long. X: 20 x 0.1 = 500k; Z: 22 x 0.1 = 550k.
+    const at = 54.5 * MIN
+    const md = analyze(view([session([...Array.from({ length: 20 }, () => idle(at)), idle(at, { end: 2 }), idle(at, { end: 2 })])]))
+    expect(md).toContain('22 of 22 pauses lasted past 54m00s')
+    expect(md).toContain('refresh at lead 5m00s (auto) 500k · no refresh 500k tokens.')
+    expect(md).toContain('at least 550k tokens')
+    expect(md).toContain("Keeping the full conversation cost no more than idle compaction's own reads on these pauses. Not priced: what a summary loses (the detail of the conversation).")
+    expect(md).toContain('Recommendation: "idleCompaction": false keeps the full conversation for no more tokens than idle compaction on these pauses; set it in ~/.claude/settings.json if you want that.')
+    expect(md).not.toContain('costs at most')
+  })
+
+  test('with refresh off it says each long pause would end in a cold rewrite and to keep idle compaction on', () => {
+    const md = analyze({ ...view(IDLE_LOG), config: { isOn: false, leadSeconds: 0, isShortTtlOn: true } })
+    expect(md).toContain(
+      // Y over the 6 long pauses: 5 x 2 = 2.5M.
+      'Idle compaction: 21 pauses skipped (20 returned, 1 exits). 6 of 21 pauses lasted past 54m00s; shorter pauses cost the same either way. Refresh is off, so with "idleCompaction": false each of these pauses that outlasts the cache ends in a cold rewrite: replay 2.5M tokens.',
+    )
+    expect(md).toContain('Idle compaction on the same pauses: at least 150k tokens')
+    expect(md).toContain('Not priced: what a summary loses (the detail of the conversation).')
+    expect(md).toContain('Recommendation: keep idle compaction on.')
+    expect(md).not.toContain('refresh at lead')
+    expect(md).not.toContain('keep refresh on: it costs')
+    expect(md).not.toContain('"idleCompaction": false keeps')
+  })
+
+  test(`below ${MIN_RETURNS} returned idle compaction pauses it shows the count and says there is not enough data`, () => {
+    const md = analyze(view([session([idle(10 * MIN), idle(70 * MIN, { end: 1 }), idle(20 * MIN, { end: 2 })])]))
+    expect(md).toContain('Idle compaction: 3 pauses skipped (2 returned, 1 exits).')
+    expect(md).toContain('Not enough data for an idle compaction recommendation: 2 returned pauses, 20 needed. Keep idle compaction on.')
+    expect(md).not.toContain('refresh at lead')
+    expect(md).not.toContain('at least')
+    expect(md).not.toContain('Not priced')
+  })
+
   test('at a 5 min TTL with too few returns the not-enough-data rule still applies', () => {
     expect(analyze(view([session([short(MIN)])], 5))).toContain('Not enough data for a recommendation: 1 returned pauses, 20 needed. Keep the defaults.')
   })

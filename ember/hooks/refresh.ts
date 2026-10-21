@@ -127,6 +127,9 @@ export function decodeRec(v: unknown): Rec | undefined {
 /** Appends a record, keeping the newest LOG_LIMIT. */
 export const pushLog = (log: readonly number[][], r: Rec): number[][] => [...log, encodeRec(r)].slice(-LOG_LIMIT)
 
+/** Idle compaction runs only on the 1-hour cache. */
+export const IDLE_COMPACTION_TTL_MINUTES = 60
+
 export type IdleCompactInputs = { setting?: unknown; autoCompact?: unknown; disableAuto?: string; minTokens?: string }
 
 /**
@@ -135,7 +138,7 @@ export type IdleCompactInputs = { setting?: unknown; autoCompact?: unknown; disa
  * The prefix stands in for the context size; 90% of the threshold counts, so a near miss yields too.
  */
 export function idleCompactionApplies(i: IdleCompactInputs, ttlMinutes: number, isInteractive: boolean, prefix: number): boolean {
-  if (ttlMinutes !== 60 || !isInteractive || i.setting === false || i.autoCompact === false) return false
+  if (ttlMinutes !== IDLE_COMPACTION_TTL_MINUTES || !isInteractive || i.setting === false || i.autoCompact === false) return false
   if (i.disableAuto === '1' || i.disableAuto === 'true') return false
   const asked = Number(i.minTokens)
   const threshold = Number.isInteger(asked) && asked > 0 ? Math.max(100_000, asked) : 200_000

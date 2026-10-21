@@ -822,6 +822,17 @@ describe('cache refresh', () => {
     expect(w.forks.length).toBe(1)
   })
 
+  test('an idle compaction in a pause ember left to it keeps the pause in the idle compaction sample', async ($, on) => {
+    const w = world(on)
+    await start($, w)
+    await turn($, w, 't1', { usage: prefixUsage(0, 250_000) })
+    await w.clock.advance(54 * MIN)
+    await $.session.compact({ trigger: 'auto', messages: SUMMARY })
+    await w.clock.settle()
+    expect(refreshOf(w).pause?.skip).toBe(3)
+    expect(stored(w).compactions).toBe(1)
+  })
+
   test('a compaction during the pause stops its refreshes', async ($, on) => {
     const w = world(on)
     await start($, w)

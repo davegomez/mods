@@ -1,4 +1,4 @@
-import { decodeRec, ENDS, leadMs, maxRefreshes, OUTCOMES, READ_WEIGHT, refreshesAt, SHORT_TTL_MINUTES, SKIPS, writeWeight } from './refresh.ts'
+import { decodeRec, ENDS, IDLE_COMPACTION_TTL_MINUTES, leadMs, maxRefreshes, OUTCOMES, READ_WEIGHT, refreshesAt, SHORT_TTL_MINUTES, SKIPS, writeWeight } from './refresh.ts'
 import type { PauseRec, RefreshConfig, RefreshRec, RefreshState } from './refresh.ts'
 import { band, BANDS, duration, percent, tokens } from './stats.ts'
 
@@ -91,7 +91,7 @@ export function expectedCost(km: readonly KmPoint[], policy: Policy, ttlMinutes:
 
 export type SessionLog = { state: RefreshState; updatedAt: number; isCurrent: boolean }
 
-type Decoded = { pauses: PauseRec[]; refreshes: RefreshRec[]; open: Trace[] }
+type Decoded = { pauses: PauseRec[]; refreshes: RefreshRec[]; open: (Trace & { skip: number })[] }
 
 function decode(sessions: readonly SessionLog[]): Decoded {
   const out: Decoded = { pauses: [], refreshes: [], open: [] }
@@ -103,12 +103,13 @@ function decode(sessions: readonly SessionLog[]): Decoded {
     }
     // An open pause of another session never closed (the process ended): an exit at its last write.
     const p = s.state.pause
-    if (!s.isCurrent && p !== undefined) out.open.push({ ageMs: Math.max(0, s.updatedAt - p.anchorMs), isReturn: false, ttlMinutes: p.ttlMinutes, prefix: p.prefix })
+    if (!s.isCurrent && p !== undefined) out.open.push({ ageMs: Math.max(0, s.updatedAt - p.anchorMs), isReturn: false, ttlMinutes: p.ttlMinutes, prefix: p.prefix, skip: p.skip })
   }
   return out
 }
 
 const EXIT = ENDS.indexOf('exit')
+const IDLE = SKIPS.indexOf('idle compaction')
 
 export const tracesOf = (pauses: readonly PauseRec[], open: readonly Trace[]): Trace[] => [
   ...pauses.map(p => ({ ageMs: p.ageMs, isReturn: p.end !== EXIT, ttlMinutes: p.ttlMinutes, prefix: p.prefix })),
@@ -128,12 +129,66 @@ export function headLine(config: RefreshConfig, ttl: { minutes: number; source: 
   return `Refresh ${config.isOn ? 'on' : 'off'} · ${tail}`
 }
 
+/** Idle compaction runs at this share of the TTL: Claude Code docs, "about 54 minutes have passed since the last request" on the 1 h cache. */
+export const IDLE_COMPACTION_TTL_SHARE = 0.9
+
+/**
+ * The pauses ember left to idle compaction. With `"idleCompaction": false` (the full conversation kept): X, refresh
+ * at the configured lead, and Y, no refresh (one cold rewrite at return). Idle compaction on the same pauses costs
+ * at least Z, one cache read of the conversation per pause that reaches its time; its summary's output and the
+ * write at return report no usage ember can see, so X - Z bounds the extra cost of the full conversation from above.
+ * X, Y and Z cover only the pauses that reach idle compaction's time: a shorter pause costs the same under both settings.
+ */
+export function idleCompactionLines(traces: readonly Trace[], config: RefreshConfig): string[] {
+  if (traces.length === 0) return []
+  const returns = traces.filter(t => t.isReturn).length
+  const head = `Idle compaction: ${traces.length} pauses skipped (${returns} returned, ${traces.length - returns} exits).`
+  if (returns < MIN_RETURNS) return [head, `Not enough data for an idle compaction recommendation: ${returns} returned pauses, ${MIN_RETURNS} needed. Keep idle compaction on.`]
+  const compacted = traces.filter(t => t.ageMs >= IDLE_COMPACTION_TTL_SHARE * t.ttlMinutes * MIN)
+  const runsAt = duration(IDLE_COMPACTION_TTL_SHARE * IDLE_COMPACTION_TTL_MINUTES * MIN)
+  if (compacted.length === 0) return [`${head} None lasted past ${runsAt}, so idle compaction did not run on these pauses and the setting made no difference. Keep idle compaction on.`]
+  const scope = `${head} ${compacted.length} of ${traces.length} pauses lasted past ${runsAt}; shorter pauses cost the same either way.`
+  const z = compacted.reduce((sum, t) => sum + READ_WEIGHT * t.prefix, 0)
+  const y = replay(compacted, () => 'off')
+  const zLine = `Idle compaction on the same pauses: at least ${tokens(Math.round(z))} tokens, one cache read of the conversation for each of the ${compacted.length} pauses past ${runsAt}. Not measured: the summary's output and its write at return.`
+  const lost = 'Not priced: what a summary loses (the detail of the conversation).'
+  if (!config.isOn) {
+    return [
+      `${scope} Refresh is off, so with "idleCompaction": false each of these pauses that outlasts the cache ends in a cold rewrite: replay ${tokens(Math.round(y))} tokens.`,
+      zLine,
+      lost,
+      'Recommendation: keep idle compaction on.',
+    ]
+  }
+  const lead = leadMs(IDLE_COMPACTION_TTL_MINUTES, config.leadSeconds)
+  const x = replay(compacted, t => leadMs(t.ttlMinutes, config.leadSeconds))
+  const perPause = tokens(Math.round((x - z) / compacted.length))
+  const keepRefresh = y > x ? ` If you set "idleCompaction": false, keep refresh on: it costs ${tokens(Math.round(y - x))} tokens less than no refresh.` : ''
+  return [
+    `${scope} With "idleCompaction": false, which keeps the full conversation: refresh at lead ${leadName(lead)}${lead === leadMs(IDLE_COMPACTION_TTL_MINUTES, 0) ? ' (auto)' : ''} ${tokens(Math.round(x))} · no refresh ${tokens(Math.round(y))} tokens.`,
+    zLine,
+    x > z
+      ? `Keeping the full conversation costs at most ${tokens(Math.round(x - z))} tokens more (${perPause} per pause). ${lost}`
+      : `Keeping the full conversation cost no more than idle compaction's own reads on these pauses. ${lost}`,
+    x > z
+      ? `Recommendation: keep idle compaction on unless the full conversation is worth about ${perPause} tokens per pause to you.${keepRefresh}`
+      : `Recommendation: "idleCompaction": false keeps the full conversation for no more tokens than idle compaction on these pauses; set it in ~/.claude/settings.json if you want that.${keepRefresh}`,
+  ]
+}
+
 export type AnalysisView = { config: RefreshConfig; ttl: { minutes: number; source: string }; sessions: readonly SessionLog[] }
 
-/** The `/ember-refresh` report as Markdown: hit rate, misses by age, savings, survival, candidates, recommendation. */
+/** The `/ember-refresh` report as Markdown: hit rate, misses by age, savings, survival, candidates, recommendation, idle compaction. */
 export function analyze(v: AnalysisView): string {
   const { pauses, refreshes, open } = decode(v.sessions)
   const traces = tracesOf(pauses, open)
+  const idle = idleCompactionLines(
+    tracesOf(
+      pauses.filter(p => p.skip === IDLE),
+      open.filter(t => t.skip === IDLE),
+    ),
+    v.config,
+  )
   const returns = traces.filter(t => t.isReturn).length
   const ttl = v.ttl.minutes
   const currentLead = leadMs(ttl, v.config.leadSeconds)
@@ -170,7 +225,7 @@ export function analyze(v: AnalysisView): string {
 
   if (returns < MIN_RETURNS) {
     lines.push(`Not enough data for a recommendation: ${returns} returned pauses, ${MIN_RETURNS} needed. Keep the defaults.`)
-    return lines.join('\n\n')
+    return [...lines, ...idle].join('\n\n')
   }
 
   const km = kaplanMeier(traces)
@@ -195,7 +250,7 @@ export function analyze(v: AnalysisView): string {
     ].join('\n'),
   )
   lines.push(recommend(rows, currentLead, v.config, ttl, name))
-  return lines.join('\n\n')
+  return [...lines, ...idle].join('\n\n')
 }
 
 type Row = { policy: Policy; perPause: number; savedReplay: number }
