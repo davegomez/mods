@@ -1,18 +1,21 @@
+import type { On, RenderSurface } from "claude-code";
+import type { Engine } from "claude-code/testing";
 import { describe, expect, test } from "claude-code/testing";
 import type { SessionLog, Trace } from "../hooks/analysis.ts";
 import {
 	analyze,
 	defaultPolicy,
 	expectedCost,
-	headLine,
 	kaplanMeier,
 	MIN_RETURNS,
 	optimum,
 	optimumCost,
 	pauseCost,
 	replay,
+	statusLines,
 	survivalAt,
 } from "../hooks/analysis.ts";
+import { pane } from "../hooks/pane.tsx";
 import type { PauseRec, RefreshRec } from "../hooks/refresh.ts";
 import {
 	decodeRec,
@@ -23,6 +26,8 @@ import {
 	READ_WEIGHT,
 	writeWeight,
 } from "../hooks/refresh.ts";
+import type { Section, Table } from "../hooks/sections.ts";
+import { flat, layout, lineText, textOf } from "./pane-text.ts";
 import { EXIT_TRACES, TRACES } from "./traces.ts";
 
 const MIN = 60_000;
@@ -209,6 +214,12 @@ const view = (
 	sessions,
 });
 
+const report = (v: Parameters<typeof analyze>[0]) => textOf(analyze(v));
+const sectionOf = (sections: readonly Section[], title: string) =>
+	sections.find((s) => s.title === title);
+const tableOf = (section: Section | undefined): Table | undefined =>
+	section?.blocks.flatMap((b) => ("table" in b ? [b.table] : []))[0];
+
 /** 24 short returns, 4 warm returns after refreshes, 1 exit record and 1 pause left open: enough data, refresh pays. */
 const FIXTURE: SessionLog[] = [
 	session([
@@ -257,7 +268,7 @@ const FIXTURE: SessionLog[] = [
 
 describe("analysis output on fixture logs", () => {
 	test(`below ${MIN_RETURNS} returned pauses it says there is not enough data`, () => {
-		const md = analyze(
+		const md = report(
 			view([
 				session([
 					pause(10 * MIN),
@@ -268,13 +279,13 @@ describe("analysis output on fixture logs", () => {
 			]),
 		);
 		expect(md).toContain(
-			"Refresh on · lead 5m00s (auto) · TTL 60m (ttlMinutes option)",
+			"Refresh: on\nLead: 5m00s (auto)\nTTL: 60m (ttlMinutes option)",
 		);
 		expect(md).toContain(
 			"Sample: 2 pauses (2 returned, 0 exits) · 2 refreshes · 1 sessions",
 		);
 		expect(md).toContain(
-			"Refreshes: 1 hit · 1 miss · 0 refused · hit rate 50%",
+			"Refreshes\n1 hit · 1 miss · 0 refused · hit rate 50%",
 		);
 		expect(md).toContain("| 30-60m | 1 | 1 |");
 		expect(md).toContain(
@@ -288,25 +299,135 @@ describe("analysis output on fixture logs", () => {
 	});
 
 	test("with enough data it reports survival, each policy, and a recommendation", () => {
-		const md = analyze(view(FIXTURE));
+		const md = report(view(FIXTURE));
 		expect(md).toContain(
 			"Sample: 30 pauses (28 returned, 2 exits) · 5 refreshes · 4 sessions",
 		);
 		expect(md).toContain(
-			"Refreshes: 5 hit · 0 miss · 0 refused · hit rate 100%",
+			"Refreshes\n5 hit · 0 miss · 0 refused · hit rate 100%",
 		);
 		expect(md).toContain("| 30-60m | 4 | 0 |\n| >60m | 1 | 0 |");
 		expect(md).toContain(
-			"Net saved: ~620k tokens (4 cold rewrites avoided). API-price estimate",
+			"Net saved: ~620k tokens (4 cold rewrites avoided) API-price estimate",
 		);
 		expect(md).toContain(
-			"Still idle (Kaplan-Meier, exits censored): 5m00s 83% · 30m00s 20% · 55m00s 20% · 1h00m 20% · 2h00m 10% · 8h00m 7%",
+			"Idle time (survival)\nKaplan-Meier, exits censored\n| Idle for | 5m00s | 30m00s | 55m00s | 1h00m | 2h00m | 8h00m |\n| Still idle | 83% | 20% | 20% | 20% | 10% | 7% |",
 		);
 		expect(md).toContain("| off | – | 1.0M | – |");
 		expect(md).toContain("| lead 5m00s (auto) | 10k | 420k | 620k |");
 		expect(md).toContain(
 			"Recommendation: keep refresh on, keep the current lead (lead 5m00s (auto)): about 10k tokens saved per pause.",
 		);
+	});
+
+	test("the policy table has short headers, a legend with the full names, and marks the recommended and current rows", () => {
+		const options = tableOf(sectionOf(analyze(view(FIXTURE)), "Lead options"));
+		expect(options?.head).toEqual(["Policy", "Per pause", "Replay", "vs off"]);
+		expect(options?.legend).toBe(
+			"Per pause: saved per pause (survival) · Replay: replay cost · vs off: saved vs off (replay) · ▸ recommended · • current",
+		);
+		const auto = options?.rows.find(
+			(r) => r.cells[0]?.text === "lead 5m00s (auto)",
+		);
+		expect(auto).toEqual({
+			cells: [
+				{ text: "lead 5m00s (auto)" },
+				{ text: "10k", tone: "good" },
+				{ text: "420k" },
+				{ text: "620k", tone: "good" },
+			],
+			isPick: true,
+			isCurrent: true,
+		});
+		expect(options?.rows[0]).toMatchObject({
+			cells: [{ text: "off" }, { text: "–" }, { text: "1.0M" }, { text: "–" }],
+			isPick: false,
+			isCurrent: false,
+		});
+		expect(options?.rows.filter((r) => r.isPick)).toHaveLength(1);
+	});
+
+	test("with refresh off, the off row is current", () => {
+		const options = tableOf(
+			sectionOf(
+				analyze({
+					...view(FIXTURE),
+					config: { isOn: false, leadSeconds: 0, isShortTtlOn: true },
+				}),
+				"Lead options",
+			),
+		);
+		expect(
+			options?.rows.filter((r) => r.isCurrent).map((r) => r.cells[0]?.text),
+		).toEqual(["off"]);
+	});
+
+	test("the recommendation is a pick block that ends its section, with the saving in bold green", () => {
+		const blocks = sectionOf(analyze(view(FIXTURE)), "Lead options")?.blocks;
+		const last = blocks?.at(-1);
+		expect(last !== undefined && "pick" in last ? last.pick.runs : []).toEqual([
+			{ text: "Recommendation:", style: "bold" },
+			{
+				text: " keep refresh on, keep the current lead (lead 5m00s (auto)): about ",
+			},
+			{ text: "10k tokens", style: "bold", tone: "good" },
+			{ text: " saved per pause." },
+		]);
+	});
+
+	test("hits are green and misses red, in the counts and in the age table; a zero count has no color", () => {
+		const sections = analyze(
+			view([
+				session([
+					pause(10 * MIN),
+					refresh(55 * MIN),
+					refresh(55 * MIN, { outcome: 1, read: 0, creation: 100_000 }),
+					pause(70 * MIN, { end: 1, skip: 12 }),
+				]),
+			]),
+		);
+		const refreshes = sectionOf(sections, "Refreshes");
+		const counts = refreshes?.blocks[0];
+		expect(
+			counts !== undefined && "line" in counts
+				? counts.line.runs.filter((r) => r.style === "bold")
+				: [],
+		).toEqual([
+			{ text: "1", style: "bold", tone: "good" },
+			{ text: "1", style: "bold", tone: "bad" },
+			{ text: "0", style: "bold" },
+			{ text: "50%", style: "bold" },
+		]);
+		expect(tableOf(refreshes)).toEqual({
+			head: ["Refresh age", "Hit", "Miss"],
+			rows: [
+				{
+					cells: [
+						{ text: "30-60m" },
+						{ text: "1", tone: "good" },
+						{ text: "1", tone: "bad" },
+					],
+				},
+			],
+		});
+		const warning = refreshes?.blocks[2];
+		expect(
+			warning !== undefined && "line" in warning
+				? warning.line.runs[0]?.tone
+				: undefined,
+		).toBe("warn");
+	});
+
+	test("net saved is bold green when positive, with the API-price caveat as a dim note under it", () => {
+		const net = sectionOf(analyze(view(FIXTURE)), "Savings")?.blocks[0];
+		expect(net !== undefined && "line" in net ? net.line : undefined).toEqual({
+			label: "Net saved",
+			runs: [
+				{ text: "~620k tokens", style: "bold", tone: "good" },
+				{ text: " (4 cold rewrites avoided)" },
+			],
+			note: "API-price estimate in input-token units: Anthropic does not publish how fork cache reads count toward plan limits.",
+		});
 	});
 
 	test("when the refreshes cost more than they save, it recommends off", () => {
@@ -318,15 +439,28 @@ describe("analysis output on fixture logs", () => {
 				saved: -100_000,
 			}),
 		);
-		const md = analyze(
-			view([
-				session([
-					...Array.from({ length: 20 }, (_, i) => pause((i + 1) * MIN)),
-					...exits.slice(0, 11),
-				]),
+		const v = view([
+			session([
+				...Array.from({ length: 20 }, (_, i) => pause((i + 1) * MIN)),
+				...exits.slice(0, 11),
 			]),
-		);
+		]);
+		const md = report(v);
 		expect(md).toContain("Recommendation: turn refresh off (refresh: false).");
+		const sections = analyze(v);
+		const net = sectionOf(sections, "Savings")?.blocks[0];
+		expect(
+			net !== undefined && "line" in net ? net.line.runs[0] : undefined,
+		).toEqual({
+			text: "~-1.1M tokens",
+			style: "bold",
+			tone: "bad",
+		});
+		expect(
+			tableOf(sectionOf(sections, "Lead options"))
+				?.rows.filter((r) => r.isPick)
+				.map((r) => r.cells[0]?.text),
+		).toEqual(["off"]);
 	});
 
 	const short = (ageMs: number, over: Partial<PauseRec> = {}) =>
@@ -339,15 +473,15 @@ describe("analysis output on fixture logs", () => {
 				...Array.from({ length: 10 }, () => short(6 * MIN, { end: 1 })),
 			]),
 		];
-		const md = analyze(view(log, 5, false));
+		const md = report(view(log, 5, false));
 		expect(md).toContain(
-			"Refresh off at TTL 5m (refreshShortTtl: false) · lead 1m00s (auto) · TTL 5m (ttlMinutes option)",
+			"Refresh: off at TTL 5m (refreshShortTtl: false)\nLead: 1m00s (auto)\nTTL: 5m (ttlMinutes option)",
 		);
 		expect(md).toContain("Pauses not refreshed or stopped: short-ttl 30");
 		expect(md).toContain(
 			"Recommendation: set refreshShortTtl to true, keep the current lead (lead 1m00s (auto))",
 		);
-		expect(analyze(view(log, 5))).toContain(
+		expect(report(view(log, 5))).toContain(
 			"Recommendation: keep refresh on, keep refreshShortTtl on, keep the current lead (lead 1m00s (auto))",
 		);
 	});
@@ -356,7 +490,7 @@ describe("analysis output on fixture logs", () => {
 		const exits = Array.from({ length: 11 }, () =>
 			short(10 * 60 * MIN, { end: 2 }),
 		);
-		const md = analyze(
+		const md = report(
 			view(
 				[
 					session([
@@ -372,7 +506,7 @@ describe("analysis output on fixture logs", () => {
 			"Recommendation: keep refreshShortTtl off (refreshShortTtl: false). At a 5m TTL the refreshes cost more than the cold rewrites they avoid.",
 		);
 		expect(
-			analyze(
+			report(
 				view(
 					[
 						session([
@@ -389,42 +523,57 @@ describe("analysis output on fixture logs", () => {
 		).toContain("Recommendation: set refreshShortTtl to false.");
 	});
 
-	test("the first line says refresh is off when the short-TTL rule stops it", () => {
+	test("the status rows say refresh is off when the short-TTL rule stops it, on in green, off in yellow", () => {
 		const ttl = (minutes: number) => ({ minutes, source: "ttlMinutes option" });
 		const config = (isOn: boolean, isShortTtlOn: boolean) => ({
 			isOn,
 			leadSeconds: 0,
 			isShortTtlOn,
 		});
-		expect(headLine(config(true, false), ttl(5))).toBe(
-			"Refresh off at TTL 5m (refreshShortTtl: false) · lead 1m00s (auto) · TTL 5m (ttlMinutes option)",
+		const status = (c: ReturnType<typeof config>, minutes: number) =>
+			statusLines(c, ttl(minutes)).map(lineText).join("\n");
+		expect(status(config(true, false), 5)).toBe(
+			"Refresh: off at TTL 5m (refreshShortTtl: false)\nLead: 1m00s (auto)\nTTL: 5m (ttlMinutes option)",
 		);
-		expect(headLine(config(true, false), ttl(2))).toMatch(
-			/^Refresh off at TTL 2m \(refreshShortTtl: false\)/,
+		expect(status(config(true, false), 2)).toMatch(
+			/^Refresh: off at TTL 2m \(refreshShortTtl: false\)/,
 		);
-		expect(headLine(config(true, true), ttl(5))).toBe(
-			"Refresh on · lead 1m00s (auto) · TTL 5m (ttlMinutes option)",
+		expect(status(config(true, true), 5)).toBe(
+			"Refresh: on\nLead: 1m00s (auto)\nTTL: 5m (ttlMinutes option)",
 		);
-		expect(headLine(config(true, false), ttl(6))).toMatch(/^Refresh on · /);
-		expect(headLine(config(false, false), ttl(5))).toMatch(/^Refresh off · /);
+		expect(status(config(true, false), 6)).toMatch(/^Refresh: on\n/);
+		expect(status(config(false, false), 5)).toMatch(/^Refresh: off\n/);
+		expect(statusLines(config(true, true), ttl(60))[0]?.runs[0]).toEqual({
+			text: "on",
+			style: "bold",
+			tone: "good",
+		});
+		expect(statusLines(config(false, true), ttl(60))[0]?.runs[0]).toEqual({
+			text: "off",
+			style: "bold",
+			tone: "warn",
+		});
 	});
 
 	test("with no pause left to idle compaction there is no idle compaction section", () => {
-		expect(analyze(view(FIXTURE))).not.toContain("pauses skipped");
+		expect(analyze(view(FIXTURE)).map((s) => s.title)).not.toContain(
+			"Idle compaction",
+		);
+		expect(report(view(FIXTURE))).not.toContain("pauses skipped");
 	});
 
 	test("at a 60 min TTL with refresh on it says whether ember has seen idle compaction run", () => {
 		expect(
-			analyze({ ...view(FIXTURE), idleSeenMs: Date.UTC(2026, 9, 21, 12) }),
+			report({ ...view(FIXTURE), idleSeenMs: Date.UTC(2026, 9, 21, 12) }),
 		).toContain(
 			"Idle compaction: seen 2026-10-21, ember skips the pauses it applies to.",
 		);
-		expect(analyze(view(FIXTURE))).toContain(
+		expect(report(view(FIXTURE))).toContain(
 			"Idle compaction: not seen, ember refreshes long conversations too.",
 		);
-		expect(analyze(view(FIXTURE, 5))).not.toContain("Idle compaction");
+		expect(report(view(FIXTURE, 5))).not.toContain("Idle compaction");
 		expect(
-			analyze({
+			report({
 				...view(FIXTURE),
 				config: { isOn: false, leadSeconds: 0, isShortTtlOn: true },
 			}),
@@ -465,13 +614,13 @@ describe("analysis output on fixture logs", () => {
 	];
 
 	test("it prices keeping the full conversation against a lower bound of idle compaction, and never claims a saving", () => {
-		const md = analyze(view(IDLE_LOG));
+		const md = report(view(IDLE_LOG));
 		expect(md).toContain("Pauses not refreshed or stopped: idle compaction 20");
 		// Only the 6 pauses past 54 min count (5 at 70 min, the 10 h one); the 15 at 10 min cost the same either way.
 		// X, refresh at 5 min lead: 5 x (refresh 0.1 + warm 0.1) + 10 refreshes (55, 110, ..., 550 min) x 0.1 = 2.0 prefixes = 500k.
 		// Y, no refresh: 5 x 2 + exit 0 = 10 prefixes = 2.5M.
 		expect(md).toContain(
-			'Idle compaction: 21 pauses skipped (20 returned, 1 exits). 6 of 21 pauses lasted past 54m00s with idle compaction recorded; shorter pauses cost the same either way. With "idleCompaction": false, which keeps the full conversation: refresh at lead 5m00s (auto) 500k · no refresh 2.5M tokens.',
+			'Idle compaction\n21 pauses skipped (20 returned, 1 exits).\n6 of 21 pauses lasted past 54m00s with idle compaction recorded; shorter pauses cost the same either way.\nWith "idleCompaction": false, which keeps the full conversation: refresh at lead 5m00s (auto) 500k · no refresh 2.5M tokens.',
 		);
 		// Z: the 6 pauses past 54 min (5 at 70 min, the 10 h one) x 0.1 = 0.6 prefixes = 150k.
 		expect(md).toContain(
@@ -486,7 +635,7 @@ describe("analysis output on fixture logs", () => {
 		);
 		expect(md).not.toContain('"idleCompaction": false in');
 		expect(md).not.toContain("/ember-probe");
-		expect(md.indexOf("Idle compaction: 21")).toBeGreaterThan(
+		expect(md.indexOf("21 pauses skipped")).toBeGreaterThan(
 			md.indexOf("Recommendation: keep refresh on"),
 		);
 	});
@@ -502,9 +651,9 @@ describe("analysis output on fixture logs", () => {
 			]),
 			idleOpen(10 * 60 * MIN),
 		];
-		const md = analyze(view(log));
+		const md = report(view(log));
 		expect(md).toContain(
-			"Idle compaction: 21 pauses skipped (20 returned, 1 exits). 2 lasted past 54m00s with no idle compaction recorded; ember now refreshes such pauses until it sees idle compaction run. 4 of 21 pauses lasted past 54m00s with idle compaction recorded;",
+			"21 pauses skipped (20 returned, 1 exits).\n2 lasted past 54m00s with no idle compaction recorded; ember now refreshes such pauses until it sees idle compaction run.\n4 of 21 pauses lasted past 54m00s with idle compaction recorded;",
 		);
 		expect(md).toContain(
 			"at least 100k tokens, one cache read of the conversation for each of the 4 pauses past 54m00s.",
@@ -513,7 +662,7 @@ describe("analysis output on fixture logs", () => {
 
 	test("records from before ember recorded idle compaction count as none recorded, and no setting advice follows", () => {
 		const old = (ageMs: number, end = 0) => idle(ageMs, { end }).slice(0, -1);
-		const md = analyze(
+		const md = report(
 			view([
 				session([
 					...Array.from({ length: 15 }, () => old(10 * MIN)),
@@ -522,7 +671,7 @@ describe("analysis output on fixture logs", () => {
 			]),
 		);
 		expect(md).toContain(
-			"Idle compaction: 20 pauses skipped (20 returned, 0 exits). 5 lasted past 54m00s with no idle compaction recorded; ember now refreshes such pauses until it sees idle compaction run.",
+			"20 pauses skipped (20 returned, 0 exits).\n5 lasted past 54m00s with no idle compaction recorded; ember now refreshes such pauses until it sees idle compaction run.",
 		);
 		expect(md).not.toContain("None lasted");
 		expect(md).not.toContain("at least");
@@ -533,7 +682,7 @@ describe("analysis output on fixture logs", () => {
 	test("it replays at the configured lead", () => {
 		// Refreshes at 58, 116, ..., 580 min: the same counts as at 5 min, so X = 500k.
 		expect(
-			analyze({
+			report({
 				...view(IDLE_LOG),
 				config: { isOn: true, leadSeconds: 120, isShortTtlOn: true },
 			}),
@@ -542,7 +691,7 @@ describe("analysis output on fixture logs", () => {
 
 	test("pauses shorter than the idle compaction time are left out of X, Y and Z, and no refresh advice when refresh costs no less", () => {
 		// 20 warm returns at 53 min (left out) and 1 exit at 54 min. X: the exit, no refresh before 55 min = 0; Y: 0; Z: 0.1 x 250k = 25k.
-		const md = analyze(
+		const md = report(
 			view([
 				session([
 					...Array.from({ length: 20 }, () => idle(53 * MIN)),
@@ -567,7 +716,7 @@ describe("analysis output on fixture logs", () => {
 
 	test("when no pause lasted until idle compaction runs, it says the setting made no difference", () => {
 		// 20 warm returns at 10 min and 1 exit at 30 min: none reaches 54 min.
-		const md = analyze(
+		const md = report(
 			view([
 				session([
 					...Array.from({ length: 20 }, () => idle(10 * MIN)),
@@ -576,7 +725,7 @@ describe("analysis output on fixture logs", () => {
 			]),
 		);
 		expect(md).toContain(
-			"Idle compaction: 21 pauses skipped (20 returned, 1 exits). None lasted past 54m00s, so idle compaction did not run on these pauses and the setting made no difference. Keep idle compaction on.",
+			"21 pauses skipped (20 returned, 1 exits).\nNone lasted past 54m00s, so idle compaction did not run on these pauses and the setting made no difference. Keep idle compaction on.",
 		);
 		expect(md).not.toContain("refresh at lead");
 		expect(md).not.toContain("at least");
@@ -587,7 +736,7 @@ describe("analysis output on fixture logs", () => {
 	test("when keeping the full conversation costs no more than idle compaction reads, it says so", () => {
 		// 20 warm returns and 2 exits, all at 54.5 min, all long. X: 20 x 0.1 = 500k; Z: 22 x 0.1 = 550k.
 		const at = 54.5 * MIN;
-		const md = analyze(
+		const md = report(
 			view([
 				session([
 					...Array.from({ length: 20 }, () => idle(at)),
@@ -613,13 +762,13 @@ describe("analysis output on fixture logs", () => {
 	});
 
 	test("with refresh off it says each long pause would end in a cold rewrite and to keep idle compaction on", () => {
-		const md = analyze({
+		const md = report({
 			...view(IDLE_LOG),
 			config: { isOn: false, leadSeconds: 0, isShortTtlOn: true },
 		});
 		expect(md).toContain(
 			// Y over the 6 long pauses: 5 x 2 = 2.5M.
-			'Idle compaction: 21 pauses skipped (20 returned, 1 exits). 6 of 21 pauses lasted past 54m00s with idle compaction recorded; shorter pauses cost the same either way. Refresh is off, so with "idleCompaction": false each of these pauses that outlasts the cache ends in a cold rewrite: replay 2.5M tokens.',
+			'21 pauses skipped (20 returned, 1 exits).\n6 of 21 pauses lasted past 54m00s with idle compaction recorded; shorter pauses cost the same either way.\nRefresh is off, so with "idleCompaction": false each of these pauses that outlasts the cache ends in a cold rewrite: replay 2.5M tokens.',
 		);
 		expect(md).toContain(
 			"Idle compaction on the same pauses: at least 150k tokens",
@@ -634,7 +783,7 @@ describe("analysis output on fixture logs", () => {
 	});
 
 	test(`below ${MIN_RETURNS} returned idle compaction pauses it shows the count and says there is not enough data`, () => {
-		const md = analyze(
+		const md = report(
 			view([
 				session([
 					idle(10 * MIN),
@@ -644,7 +793,7 @@ describe("analysis output on fixture logs", () => {
 			]),
 		);
 		expect(md).toContain(
-			"Idle compaction: 3 pauses skipped (2 returned, 1 exits).",
+			"Idle compaction\n3 pauses skipped (2 returned, 1 exits).",
 		);
 		expect(md).toContain(
 			"Not enough data for an idle compaction recommendation: 2 returned pauses, 20 needed. Keep idle compaction on.",
@@ -655,8 +804,192 @@ describe("analysis output on fixture logs", () => {
 	});
 
 	test("at a 5 min TTL with too few returns the not-enough-data rule still applies", () => {
-		expect(analyze(view([session([short(MIN)])], 5))).toContain(
+		expect(report(view([session([short(MIN)])], 5))).toContain(
 			"Not enough data for a recommendation: 1 returned pauses, 20 needed. Keep the defaults.",
 		);
+	});
+});
+
+describe("the /ember-refresh pane", () => {
+	const COLUMNS = 70;
+	const mount = async (
+		$: Engine,
+		on: On,
+		sections: readonly Section[],
+		surface: RenderSurface = "terminal",
+	) => {
+		on("ui.render", ($, e) =>
+			pane(
+				{ title: "ember refresh", sections, onClose: () => {} },
+				$.ui.resolve(e),
+			),
+		);
+		return $.ui.mount({
+			plugin: "ember",
+			component: "Pane",
+			requestId: "fixture",
+			surface,
+			props: {
+				title: "ember refresh",
+				isFocused: true,
+				bodyColumns: COLUMNS,
+				placement: "dock",
+				scroll: { offset: 0, bodyRows: 80 },
+				view: {},
+			},
+			viewport: { columns: COLUMNS, rows: 80 },
+		});
+	};
+
+	/** The innermost Text that shows exactly `text` (a string) or matches it (a RegExp): its props. */
+	const textProps = async (
+		ui: Awaited<ReturnType<typeof mount>>,
+		text: string | RegExp,
+	) =>
+		(await ui.findAll({ type: "Text", text }))
+			.filter((t) => typeof text !== "string" || t.text === text)
+			.at(-1)?.props;
+
+	test("it draws with Box, Text and Button alone on every surface, each section under a bold title", async ($, on) => {
+		on("ui.render", ($, e) =>
+			pane(
+				{
+					title: "ember refresh",
+					sections: analyze(view(FIXTURE)),
+					onClose: () => {},
+				},
+				$.ui.resolve(e),
+			),
+		);
+		for (const surface of [
+			"terminal",
+			"desktop",
+			"vscode",
+			"mobile",
+		] as const) {
+			const ui = await $.ui.mount({
+				plugin: "ember",
+				component: "Pane",
+				requestId: "fixture",
+				surface,
+				props: {
+					title: "ember refresh",
+					isFocused: true,
+					bodyColumns: COLUMNS,
+					placement: "dock",
+					scroll: { offset: 0, bodyRows: 80 },
+					view: {},
+				},
+			});
+			for (const title of [
+				"Status",
+				"Refreshes",
+				"Savings",
+				"Idle time (survival)",
+				"Lead options",
+			])
+				expect(await textProps(ui, title)).toMatchObject({
+					weight: "bold",
+					color: "claude",
+				});
+			expect(await ui.findAll({ type: "Markdown" })).toHaveLength(0);
+			await ui.unmount();
+		}
+	});
+
+	test("the policy table fits a 70-column pane: short bold headers, fixed-width cells, numbers right-aligned, the pick marked", async ($, on) => {
+		const ui = await mount($, on, analyze(view(FIXTURE)));
+		const drawn = await ui.drawn();
+		const lines = layout(drawn, COLUMNS);
+		expect(lines.filter((l) => l.length > COLUMNS)).toEqual([]);
+		const at = lines.findIndex((l) => l.includes("Per pause"));
+		expect(lines.slice(at, at + 6)).toEqual([
+			"   Policy             Per pause  Replay  vs off",
+			"   off                        –    1.0M       –",
+			"   lead 1m00s               10k    420k    620k",
+			"   lead 2m00s               10k    420k    620k",
+			"▸  lead 5m00s (auto)        10k    420k    620k",
+			"   lead 10m00s              10k    430k    610k",
+		]);
+		for (const head of ["Policy", "Per pause", "Replay", "vs off"])
+			expect(await textProps(ui, head)).toMatchObject({
+				weight: "bold",
+			});
+		expect(await textProps(ui, "▸")).toMatchObject({
+			weight: "bold",
+			color: "suggestion",
+		});
+		expect(await textProps(ui, "lead 5m00s (auto)")).toMatchObject({
+			weight: "bold",
+			wrap: "truncate-end",
+		});
+		await ui.unmount();
+	});
+
+	test("a pane narrower than the table cuts the policy names, never the numbers", async ($, on) => {
+		const ui = await mount($, on, analyze(view(FIXTURE)));
+		const lines = layout(await ui.drawn(), 40);
+		expect(lines.find((l) => l.startsWith("▸"))).toBe(
+			"▸  lead 5m00…        10k    420k    620k",
+		);
+		await ui.unmount();
+	});
+
+	test("values are bold and colored by meaning, labels and caveats dim, the recommendation boxed", async ($, on) => {
+		const ui = await mount($, on, analyze(view(FIXTURE)));
+		expect(await textProps(ui, "on")).toMatchObject({
+			weight: "bold",
+			color: "success",
+		});
+		expect(await textProps(ui, "Net saved")).toMatchObject({
+			dimColor: true,
+		});
+		expect(await textProps(ui, "~620k tokens")).toMatchObject({
+			weight: "bold",
+			color: "success",
+		});
+		expect(await textProps(ui, /^API-price estimate/)).toMatchObject({
+			dimColor: true,
+		});
+		const boxed = (await ui.findAll({ type: "Box" })).filter(
+			(b) => b.props.borderStyle === "round",
+		);
+		expect(boxed.map((b) => [b.props.borderColor, flat(b)])).toEqual([
+			[
+				"suggestion",
+				"Recommendation: keep refresh on, keep the current lead (lead 5m00s (auto)): about 10k tokens saved per pause.",
+			],
+		]);
+		await ui.unmount();
+	});
+
+	test("a hit count is green, a miss count red, and the short-TTL warning yellow", async ($, on) => {
+		const ui = await mount(
+			$,
+			on,
+			analyze(
+				view([
+					session([
+						pause(10 * MIN),
+						refresh(55 * MIN),
+						refresh(55 * MIN, { outcome: 1, read: 0, creation: 100_000 }),
+					]),
+				]),
+			),
+		);
+		const colorsOf = async (text: string) =>
+			(await ui.findAll({ type: "Text", text })).flatMap((t) =>
+				t.text === text ? [t.props.color] : [],
+			);
+		expect(await colorsOf("1")).toEqual([
+			"success",
+			"error",
+			"success",
+			"error",
+		]);
+		expect(
+			await textProps(ui, /^A refresh found the cache gone/),
+		).toMatchObject({ color: "warning" });
+		await ui.unmount();
 	});
 });

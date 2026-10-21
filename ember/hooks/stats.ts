@@ -1,6 +1,8 @@
 import type { TurnUsage } from "claude-code";
 import type { RefreshState } from "./refresh.ts";
 import { parseRefresh } from "./refresh.ts";
+import type { Block, Line, Section, Tone } from "./sections.ts";
+import { bold, dim, line, plain } from "./sections.ts";
 
 export const BUCKETS = [
 	"first",
@@ -558,32 +560,74 @@ export function warning(
 
 const orDash = (ms?: number) => (ms === undefined ? "–" : duration(ms));
 
-/** A Markdown table of the rows with requests and their token-weighted hit ratio; `empty` when there are none. */
+/** A hit rate (rounded, as shown) from this percent is good: green. */
+export const GOOD_HIT_PCT = 80;
+/** Below this the rate is low: red, between the two yellow. Half, as a request that reads less than half its prefix found the cache cold. */
+export const LOW_HIT_PCT = WARM_PREFIX_SHARE * 100;
+
+/** The tone of a token-weighted hit rate; none when there are no tokens to weigh. */
+export function hitTone(read: number, total: number): Tone | undefined {
+	if (total <= 0) return undefined;
+	const pct = Math.round((read / total) * 100);
+	return pct >= GOOD_HIT_PCT ? "good" : pct >= LOW_HIT_PCT ? "warn" : "bad";
+}
+
+/** A table of the rows with requests and their token-weighted hit ratio; `empty` when there are none. */
 function hitTable<K extends string>(
 	head: string,
 	keys: readonly K[],
 	totals: Record<K, Totals>,
 	empty: string,
-): string {
+): Block {
 	const rows = keys
 		.filter((k) => totals[k].n > 0)
-		.map(
-			(k) =>
-				`| ${k} | ${totals[k].n} | ${percent(totals[k].read, totals[k].total)} |`,
-		);
+		.map((k) => {
+			const { n, read, total } = totals[k];
+			const text = percent(read, total);
+			const tone = hitTone(read, total);
+			return {
+				cells: [
+					{ text: k },
+					{ text: String(n) },
+					tone === undefined ? { text } : { text, tone },
+				],
+			};
+		});
 	return rows.length > 0
-		? [`| ${head} | Requests | Hit |`, "| --- | ---: | ---: |", ...rows].join(
-				"\n",
-			)
-		: empty;
+		? { table: { head: [head, "Requests", "Hit"], rows } }
+		: line(plain(empty));
 }
 
-/** The pane's report for one scope as Markdown: the buckets with requests, the user gap bands, bounds and counts. */
-export function report(agg: Agg): string {
+export const ttlLine = (ttl: Ttl): Line => ({
+	label: "TTL",
+	runs: [bold(`${ttl.minutes}m`), dim(` (${ttl.source})`)],
+});
+
+/** The `/ember` report for one scope: the TTL, its observed bounds and the counts, then the buckets and the user gap bands with requests. */
+export function report(agg: Agg, ttl: Ttl): Section[] {
+	const status: Line[] = [
+		ttlLine(ttl),
+		{
+			label: "Observed TTL",
+			runs: [
+				plain("warm up to "),
+				bold(orDash(agg.warmMaxMs)),
+				plain(" · cold from "),
+				bold(orDash(agg.coldMinMs)),
+			],
+		},
+		{ label: "Compactions", runs: [bold(String(agg.compactions))] },
+		{ label: "Model switches", runs: [bold(String(agg.modelSwitches))] },
+	];
 	return [
-		hitTable("Gap type", BUCKETS, agg.buckets, "No requests yet."),
-		hitTable("User gap", BANDS, agg.bands, "No user gaps yet."),
-		`Observed TTL: warm up to ${orDash(agg.warmMaxMs)} · cold from ${orDash(agg.coldMinMs)}`,
-		`Compactions ${agg.compactions} · model switches ${agg.modelSwitches}`,
-	].join("\n\n");
+		{ title: "Status", blocks: status.map((l) => ({ line: l })) },
+		{
+			title: "Cache hit by gap type",
+			blocks: [hitTable("Gap type", BUCKETS, agg.buckets, "No requests yet.")],
+		},
+		{
+			title: "Cache hit by user gap",
+			blocks: [hitTable("User gap", BANDS, agg.bands, "No user gaps yet.")],
+		},
+	];
 }

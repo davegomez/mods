@@ -7,7 +7,10 @@ import {
 	duration,
 	emptyAgg,
 	emptyMain,
+	GOOD_HIT_PCT,
+	hitTone,
 	keysToPrune,
+	LOW_HIT_PCT,
 	MAX_SESSIONS,
 	mergeAggs,
 	noteCompaction,
@@ -25,6 +28,7 @@ import {
 	withSavedPct,
 	withTtl,
 } from "../hooks/stats.ts";
+import { textOf } from "./pane-text.ts";
 
 const MIN = 60_000;
 
@@ -369,7 +373,7 @@ describe("parseAgg", () => {
 		expect(agg?.bands["1-5m"]).toEqual({ n: 3, read: 0, total: 0 });
 		expect(agg?.bands["<1m"]).toEqual({ n: 2, read: 5, total: 10 });
 		expect(agg?.bands[">60m"]).toEqual({ n: 0, read: 0, total: 0 });
-		expect(report(agg ?? emptyAgg(0))).toContain(
+		expect(textOf(report(agg ?? emptyAgg(0), TTL))).toContain(
 			"| <1m | 2 | 50% |\n| 1-5m | 3 | – |",
 		);
 	});
@@ -657,7 +661,9 @@ describe("warning", () => {
 	});
 });
 
-test("report is a Markdown table of the buckets with requests, then one of the user gap bands, bounds and counts", () => {
+const TTL = { minutes: 60, source: "ttlMinutes option" };
+
+test("report is a status section, then a table of the buckets with requests, then one of the user gap bands", () => {
 	const agg: Agg = {
 		...emptyAgg(0),
 		warmMaxMs: 4 * MIN,
@@ -669,31 +675,92 @@ test("report is a Markdown table of the buckets with requests, then one of the u
 	agg.buckets.tool = { n: 1, read: 0, total: 0 };
 	agg.bands["1-5m"] = { n: 3, read: 150, total: 200 };
 	agg.bands[">60m"] = { n: 1, read: 0, total: 50 };
-	expect(report(agg)).toBe(
+	expect(textOf(report(agg, TTL))).toBe(
 		[
+			"Status",
+			"TTL: 60m (ttlMinutes option)",
+			"Observed TTL: warm up to 4m00s · cold from 1h30m",
+			"Compactions: 2",
+			"Model switches: 1",
+			"Cache hit by gap type",
 			"| Gap type | Requests | Hit |",
-			"| --- | ---: | ---: |",
 			"| user | 3 | 75% |",
 			"| tool | 1 | – |",
-			"",
+			"Cache hit by user gap",
 			"| User gap | Requests | Hit |",
-			"| --- | ---: | ---: |",
 			"| 1-5m | 3 | 75% |",
 			"| >60m | 1 | 0% |",
-			"",
-			"Observed TTL: warm up to 4m00s · cold from 1h30m",
-			"",
-			"Compactions 2 · model switches 1",
 		].join("\n"),
 	);
 });
 
 test("report says when there are no requests yet and dashes unknown bounds", () => {
-	const text = report(emptyAgg(0));
-	expect(text.split("\n")[0]).toBe("No requests yet.");
+	const sections = report(emptyAgg(0), TTL);
+	const text = textOf(sections);
+	expect(textOf(sections.slice(1, 2)).split("\n")[1]).toBe("No requests yet.");
 	expect(text).not.toContain("| Gap type");
 	expect(text).toContain("No user gaps yet.");
 	expect(text).toContain("Observed TTL: warm up to – · cold from –");
+});
+
+test("report's status rows have dim labels and bold values, the TTL source dim", () => {
+	const [status] = report(emptyAgg(0), TTL);
+	expect(status?.blocks).toEqual([
+		{
+			line: {
+				label: "TTL",
+				runs: [
+					{ text: "60m", style: "bold" },
+					{ text: " (ttlMinutes option)", style: "dim" },
+				],
+			},
+		},
+		{
+			line: {
+				label: "Observed TTL",
+				runs: [
+					{ text: "warm up to " },
+					{ text: "–", style: "bold" },
+					{ text: " · cold from " },
+					{ text: "–", style: "bold" },
+				],
+			},
+		},
+		{ line: { label: "Compactions", runs: [{ text: "0", style: "bold" }] } },
+		{
+			line: { label: "Model switches", runs: [{ text: "0", style: "bold" }] },
+		},
+	]);
+});
+
+describe("hit-rate tone", () => {
+	test("green from 80%, yellow from 50%, red below, none without tokens", () => {
+		expect([GOOD_HIT_PCT, LOW_HIT_PCT]).toEqual([80, 50]);
+		expect(hitTone(80, 100)).toBe("good");
+		expect(hitTone(795, 1000)).toBe("good");
+		expect(hitTone(79, 100)).toBe("warn");
+		expect(hitTone(50, 100)).toBe("warn");
+		expect(hitTone(49, 100)).toBe("bad");
+		expect(hitTone(0, 50)).toBe("bad");
+		expect(hitTone(0, 0)).toBeUndefined();
+	});
+
+	test("report colors each hit cell by its rate, the request count never", () => {
+		const agg = emptyAgg(0);
+		agg.buckets.first = { n: 1, read: 90, total: 100 };
+		agg.buckets.user = { n: 3, read: 150, total: 200 };
+		agg.buckets.tool = { n: 1, read: 0, total: 0 };
+		agg.bands[">60m"] = { n: 1, read: 0, total: 50 };
+		const cells = report(agg, TTL).flatMap((s) =>
+			s.blocks.flatMap((b) => ("table" in b ? b.table.rows : [])),
+		);
+		expect(cells.map((r) => r.cells)).toEqual([
+			[{ text: "first" }, { text: "1" }, { text: "90%", tone: "good" }],
+			[{ text: "user" }, { text: "3" }, { text: "75%", tone: "warn" }],
+			[{ text: "tool" }, { text: "1" }, { text: "–" }],
+			[{ text: ">60m" }, { text: "1" }, { text: "0%", tone: "bad" }],
+		]);
+	});
 });
 
 describe("cost sums", () => {

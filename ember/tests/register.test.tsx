@@ -12,6 +12,7 @@ import { describe, expect, mock, test } from "claude-code/testing";
 import { decodeRec, REFRESH_PROMPT } from "../hooks/refresh.ts";
 import type { Sums } from "../hooks/stats.ts";
 import { savedPct } from "../hooks/stats.ts";
+import { flat, layout } from "./pane-text.ts";
 
 const T0 = 1_800_000_000_000;
 const MIN = 60_000;
@@ -37,6 +38,7 @@ type World = {
 	isStarted: boolean;
 	surfaces: RenderSurface[];
 	opens: unknown[];
+	closes: unknown[];
 	/** The prompt of each `$.model.fork`, in order. */
 	forks: string[];
 	/** What the next forks answer; `throw` rejects the call. */
@@ -85,6 +87,7 @@ function world(on: On, options: Options = {}): World {
 		isStarted: false,
 		surfaces: options.surfaces ?? ["vscode"],
 		opens: [],
+		closes: [],
 		forks: [],
 		fork: forkHit(),
 		forkHoldMs: 0,
@@ -164,6 +167,10 @@ function world(on: On, options: Options = {}): World {
 	on("ui.open", (_, e) => {
 		w.opens.push(e);
 		return { value: { isPlaced: true } };
+	});
+	on("ui.close", (_, e) => {
+		w.closes.push(e);
+		return { value: undefined };
 	});
 	on("session.surfaces", () => ({ value: w.surfaces }));
 	on("model.fork", async (_, e) => {
@@ -292,21 +299,22 @@ const mountPane = (
 	$: Engine,
 	surface: "terminal" | "desktop" = "terminal",
 	requestId = "ember",
+	bodyColumns = 100,
 ) =>
 	$.ui.mount({
 		...PANE,
+		props: { ...PANE.props, bodyColumns },
 		requestId,
 		surface,
-		viewport: { columns: 125, rows: 40 },
+		viewport: { columns: bodyColumns + 25, rows: 40 },
 	});
 
-/** The pane's TTL line and its Markdown report, read from one drawing. */
+/** The pane's TTL row and its report as text, read from one drawing. */
 async function paneOf($: Engine, surface: "terminal" | "desktop" = "terminal") {
 	const ui = await mountPane($, surface);
-	const ttl = (await ui.find({ type: "Text", text: /^TTL / }))?.text;
-	const md = (await ui.find({ type: "Markdown" }))?.text ?? "";
+	const text = flat(await ui.drawn());
 	await ui.unmount();
-	return { ttl, md };
+	return { ttl: text.split("\n").find((l) => l.startsWith("TTL ")), text };
 }
 
 const stored = (w: World, id = "S1") => w.store.get(`session:${id}`) as Stored;
@@ -445,7 +453,13 @@ test("/ember opens the ember pane, returns no text and logs no report", async ($
 	await start($, w);
 	expect(await runEmber($)).toEqual({});
 	expect(w.opens).toEqual([
-		{ id: "ember", title: "ember", focus: true, closeOnEscape: true },
+		{
+			id: "ember",
+			title: "ember",
+			focus: true,
+			closeOnEscape: true,
+			rows: 26,
+		},
 	]);
 	expect(w.logs).toEqual([]);
 });
@@ -466,13 +480,11 @@ for (const surface of ["terminal", "desktop"] as const) {
 		await runEmber($);
 		await w.clock.settle();
 		const ui = await mountPane($, surface);
-		expect((await ui.find({ type: "Text", text: /^TTL / }))?.text).toBe(
-			"TTL 60m (ttlMinutes option)",
-		);
-		const md = (await ui.find({ type: "Markdown" }))?.text ?? "";
-		expect(md).toContain("| Gap type | Requests | Hit |");
-		expect(md).toContain("| first | 1 | 90% |");
-		expect(md).not.toContain("| user |");
+		const md = flat(await ui.drawn());
+		expect(md).toContain("\nTTL 60m (ttlMinutes option)\n");
+		expect(md).toContain("Gap type Requests Hit");
+		expect(md).toContain("\nfirst 1 90%");
+		expect(md).not.toContain("\nuser ");
 		expect(await ui.find({ key: "tab-all" })).toBeUndefined();
 		expect(await ui.find({ key: "tab-session" })).toBeUndefined();
 		await ui.unmount();
@@ -490,25 +502,21 @@ for (const surface of ["terminal", "desktop"] as const) {
 		const ui = await mountPane($, surface);
 		expect(await ui.find({ key: "tab-session" })).toBeDefined();
 		expect(await ui.find({ key: "tab-all" })).toBeDefined();
-		expect((await ui.find({ type: "Markdown" }))?.text).toContain(
-			"| user | 1 | 98% |",
-		);
+		expect(flat(await ui.drawn())).toContain("\nuser 1 98%");
 
 		await ui.press({ key: "tab-all" });
 		await w.clock.settle();
-		const all = (await ui.find({ type: "Markdown" }))?.text ?? "";
-		expect(all).toContain("| first | 1 | 90% |");
-		expect(all).toContain("| user | 3 | 39% |");
-		expect(all).toContain("Observed TTL: warm up to 2m00s · cold from 1h30m");
-		expect(all).toContain("Compactions 3 · model switches 0");
+		const all = flat(await ui.drawn());
+		expect(all).toContain("\nfirst 1 90%");
+		expect(all).toContain("\nuser 3 39%");
+		expect(all).toContain("Observed TTL warm up to 2m00s · cold from 1h30m");
+		expect(all).toContain("Compactions 3\nModel switches 0");
 		// OLD stored its bands as bare counts: requests counted, no hit ratio.
-		expect(all).toContain("| 1-5m | 1 | 98% |\n| >60m | 2 | – |");
+		expect(all).toContain("\n1-5m 1 98%\n>60m 2 –");
 
 		await ui.press({ key: "tab-session" });
 		await w.clock.settle();
-		expect((await ui.find({ type: "Markdown" }))?.text).toContain(
-			"| user | 1 | 98% |",
-		);
+		expect(flat(await ui.drawn())).toContain("\nuser 1 98%");
 		expect(w.debug).toEqual([]);
 		await ui.unmount();
 	});
@@ -519,8 +527,122 @@ test("another pane id goes to the engine", async ($, on) => {
 	await start($, w);
 	const ui = await mountPane($, "terminal", "other");
 	expect(await ui.find({ type: "Text", text: /engine pane/ })).toBeDefined();
-	expect(await ui.find({ type: "Text", text: /^TTL / })).toBeUndefined();
+	expect(await ui.find({ key: "close" })).toBeUndefined();
 	await ui.unmount();
+});
+
+describe("the pane chrome and layout", () => {
+	/** This session (90% first, 98% user) and OLD's stored one, the pane open. */
+	const seeded = async ($: Engine, on: On) => {
+		const w = world(on, { entries: { "session:OLD": OLD } });
+		await start($, w);
+		await step($, w, { index: 0 });
+		await w.clock.advance(2 * MIN);
+		await step($, w, { turnId: "t2", index: 0 }, { usage: usage(98) });
+		await runEmber($);
+		await w.clock.settle();
+		return w;
+	};
+
+	test("a header row holds the bold title and the tabs at the left, Close at the right", async ($, on) => {
+		await seeded($, on);
+		const ui = await mountPane($);
+		const [head] = layout(await ui.drawn(), 100);
+		expect(head?.startsWith("ember  1: This session  2: All sessions ")).toBe(
+			true,
+		);
+		expect(head?.endsWith(" q: Close")).toBe(true);
+		expect(head).toHaveLength(100);
+		expect(
+			(await ui.find({ type: "Text", text: "ember" }))?.props,
+		).toMatchObject({ weight: "bold", color: "claude" });
+		expect((await ui.find({ key: "close" }))?.props).toMatchObject({
+			label: "Close",
+			hotkey: "q",
+			plain: true,
+			role: "dismiss",
+		});
+		await ui.unmount();
+	});
+
+	for (const id of ["ember", "ember-refresh"])
+		test(`Close closes the ${id} pane`, async ($, on) => {
+			const w = await seeded($, on);
+			const ui = await mountPane($, "terminal", id);
+			expect(flat(await ui.drawn()).split("\n")[0]).toBe(
+				`${id === "ember" ? "ember" : "ember refresh"}${id === "ember" ? " 1: This session 2: All sessions" : ""} q: Close`,
+			);
+			await ui.press({ key: "close" });
+			expect(w.closes).toEqual([{ id, origin: { kind: "plugin" } }]);
+			expect(w.debug).toEqual([]);
+			await ui.unmount();
+		});
+
+	test("a wide pane draws the status and both hit tables side by side; a narrow one wraps them", async ($, on) => {
+		await seeded($, on);
+		const titles = ["Status", "Cache hit by gap type", "Cache hit by user gap"];
+		const wide = await mountPane($, "terminal", "ember", 180);
+		const wideLines = layout(await wide.drawn(), 180);
+		expect(wideLines.some((l) => titles.every((t) => l.includes(t)))).toBe(
+			true,
+		);
+		expect(
+			(await wide.findAll({ type: "Box" })).filter(
+				(b) => b.props.flexWrap === "wrap",
+			),
+		).toHaveLength(1);
+		await wide.unmount();
+
+		const narrow = await mountPane($, "terminal", "ember", 70);
+		const lines = layout(await narrow.drawn(), 70);
+		expect(lines.filter((l) => l.length > 70)).toEqual([]);
+		expect(lines.find((l) => l.includes("Status"))?.trim()).toBe("Status");
+		expect(
+			lines.some(
+				(l) =>
+					l.includes("Cache hit by gap type") &&
+					l.includes("Cache hit by user gap"),
+			),
+		).toBe(true);
+		await narrow.unmount();
+	});
+
+	test("a hit rate is green from 80% and red below 50%; the request counts stay plain", async ($, on) => {
+		await seeded($, on);
+		const ui = await mountPane($);
+		const colorOf = async (text: string) =>
+			(await ui.findAll({ type: "Text", text }))
+				.filter((t) => t.text === text)
+				.map((t) => t.props.color);
+		expect(await colorOf("90%")).toEqual(["success"]);
+		expect(await colorOf("98%")).toEqual(["success", "success"]);
+		expect(await colorOf("1")).toEqual([undefined, undefined, undefined]);
+		await ui.press({ key: "tab-all" });
+		expect(await colorOf("39%")).toEqual(["error"]);
+		await ui.unmount();
+	});
+
+	test("the status section shows the TTL and the observed bounds as label/value rows", async ($, on) => {
+		await seeded($, on);
+		const ui = await mountPane($);
+		await ui.press({ key: "tab-all" });
+		const text = flat(await ui.drawn());
+		expect(text).toContain(
+			"Status\nTTL 60m (ttlMinutes option)\nObserved TTL warm up to 2m00s · cold from 1h30m\nCompactions 3\nModel switches 0",
+		);
+		for (const label of ["TTL", "Observed TTL", "Compactions"])
+			expect(
+				(await ui.find({ type: "Text", text: label }))?.props,
+			).toMatchObject({ dimColor: true });
+		// Only the status rows draw these values bold; a table's request count is plain.
+		for (const value of ["60m", "2m00s", "1h30m", "3"])
+			expect(
+				(await ui.findAll({ type: "Text", text: value })).some(
+					(t) => t.text === value && t.props.weight === "bold",
+				),
+			).toBe(true);
+		await ui.unmount();
+	});
 });
 
 test("session.start prunes stale and unreadable session keys", async ($, on) => {
@@ -694,7 +816,9 @@ test("a request in flight across a session change writes into neither session", 
 	await w.clock.settle();
 	expect(w.store.has("session:S1")).toBe(false);
 	expect(w.store.has("session:S2")).toBe(false);
-	expect((await paneOf($)).md.split("\n")[0]).toBe("No requests yet.");
+	expect((await paneOf($)).text).toContain(
+		"Cache hit by gap type\nNo requests yet.",
+	);
 });
 
 test("a write still running for the old session is not lost on a session change", async ($, on) => {
@@ -727,9 +851,7 @@ test("an unreadable store still reports this session, with no tabs", async ($, o
 	expect(await runEmber($)).toEqual({});
 	await w.clock.settle();
 	const ui = await mountPane($);
-	expect((await ui.find({ type: "Markdown" }))?.text).toContain(
-		"| first | 1 | 90% |",
-	);
+	expect(flat(await ui.drawn())).toContain("\nfirst 1 90%");
 	expect(await ui.find({ key: "tab-all" })).toBeUndefined();
 	expect(w.debug).toContain("ember: could not read other sessions");
 	await ui.unmount();
@@ -1335,13 +1457,14 @@ describe("cache refresh", () => {
 				title: "ember refresh",
 				focus: true,
 				closeOnEscape: true,
+				rows: 40,
 			},
 		]);
 		await w.clock.settle();
 		const ui = await mountPane($, "terminal", "ember-refresh");
-		const md = (await ui.find({ type: "Markdown" }))?.text ?? "";
+		const md = flat(await ui.drawn());
 		expect(md).toContain(
-			"Refresh on · lead 5m00s (auto) · TTL 60m (ttlMinutes option)",
+			"Refresh on\nLead 5m00s (auto)\nTTL 60m (ttlMinutes option)",
 		);
 		expect(md).toContain(
 			"Not enough data for a recommendation: 0 returned pauses, 20 needed.",
@@ -1640,8 +1763,8 @@ describe("idle compaction evidence", () => {
 			[0, 1],
 		]);
 		const ui = await mountPane($, "terminal", "ember-refresh");
-		expect((await ui.find({ type: "Markdown" }))?.text).toContain(
-			"Idle compaction: 1 pauses skipped (1 returned, 0 exits).",
+		expect(flat(await ui.drawn())).toContain(
+			"Idle compaction\n1 pauses skipped (1 returned, 0 exits).",
 		);
 		await ui.unmount();
 	});
@@ -1663,8 +1786,8 @@ describe("idle compaction evidence", () => {
 		const w = world(on, { entries: { [KEY]: Date.UTC(2026, 9, 21, 12) } });
 		await start($, w);
 		const ui = await mountPane($, "terminal", "ember-refresh");
-		expect((await ui.find({ type: "Markdown" }))?.text).toContain(
-			"Idle compaction: seen 2026-10-21, ember skips the pauses it applies to.",
+		expect(flat(await ui.drawn())).toContain(
+			"Idle compaction seen 2026-10-21, ember skips the pauses it applies to.",
 		);
 		await ui.unmount();
 	});

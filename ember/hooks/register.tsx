@@ -8,6 +8,7 @@ import type {
 } from "claude-code";
 
 import { analyze } from "./analysis.ts";
+import { pane } from "./pane.tsx";
 import type {
 	End,
 	Fired,
@@ -769,15 +770,20 @@ export const register: Register = (on, options) => {
 	}).catch((_, e, next) => next(e));
 
 	on("ui.render", { component: "Pane" }, ($, e, next) => {
-		if (e.requestId === REFRESH_PANE) {
-			const { Box, Markdown } = $.ui.resolve(e);
-			return (
-				<Box flexDirection="column">
-					<Markdown text={analysisOf(live)} />
-				</Box>
+		if (e.requestId !== PANE && e.requestId !== REFRESH_PANE) return next(e);
+		const id = e.requestId;
+		const onClose = () => {
+			$.ui
+				.close({ id })
+				.catch(() =>
+					$.ui.log("ember: could not close its pane", { to: "debug" }),
+				);
+		};
+		if (id === REFRESH_PANE)
+			return pane(
+				{ title: "ember refresh", sections: analysisOf(live), onClose },
+				$.ui.resolve(e),
 			);
-		}
-		if (e.requestId !== PANE) return next(e);
 		const hasOthers = live.others.length > 0;
 		const isAll = hasOthers && live.tab === "all";
 		const pick = (tab: Tab) => {
@@ -785,37 +791,34 @@ export const register: Register = (on, options) => {
 			$.ui.invalidate("ui.render");
 			if (tab === "all") void loadOthers($, live);
 		};
-		const { Box, Button, Markdown, Text } = $.ui.resolve(e);
-		const ttl = ttlOf(live);
-		return (
-			<Box flexDirection="column" gap={1}>
-				<Text dimColor>{`TTL ${ttl.minutes}m (${ttl.source})`}</Text>
-				{hasOthers ? (
-					<Box flexDirection="row" gap={2}>
-						<Button
-							key="tab-session"
-							label="This session"
-							hotkey="1"
-							plain
-							dimColor={isAll}
-							onPress={() => pick("session")}
-						/>
-						<Button
-							key="tab-all"
-							label="All sessions"
-							hotkey="2"
-							plain
-							dimColor={!isAll}
-							onPress={() => pick("all")}
-						/>
-					</Box>
-				) : null}
-				<Markdown
-					text={report(
-						isAll ? mergeAggs([live.agg, ...live.others]) : live.agg,
-					)}
-				/>
-			</Box>
+		return pane(
+			{
+				title: "ember",
+				tabs: hasOthers
+					? [
+							{
+								key: "tab-session",
+								label: "This session",
+								hotkey: "1",
+								isActive: !isAll,
+								onPress: () => pick("session"),
+							},
+							{
+								key: "tab-all",
+								label: "All sessions",
+								hotkey: "2",
+								isActive: isAll,
+								onPress: () => pick("all"),
+							},
+						]
+					: [],
+				sections: report(
+					isAll ? mergeAggs([live.agg, ...live.others]) : live.agg,
+					ttlOf(live),
+				),
+				onClose,
+			},
+			$.ui.resolve(e),
 		);
 	});
 
@@ -827,6 +830,8 @@ export const register: Register = (on, options) => {
 				title: "ember",
 				focus: true,
 				closeOnEscape: true,
+				// The tallest narrow drawing: header, status and both tables stacked; inline the frame fits a shorter tree.
+				rows: 26,
 			});
 		} catch {
 			$.ui.log("ember: could not open its pane", { to: "debug" });
@@ -842,6 +847,8 @@ export const register: Register = (on, options) => {
 				title: "ember refresh",
 				focus: true,
 				closeOnEscape: true,
+				// Its report runs long (survival, lead options, idle compaction); the layout caps the ask at what it spares.
+				rows: 40,
 			});
 		} catch {
 			$.ui.log("ember: could not open its refresh pane", { to: "debug" });
