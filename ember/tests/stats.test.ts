@@ -16,7 +16,6 @@ import {
 	parseAgg,
 	percent,
 	report,
-	resolveTtl,
 	savedPct,
 	statusText,
 	tokens,
@@ -176,20 +175,11 @@ describe("observe", () => {
 	test("a step with no measurable request changes nothing", () => {
 		const agg = emptyAgg(0);
 		const main = warmMain({ isCompactPending: true, lastHit: 0.9 });
-		for (const usage of [
-			null,
-			{
-				...step({}).usage!,
-				input_tokens: 0,
-				cache_read_input_tokens: 0,
-				cache_creation_input_tokens: 0,
-				model: "sonnet",
-			},
-		]) {
+		for (const u of [null, usage(0, 0, 0, "sonnet")]) {
 			const out = observe(
 				agg,
 				main,
-				step({ usage, startedMs: 4000, endedMs: 5000, toolNames: ["Bash"] }),
+				step({ usage: u, startedMs: 4000, endedMs: 5000, toolNames: ["Bash"] }),
 			);
 			expect(out.agg).toBe(agg);
 			expect(out.main).toBe(main);

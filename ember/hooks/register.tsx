@@ -677,7 +677,7 @@ export const register: Register = (on, options) => {
 			applyTtl($, live);
 			return next(e);
 		},
-	).catch(($, e, next) => next(e));
+	).catch((_, e, next) => next(e));
 
 	on("session.end", async ($, e, next) => {
 		try {
@@ -766,7 +766,7 @@ export const register: Register = (on, options) => {
 		} finally {
 			if (isMain) live.compacting--;
 		}
-	}).catch(($, e, next) => next(e));
+	}).catch((_, e, next) => next(e));
 
 	on("ui.render", { component: "Pane" }, ($, e, next) => {
 		if (e.requestId === REFRESH_PANE) {

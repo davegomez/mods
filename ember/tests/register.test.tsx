@@ -110,14 +110,20 @@ function world(on: On, options: Options = {}): World {
 		store.set(e.key, value);
 		return { value: undefined };
 	});
-	on("store.delete", (_, e) => (store.delete(e.key), { value: undefined }));
+	on("store.delete", (_, e) => {
+		store.delete(e.key);
+		return { value: undefined };
+	});
 	on("store.keys", () =>
 		options.failStoreKeys === true
 			? { deny: "unreadable" }
 			: { value: [...store.keys()] },
 	);
 	on("session.id", () => ({ value: w.id }));
-	on("session.start", (_, e) => ((w.isStarted = true), { cwd: e.cwd }));
+	on("session.start", (_, e) => {
+		w.isStarted = true;
+		return { cwd: e.cwd };
+	});
 	on("classic.SessionStart", () => ({ additionalContext: ["from core"] }));
 	on("session.compact", async (_, e) => {
 		const holdMs = w.compactHoldMs;
@@ -142,19 +148,23 @@ function world(on: On, options: Options = {}): World {
 			? { deny: "unreadable" }
 			: { value: w.settings },
 	);
-	on("ui.toast", (_, e) =>
-		options.failToast === true
-			? { deny: "no toasts" }
-			: (w.toasts.push(e.text), { value: undefined }),
-	);
-	on("ui.status", (_, e) => (w.statuses.push(e.text), { value: undefined }));
-	on(
-		"ui.log",
-		(_, e) => (
-			(e.to === "debug" ? w.debug : w.logs).push(e.text), { value: undefined }
-		),
-	);
-	on("ui.open", (_, e) => (w.opens.push(e), { value: { isPlaced: true } }));
+	on("ui.toast", (_, e) => {
+		if (options.failToast === true) return { deny: "no toasts" };
+		w.toasts.push(e.text);
+		return { value: undefined };
+	});
+	on("ui.status", (_, e) => {
+		w.statuses.push(e.text);
+		return { value: undefined };
+	});
+	on("ui.log", (_, e) => {
+		(e.to === "debug" ? w.debug : w.logs).push(e.text);
+		return { value: undefined };
+	});
+	on("ui.open", (_, e) => {
+		w.opens.push(e);
+		return { value: { isPlaced: true } };
+	});
 	on("session.surfaces", () => ({ value: w.surfaces }));
 	on("model.fork", async (_, e) => {
 		w.forks.push(e.prompt);
