@@ -8,17 +8,23 @@ import {
   effectiveTtl,
   emptyRefresh,
   encodeRec,
+  IDLE_COMPACTION_LATEST_SHARE,
   idleCompactionApplies,
+  idleCompactionLapsed,
+  isIdleCompactionEvidence,
   isRefreshPlanned,
   judgeFork,
+  LATE_MARGIN_MS,
   leadMs,
   LOG_LIMIT,
   maxRefreshes,
   openPause,
   parseRefresh,
   planRefresh,
+  parseIdleSeen,
   pushLog,
   refreshConfig,
+  rescueAtMs,
   skipCode,
   SKIPS,
   writeWeight,
@@ -284,8 +290,99 @@ describe('idle compaction', () => {
   })
 })
 
+describe('idle compaction evidence', () => {
+  const open = pauseAt(60, { isIdleCompaction: true })
+
+  test('a main auto or precompute compaction while idle in an open pause is evidence', () => {
+    expect(isIdleCompactionEvidence({ trigger: 'auto' }, open, false)).toBe(true)
+    expect(isIdleCompactionEvidence({ trigger: 'precompute' }, open, false)).toBe(true)
+  })
+
+  test('a manual or plugin compaction, a subagent one, one during a turn, or one outside a pause is not', () => {
+    expect(isIdleCompactionEvidence({ trigger: 'manual' }, open, false)).toBe(false)
+    expect(isIdleCompactionEvidence({ trigger: 'plugin' }, open, false)).toBe(false)
+    expect(isIdleCompactionEvidence({ trigger: 'auto', agentId: 'a1' }, open, false)).toBe(false)
+    expect(isIdleCompactionEvidence({ trigger: 'auto' }, open, true)).toBe(false)
+    expect(isIdleCompactionEvidence({ trigger: 'auto' }, undefined, false)).toBe(false)
+    expect(isIdleCompactionEvidence({ trigger: 'auto' }, { ...open, returnMs: T0 + MIN }, false)).toBe(false)
+  })
+
+  test('idle compaction must have fired by 0.95 of the TTL from the last read; the rescue comes 30 s later, 57 m 30 s on the 1 h cache', () => {
+    expect(IDLE_COMPACTION_LATEST_SHARE).toBe(0.95)
+    expect(rescueAtMs(open)).toBe(T0 + 57.5 * MIN)
+    expect(rescueAtMs({ ...open, readMs: T0 + MIN })).toBe(T0 + 58.5 * MIN)
+    // 2 m 30 s before expiry: well clear of the 5 s late limit.
+    expect(T0 + 60 * MIN - LATE_MARGIN_MS - rescueAtMs(open)).toBe(2.5 * MIN - 5_000)
+  })
+
+  test('a pause skipped for idle compaction that outlasted the rescue time with none seen lapses the evidence', () => {
+    const at = rescueAtMs(open)
+    expect(SKIPS[open.skip]).toBe('idle compaction')
+    expect(idleCompactionLapsed(open, at)).toBe(true)
+    expect(idleCompactionLapsed(open, at - 1)).toBe(false)
+    expect(idleCompactionLapsed({ ...open, idleCompactMs: at - MIN }, at + MIN)).toBe(false)
+    expect(idleCompactionLapsed(pauseAt(), at + MIN)).toBe(false)
+  })
+
+  test('with no idle compaction by the rescue time, the plan rescues: the pause turns refreshable and fires now', () => {
+    expect(planRefresh(open, rescueAtMs(open) - 1)).toEqual({ kind: 'wait' })
+    const plan = planRefresh(open, rescueAtMs(open))
+    expect(plan).toEqual({ kind: 'rescue', pause: { ...open, skip: skipCode('none') } })
+    if (plan.kind !== 'rescue') return
+    // From here on the usual timing: a hit moves the read, and the next refresh runs at the usual lead.
+    const s = applyRefresh({ ...emptyRefresh, pause: plan.pause }, fired(plan.pause, rescueAtMs(open)), hit, true).state
+    const p = s.pause as Pause
+    expect(p).toMatchObject({ refreshes: 1, skip: 0, readMs: T0 + 57.5 * MIN })
+    expect(planRefresh(p, T0 + 112.5 * MIN - 1).kind).toBe('wait')
+    expect(planRefresh(p, T0 + 112.5 * MIN).kind).toBe('fire')
+    expect(idleCompactionLapsed(p, T0 + 120 * MIN)).toBe(false)
+  })
+
+  test('no rescue once idle compaction was seen, after a return, past the late limit, or at another TTL', () => {
+    const at = rescueAtMs(open)
+    expect(planRefresh({ ...open, idleCompactMs: T0 + 54 * MIN }, at).kind).toBe('wait')
+    expect(planRefresh({ ...open, idleCompactMs: T0 + 57 * MIN }, at).kind).toBe('wait')
+    expect(planRefresh({ ...open, returnMs: at - 1 }, at).kind).toBe('wait')
+    expect(planRefresh(open, T0 + 60 * MIN - LATE_MARGIN_MS).kind).toBe('wait')
+    expect(planRefresh({ ...open, ttlMinutes: 30 }, at).kind).toBe('wait')
+  })
+
+  test('only the idle compaction skip is rescued: refresh off, a paused breaker, a compaction keep theirs', () => {
+    const at = rescueAtMs(open)
+    for (const over of [{ config: { isOn: false, leadSeconds: 0, isShortTtlOn: true } }, { isPaused: true }, { isCompactPending: true }]) {
+      const p = pauseAt(60, { isIdleCompaction: true, ...over })
+      expect(SKIPS[p.skip]).not.toBe('idle compaction')
+      expect(planRefresh(p, at).kind).toBe('wait')
+    }
+    expect(planRefresh({ ...open, skip: skipCode('compacted') }, at).kind).toBe('wait')
+  })
+
+  test('a 5 min TTL is never left to idle compaction, so it is never rescued', () => {
+    const p = pauseAt(5, { isIdleCompaction: idleCompactionApplies({}, 5, true, 300_000) })
+    expect(SKIPS[p.skip]).toBe('none')
+    expect(planRefresh({ ...p, skip: skipCode('idle compaction') }, rescueAtMs(p)).kind).toBe('wait')
+  })
+
+  test('a pause awaiting the rescue has a refresh planned, so no cold warning shows', () => {
+    expect(isRefreshPlanned(open)).toBe(true)
+    expect(isRefreshPlanned({ ...open, idleCompactMs: T0 + 54 * MIN })).toBe(false)
+    expect(isRefreshPlanned({ ...open, returnMs: T0 + MIN })).toBe(false)
+  })
+
+  test('the closed pause records whether idle compaction was seen in it', () => {
+    const seen = closePause({ ...emptyRefresh, pause: { ...open, idleCompactMs: T0 + 54 * MIN } }, 'exit', T0 + 70 * MIN)
+    expect((decodeRec(seen.log[0]) as PauseRec).idleCompacted).toBe(1)
+    expect((decodeRec(closePause({ ...emptyRefresh, pause: open }, 'exit', T0 + 70 * MIN).log[0]) as PauseRec).idleCompacted).toBe(0)
+  })
+
+  test('the stored evidence is a positive timestamp; anything else is none', () => {
+    expect(parseIdleSeen(T0)).toBe(T0)
+    for (const bad of [undefined, null, 0, -1, Number.NaN, 1e20, '1800000000000', { seenMs: T0 }]) expect(parseIdleSeen(bad)).toBeUndefined()
+  })
+})
+
 describe('the log ring buffer', () => {
-  const pauseRec: PauseRec = { kind: 'pause', startMs: T0, lenMs: 9 * 3600_000, ageMs: 9 * 3600_000, ttlMinutes: 60, source: 0, leadMs: 300_000, prefix: 999_999, refreshes: 20, end: 2, skip: 9, cost: 2_000_000, saved: -2_000_000 }
+  const pauseRec: PauseRec = { kind: 'pause', startMs: T0, lenMs: 9 * 3600_000, ageMs: 9 * 3600_000, ttlMinutes: 60, source: 0, leadMs: 300_000, prefix: 999_999, refreshes: 20, end: 2, skip: 9, cost: 2_000_000, saved: -2_000_000, idleCompacted: 1 }
   const refreshRec: RefreshRec = { kind: 'refresh', startMs: T0, ageMs: 3_300_000, ttlMinutes: 60, source: 0, leadMs: 300_000, prefix: 999_999, read: 999_999, creation: 1024, input: 99, output: 9, outcome: 0, steps: 1, agentSteps: 1, isProbe: 0 }
 
   test('records round-trip as numbers only; anything else is dropped', () => {
@@ -293,6 +390,12 @@ describe('the log ring buffer', () => {
     expect(decodeRec(encodeRec(refreshRec))).toEqual(refreshRec)
     expect(encodeRec(refreshRec).every(n => typeof n === 'number')).toBe(true)
     for (const bad of [[2, 1], [0, 1, 2], [1, ...encodeRec(refreshRec).slice(1, -1), 'x'], 'junk', null]) expect(decodeRec(bad)).toBeUndefined()
+  })
+
+  test('a pause record from before idleCompacted reads as none seen', () => {
+    const old = encodeRec(pauseRec).slice(0, -1)
+    expect(decodeRec(old)).toEqual({ ...pauseRec, idleCompacted: 0 })
+    expect(parseRefresh({ log: [old] })?.log).toEqual([old])
   })
 
   test(`keeps the newest ${LOG_LIMIT} records per session`, () => {
@@ -312,7 +415,7 @@ describe('the log ring buffer', () => {
   })
 
   test('parseRefresh reads a stored state back and refuses junk', () => {
-    const state: RefreshState = { log: [encodeRec(refreshRec)], missStreak: 1, isPaused: true, coldAtMs: 5, saved: -3, pause: { ...pauseAt(), retryAtMs: 7, returnMs: 9 } }
+    const state: RefreshState = { log: [encodeRec(refreshRec)], missStreak: 1, isPaused: true, coldAtMs: 5, saved: -3, pause: { ...pauseAt(), retryAtMs: 7, returnMs: 9, idleCompactMs: 8 } }
     expect(parseRefresh(JSON.parse(JSON.stringify(state)))).toEqual(state)
     expect(parseRefresh('junk')).toBeUndefined()
     expect(parseRefresh({ pause: { startMs: 'x' } })).toEqual(emptyRefresh)

@@ -87,6 +87,8 @@ export type Pause = {
   skip: number
   /** When the person's next turn started. */
   returnMs?: number
+  /** When an idle compaction of the main conversation was seen in this pause. */
+  idleCompactMs?: number
 }
 
 /** The refresh state a session stores. */
@@ -103,7 +105,7 @@ export type RefreshState = {
 
 export const emptyRefresh: RefreshState = { log: [], missStreak: 0, isPaused: false, saved: 0 }
 
-const PAUSE_FIELDS = ['startMs', 'lenMs', 'ageMs', 'ttlMinutes', 'source', 'leadMs', 'prefix', 'refreshes', 'end', 'skip', 'cost', 'saved'] as const
+const PAUSE_FIELDS = ['startMs', 'lenMs', 'ageMs', 'ttlMinutes', 'source', 'leadMs', 'prefix', 'refreshes', 'end', 'skip', 'cost', 'saved', 'idleCompacted'] as const
 const REFRESH_FIELDS = ['startMs', 'ageMs', 'ttlMinutes', 'source', 'leadMs', 'prefix', 'read', 'creation', 'input', 'output', 'outcome', 'steps', 'agentSteps', 'isProbe'] as const
 type Fields<F extends readonly string[]> = { [K in F[number]]: number }
 export type PauseRec = { kind: 'pause' } & Fields<typeof PAUSE_FIELDS>
@@ -118,7 +120,9 @@ const isNum = (v: unknown): v is number => typeof v === 'number' && Number.isFin
 
 export function decodeRec(v: unknown): Rec | undefined {
   if (!Array.isArray(v) || !v.every(isNum)) return undefined
-  const [kind, ...rest] = v as number[]
+  const [kind, ...stored] = v as number[]
+  // A pause record written before `idleCompacted` existed: none was recorded.
+  const rest = kind === 0 && stored.length === PAUSE_FIELDS.length - 1 ? [...stored, 0] : stored
   const fields = kind === 0 ? PAUSE_FIELDS : kind === 1 ? REFRESH_FIELDS : undefined
   if (fields === undefined || rest.length !== fields.length) return undefined
   return { kind: kind === 0 ? 'pause' : 'refresh', ...Object.fromEntries(fields.map((f, i) => [f, rest[i]])) } as Rec
@@ -132,9 +136,12 @@ export const IDLE_COMPACTION_TTL_MINUTES = 60
 
 export type IdleCompactInputs = { setting?: unknown; autoCompact?: unknown; disableAuto?: string; minTokens?: string }
 
+/** Idle compaction fires at this share of the TTL: `fireAtFraction`'s default in Claude Code 2.1.306, about 54 min on the 1 h cache. */
+export const IDLE_COMPACTION_TTL_SHARE = 0.9
+
 /**
  * Whether Claude Code's idle compaction may run in this pause (1 h TTL, interactive, not turned off, context at
- * its threshold). It fires about 54 min after the last request, before a refresh would; ember yields to it.
+ * its threshold). A server flag can still keep it off, so ember yields to it only once it has seen it run.
  * The prefix stands in for the context size; 90% of the threshold counts, so a near miss yields too.
  */
 export function idleCompactionApplies(i: IdleCompactInputs, ttlMinutes: number, isInteractive: boolean, prefix: number): boolean {
@@ -144,6 +151,29 @@ export function idleCompactionApplies(i: IdleCompactInputs, ttlMinutes: number, 
   const threshold = Number.isInteger(asked) && asked > 0 ? Math.max(100_000, asked) : 200_000
   return prefix >= 0.9 * threshold
 }
+
+/** A main-conversation compaction that Claude Code started on its own while the person was away: idle compaction. */
+export function isIdleCompactionEvidence(e: { trigger: string; agentId?: string }, p: Pause | undefined, isTurnRunning: boolean): boolean {
+  return e.agentId === undefined && (e.trigger === 'auto' || e.trigger === 'precompute') && p !== undefined && p.returnMs === undefined && !isTurnRunning
+}
+
+/** The latest share of the TTL idle compaction fires at: Claude Code 2.1.306 clamps `fireAtFraction` to 0.5 to 0.95. */
+export const IDLE_COMPACTION_LATEST_SHARE = 0.95
+/** Slack past that latest time before ember decides idle compaction did not run. */
+export const RESCUE_SLACK_MS = 30_000
+
+/** When idle compaction must have fired, measured like the timed refreshes from the last read: 57 m 30 s on the 1 h cache. */
+export const rescueAtMs = (p: Pause): number => p.readMs + IDLE_COMPACTION_LATEST_SHARE * p.ttlMinutes * MIN + RESCUE_SLACK_MS
+
+/** A pause left to idle compaction, still open with none seen: ember rescues it at `rescueAtMs` if none comes. */
+const awaitsIdleCompaction = (p: Pause): boolean =>
+  p.skip === skipCode('idle compaction') && p.ttlMinutes === IDLE_COMPACTION_TTL_MINUTES && p.idleCompactMs === undefined
+
+/** A pause left to idle compaction that outlasted its latest time with none seen: the evidence no longer holds. */
+export const idleCompactionLapsed = (p: Pause, endMs: number): boolean => awaitsIdleCompaction(p) && endMs >= rescueAtMs(p)
+
+/** The stored time idle compaction was last seen; anything but a valid timestamp is none. */
+export const parseIdleSeen = (v: unknown): number | undefined => (isNum(v) && v > 0 && v <= 8.64e15 ? v : undefined)
 
 export type PauseContext = {
   config: RefreshConfig
@@ -190,22 +220,29 @@ export function openPause(last: { startMs: number; endMs: number; prefix: number
   }
 }
 
-export type Plan = { kind: 'wait' } | { kind: 'fire' } | { kind: 'stop'; skip: Skip }
+/** `rescue`: idle compaction did not come; clear the evidence and refresh now with `pause`, a refreshable pause from here on. */
+export type Plan = { kind: 'wait' } | { kind: 'fire' } | { kind: 'stop'; skip: Skip } | { kind: 'rescue'; pause: Pause }
 
-/** What the pause asks for now. The caller checks that the main thread is idle and no refresh runs. */
+/** What the pause asks for now. The caller checks that the main thread is idle, nothing compacts, and no refresh runs. */
 export function planRefresh(p: Pause, nowMs: number): Plan {
-  if (p.skip !== 0 || p.returnMs !== undefined) return { kind: 'wait' }
-  if (p.refreshes >= maxRefreshes(p.ttlMinutes)) return { kind: 'stop', skip: 'capped' }
+  if (p.returnMs !== undefined) return { kind: 'wait' }
   const expiresMs = p.readMs + p.ttlMinutes * MIN
+  if (awaitsIdleCompaction(p)) {
+    // Past the late limit a fork would only rewrite the entry; closing the pause clears the evidence instead.
+    const isDue = nowMs >= rescueAtMs(p) && nowMs < expiresMs - LATE_MARGIN_MS && p.refreshes < maxRefreshes(p.ttlMinutes)
+    return isDue ? { kind: 'rescue', pause: { ...p, skip: skipCode('none') } } : { kind: 'wait' }
+  }
+  if (p.skip !== 0) return { kind: 'wait' }
+  if (p.refreshes >= maxRefreshes(p.ttlMinutes)) return { kind: 'stop', skip: 'capped' }
   // A machine that slept past the slot finds the entry gone: a fork then would only rewrite it.
   if (nowMs >= expiresMs - LATE_MARGIN_MS) return { kind: 'stop', skip: 'late' }
   if (nowMs < expiresMs - p.leadMs || nowMs < (p.retryAtMs ?? 0)) return { kind: 'wait' }
   return { kind: 'fire' }
 }
 
-/** True while a refresh will still run before this pause's entry expires, so no cold warning is due. */
+/** True while a refresh (or the idle compaction rescue) will still run before this pause's entry expires, so no cold warning is due. */
 export const isRefreshPlanned = (p: Pause | undefined): boolean =>
-  p !== undefined && p.skip === 0 && p.returnMs === undefined && p.refreshes < maxRefreshes(p.ttlMinutes)
+  p !== undefined && p.returnMs === undefined && (awaitsIdleCompaction(p) || (p.skip === 0 && p.refreshes < maxRefreshes(p.ttlMinutes)))
 
 export type Judged = { outcome: Outcome | 'none'; read: number; creation: number; input: number; output: number }
 
@@ -304,6 +341,7 @@ export function closePause(s: RefreshState, end: End, atMs: number): RefreshStat
     skip: p.skip,
     cost: p.cost,
     saved,
+    idleCompacted: p.idleCompactMs === undefined ? 0 : 1,
   })
   const { pause: _closed, ...rest } = s
   return { ...rest, log, saved: s.saved + saved }
@@ -323,10 +361,16 @@ function parsePause(v: unknown): Pause | undefined {
   const keys = ['startMs', 'anchorMs', 'readMs', 'ttlMinutes', 'source', 'leadMs', 'prefix', 'refreshes', 'tries', 'cost', 'skip'] as const
   const nums = keys.map(k => optNum(o[k]))
   if (nums.some(n => n === undefined) || (o.ttlMinutes as number) <= 0) return undefined
-  const p = Object.fromEntries(keys.map((k, i) => [k, nums[i]])) as Omit<Pause, 'retryAtMs' | 'returnMs'>
+  const p = Object.fromEntries(keys.map((k, i) => [k, nums[i]])) as Omit<Pause, 'retryAtMs' | 'returnMs' | 'idleCompactMs'>
   const retryAtMs = optNum(o.retryAtMs)
   const returnMs = optNum(o.returnMs)
-  return { ...p, ...(retryAtMs === undefined ? {} : { retryAtMs }), ...(returnMs === undefined ? {} : { returnMs }) }
+  const idleCompactMs = optNum(o.idleCompactMs)
+  return {
+    ...p,
+    ...(retryAtMs === undefined ? {} : { retryAtMs }),
+    ...(returnMs === undefined ? {} : { returnMs }),
+    ...(idleCompactMs === undefined ? {} : { idleCompactMs }),
+  }
 }
 
 /** Reads a stored refresh state defensively; bad records are dropped. */

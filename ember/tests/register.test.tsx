@@ -37,6 +37,10 @@ type World = {
   forkHoldMs: number
   /** The agent ids of the steps a fork raises at `turn.step` while it runs (null: no agent id). */
   forkSteps: (string | null)[]
+  /** Lets a `/compact` through; by default the core mock blocks it. */
+  isManualAllowed: boolean
+  /** How long the next compaction runs before it answers. */
+  compactHoldMs: number
   engine?: Engine
 }
 
@@ -57,7 +61,7 @@ type Options = {
 function world(on: On, options: Options = {}): World {
   const clock = mock.clock(on, { now: T0 })
   const store = new Map(Object.entries(options.entries ?? {}))
-  const w: World = { clock, store, statuses: [], logs: [], toasts: [], env: options.env ?? {}, settings: options.settings ?? {}, debug: [], reply: { usage: null, toolNames: [], holdMs: 0 }, id: 'S1', sets: [], setHoldMs: 0, otherGetHoldMs: 0, isStarted: false, surfaces: options.surfaces ?? ['vscode'], opens: [], forks: [], fork: forkHit(), forkHoldMs: 0, forkSteps: [] }
+  const w: World = { clock, store, statuses: [], logs: [], toasts: [], env: options.env ?? {}, settings: options.settings ?? {}, debug: [], reply: { usage: null, toolNames: [], holdMs: 0 }, id: 'S1', sets: [], setHoldMs: 0, otherGetHoldMs: 0, isStarted: false, surfaces: options.surfaces ?? ['vscode'], opens: [], forks: [], fork: forkHit(), forkHoldMs: 0, forkSteps: [], isManualAllowed: false, compactHoldMs: 0 }
 
   on('store.get', async (_, e) => {
     if (w.otherGetHoldMs > 0 && e.key !== `session:${w.id}`) await clock.sleep(w.otherGetHoldMs)
@@ -69,7 +73,7 @@ function world(on: On, options: Options = {}): World {
     w.setHoldMs = 0
     if (holdMs > 0) await clock.sleep(holdMs)
     const value = JSON.parse(JSON.stringify(e.value)) as Stored
-    w.sets.push(`${e.key} ${Object.values(value.buckets).reduce((n, b) => n + b.n, 0)}`)
+    w.sets.push(`${e.key} ${Object.values(value.buckets ?? {}).reduce((n, b) => n + b.n, 0)}`)
     store.set(e.key, value)
     return { value: undefined }
   })
@@ -78,7 +82,12 @@ function world(on: On, options: Options = {}): World {
   on('session.id', () => ({ value: w.id }))
   on('session.start', (_, e) => ((w.isStarted = true), { cwd: e.cwd }))
   on('classic.SessionStart', () => ({ additionalContext: ['from core'] }))
-  on('session.compact', (_, e) => (e.trigger === 'manual' ? { skip: 'blocked' } : { messages: e.messages }))
+  on('session.compact', async (_, e) => {
+    const holdMs = w.compactHoldMs
+    w.compactHoldMs = 0
+    if (holdMs > 0) await clock.sleep(holdMs)
+    return e.trigger === 'manual' && !w.isManualAllowed ? { skip: 'blocked' } : { messages: e.messages }
+  })
   on('command.register', (_, e) => (options.failCommandRegister === true ? { deny: 'taken' } : { value: { command: e.name } }))
   on('env.get', (_, e) => (options.failEnv === true ? { deny: 'unreadable' } : { value: w.env[e.name] }))
   on('settings.read', () => (options.failSettings === true ? { deny: 'unreadable' } : { value: w.settings }))
@@ -807,8 +816,8 @@ describe('cache refresh', () => {
     expect(w.forks).toEqual([])
   })
 
-  test('ember yields to idle compaction when it may run, and refreshes when it is off', async ($, on) => {
-    const w = world(on)
+  test('with evidence ember yields to idle compaction when it may run, and refreshes when it is off', async ($, on) => {
+    const w = world(on, { entries: { idleCompactionSeenMs: T0 - DAY } })
     await start($, w)
     await turn($, w, 't1', { usage: prefixUsage(0, 250_000) })
     await w.clock.advance(56 * MIN)
@@ -823,7 +832,7 @@ describe('cache refresh', () => {
   })
 
   test('an idle compaction in a pause ember left to it keeps the pause in the idle compaction sample', async ($, on) => {
-    const w = world(on)
+    const w = world(on, { entries: { idleCompactionSeenMs: T0 - DAY } })
     await start($, w)
     await turn($, w, 't1', { usage: prefixUsage(0, 250_000) })
     await w.clock.advance(54 * MIN)
@@ -831,6 +840,11 @@ describe('cache refresh', () => {
     await w.clock.settle()
     expect(refreshOf(w).pause?.skip).toBe(3)
     expect(stored(w).compactions).toBe(1)
+    expect(w.store.get('idleCompactionSeenMs')).toBe(T0 + 54 * MIN)
+    await w.clock.advance(16 * MIN)
+    await turn($, w, 't2', { usage: prefixUsage(0, 20_000) })
+    expect(recs(w)[0]).toMatchObject({ kind: 'pause', skip: 3, idleCompacted: 1 })
+    expect(w.store.get('idleCompactionSeenMs')).toBe(T0 + 54 * MIN)
   })
 
   test('a compaction during the pause stops its refreshes', async ($, on) => {
@@ -903,5 +917,218 @@ describe('cache refresh', () => {
     expect(w.toasts.at(-1)).toBe('ember probe: hit · read 100% of 142k · created 0 · fork steps seen 1 (0 with an agent id)')
     expect(recs(w)[0]).toMatchObject({ kind: 'refresh', isProbe: 1 })
     expect(refreshOf(w).pause?.refreshes).toBe(0)
+  })
+})
+
+describe('idle compaction evidence', () => {
+  const KEY = 'idleCompactionSeenMs'
+  const big = { usage: prefixUsage(0, 250_000) }
+
+  test('with no evidence in the store, a pause idle compaction applies to is refreshed', async ($, on) => {
+    const w = world(on, { entries: { 'session:S1': { updatedAt: T0 - MIN, compactions: 2 } } })
+    await start($, w)
+    await turn($, w, 't1', big)
+    await w.clock.advance(55 * MIN)
+    expect(w.forks.length).toBe(1)
+    expect(w.store.has(KEY)).toBe(false)
+  })
+
+  test('an idle auto compaction before the refresh stops it and is recorded; the next such pause is skipped', async ($, on) => {
+    const w = world(on)
+    await start($, w)
+    await turn($, w, 't1', big)
+    await w.clock.advance(54 * MIN)
+    await $.session.compact({ trigger: 'auto', messages: SUMMARY })
+    await w.clock.advance(10 * MIN)
+    expect(w.forks).toEqual([])
+    expect(w.store.get(KEY)).toBe(T0 + 54 * MIN)
+    await turn($, w, 't2', big)
+    expect(recs(w)[0]).toMatchObject({ kind: 'pause', skip: 6, idleCompacted: 1 })
+    expect(refreshOf(w).pause?.skip).toBe(3)
+    await w.clock.advance(56 * MIN)
+    expect(w.forks).toEqual([])
+  })
+
+  test('a precompute while idle is evidence', async ($, on) => {
+    const w = world(on)
+    await start($, w)
+    await turn($, w, 't1', big)
+    await w.clock.advance(54 * MIN)
+    await $.session.compact({ trigger: 'precompute', messages: SUMMARY })
+    await w.clock.settle()
+    expect(w.store.get(KEY)).toBe(T0 + 54 * MIN)
+  })
+
+  test('a manual compaction, a subagent one, and one during a turn are not evidence', async ($, on) => {
+    const w = world(on)
+    w.isManualAllowed = true
+    await start($, w)
+    await turn($, w, 't1', big)
+    await w.clock.advance(54 * MIN)
+    await $.session.compact({ trigger: 'manual', messages: SUMMARY })
+    await $.session.compact({ trigger: 'auto', agentId: 'a1', messages: SUMMARY })
+    await $.turn.start({ text: 'go', turnId: 't2' })
+    await $.session.compact({ trigger: 'auto', messages: SUMMARY })
+    await w.clock.settle()
+    expect(w.store.has(KEY)).toBe(false)
+  })
+
+  test('a skipped pause a dead process left open past the rescue time clears the evidence when it closes', async ($, on) => {
+    const pause = { startMs: T0 - 70 * MIN, anchorMs: T0 - 70 * MIN, readMs: T0 - 70 * MIN, ttlMinutes: 60, source: 0, leadMs: 5 * MIN, prefix: 250_000, refreshes: 0, tries: 0, cost: 0, skip: 3 }
+    const w = world(on, { entries: { [KEY]: T0 - DAY, 'session:S1': { updatedAt: T0 - 10 * MIN, refresh: { log: [], missStreak: 0, isPaused: false, saved: 0, pause } } } })
+    await start($, w)
+    expect(recs(w)[0]).toMatchObject({ kind: 'pause', end: 2, skip: 3, idleCompacted: 0 })
+    expect(w.store.has(KEY)).toBe(false)
+    await turn($, w, 't1', big)
+    expect(refreshOf(w).pause?.skip).toBe(0)
+  })
+
+  test('with no idle compaction by 57 m 30 s ember clears the evidence and refreshes, then at the usual lead; the return is warm', async ($, on) => {
+    const w = world(on, { entries: { [KEY]: T0 - DAY } })
+    w.fork = forkHit(250_000)
+    await start($, w)
+    await turn($, w, 't1', big)
+    expect(refreshOf(w).pause?.skip).toBe(3)
+    await w.clock.advance(57.5 * MIN - 1000)
+    expect(w.forks).toEqual([])
+    expect(w.store.get(KEY)).toBe(T0 - DAY)
+    await w.clock.advance(1000)
+    await w.clock.settle()
+    expect(w.forks).toEqual([REFRESH_PROMPT])
+    expect(w.store.has(KEY)).toBe(false)
+    expect(refreshOf(w).pause).toMatchObject({ skip: 0, refreshes: 1 })
+    await w.clock.advance(55 * MIN)
+    await w.clock.settle()
+    expect(w.forks.length).toBe(2)
+    await w.clock.advance(7.5 * MIN)
+    await turn($, w, 't2', { usage: prefixUsage(250_000, 0) })
+    expect(recs(w).filter(r => r?.kind === 'pause')).toEqual([expect.objectContaining({ end: 0, skip: 0, refreshes: 2, idleCompacted: 0, ageMs: 120 * MIN })])
+    expect(refreshOf(w).pause?.skip).toBe(0)
+    expect(w.toasts).toEqual([])
+  })
+
+  for (const [atMin, holdMs] of [
+    [54, 0],
+    [57, MIN],
+  ] as const) {
+    test(`an idle compaction starting at ${atMin} m, running ${holdMs / 1000} s, is seen: no rescue, the evidence kept`, async ($, on) => {
+      const w = world(on, { entries: { [KEY]: T0 - DAY } })
+      await start($, w)
+      await turn($, w, 't1', big)
+      await w.clock.advance(atMin * MIN)
+      w.compactHoldMs = holdMs
+      const compaction = $.session.compact({ trigger: 'auto', messages: SUMMARY })
+      await w.clock.advance(holdMs)
+      await compaction
+      await w.clock.settle()
+      await w.clock.advance(10 * MIN)
+      expect(w.forks).toEqual([])
+      expect(w.store.get(KEY)).toBe(T0 + atMin * MIN + holdMs)
+      expect(refreshOf(w).pause?.skip).toBe(3)
+    })
+  }
+
+  test('an idle compaction after the rescue still stops the refreshes and records the evidence again', async ($, on) => {
+    const w = world(on, { entries: { [KEY]: T0 - DAY } })
+    w.fork = forkHit(250_000)
+    await start($, w)
+    await turn($, w, 't1', big)
+    await w.clock.advance(58 * MIN)
+    expect(w.forks.length).toBe(1)
+    await $.session.compact({ trigger: 'auto', messages: SUMMARY })
+    await w.clock.settle()
+    expect(w.store.get(KEY)).toBe(T0 + 58 * MIN)
+    await w.clock.advance(60 * MIN)
+    expect(w.forks.length).toBe(1)
+    await turn($, w, 't2', { usage: prefixUsage(0, 20_000) })
+    expect(recs(w).find(r => r?.kind === 'pause')).toMatchObject({ skip: 6, refreshes: 1, idleCompacted: 1 })
+  })
+
+  test('with refresh off nothing is rescued and the evidence stays', { options: { refresh: false } }, async ($, on) => {
+    const w = world(on, { entries: { [KEY]: T0 - DAY } })
+    await start($, w)
+    await turn($, w, 't1', big)
+    await w.clock.advance(70 * MIN)
+    await turn($, w, 't2', big)
+    expect(w.forks).toEqual([])
+    expect(w.store.get(KEY)).toBe(T0 - DAY)
+  })
+
+  test('a turn running at the rescue time: no rescue; its own request reads the cache, and the next pause is left to idle compaction again', async ($, on) => {
+    const w = world(on, { entries: { [KEY]: T0 - DAY } })
+    await start($, w)
+    await turn($, w, 't1', big)
+    await w.clock.advance(57 * MIN)
+    await $.turn.start({ text: 'go', turnId: 't2' })
+    await w.clock.advance(MIN)
+    expect(w.forks).toEqual([])
+    await step($, w, { turnId: 't2', index: 0 }, { usage: prefixUsage(250_000, 0) })
+    await $.turn.complete({ answer: '', durationMs: 1, isAborted: false, turnId: 't2', reason: 'answer' })
+    await w.clock.settle()
+    expect(recs(w)[0]).toMatchObject({ kind: 'pause', end: 0, skip: 3, refreshes: 0 })
+    expect(w.store.get(KEY)).toBe(T0 - DAY)
+    expect(refreshOf(w).pause?.skip).toBe(3)
+  })
+
+  test('a manual compaction in a skipped pause replaces the prefix: no rescue, the evidence stays', async ($, on) => {
+    const w = world(on, { entries: { [KEY]: T0 - DAY } })
+    w.isManualAllowed = true
+    await start($, w)
+    await turn($, w, 't1', big)
+    await w.clock.advance(30 * MIN)
+    await $.session.compact({ trigger: 'manual', messages: SUMMARY })
+    await w.clock.advance(40 * MIN)
+    expect(w.forks).toEqual([])
+    expect(refreshOf(w).pause?.skip).toBe(6)
+    expect(w.store.get(KEY)).toBe(T0 - DAY)
+  })
+
+  test('a 5 min TTL is never left to idle compaction, so it refreshes as usual and nothing is rescued', async ($, on) => {
+    const w = world(on, { entries: { [KEY]: T0 - DAY }, settings: { promptCacheTtl: '5m' } })
+    await start($, w)
+    await turn($, w, 't1', big)
+    expect(refreshOf(w).pause?.skip).toBe(0)
+    await w.clock.advance(4 * MIN)
+    expect(w.forks.length).toBe(1)
+    expect(w.store.get(KEY)).toBe(T0 - DAY)
+  })
+
+  test('/ember-refresh counts a rescued pause as refreshed, not as left to idle compaction', async ($, on) => {
+    const w = world(on, { entries: { [KEY]: T0 - DAY } })
+    w.fork = forkHit(250_000)
+    await start($, w)
+    await turn($, w, 't1', big)
+    await w.clock.advance(30 * MIN)
+    await turn($, w, 't2', big)
+    await w.clock.advance(70 * MIN)
+    await turn($, w, 't3', { usage: prefixUsage(250_000, 0) })
+    expect(recs(w).filter(r => r?.kind === 'pause').map(r => r?.kind === 'pause' && [r.skip, r.refreshes])).toEqual([
+      [3, 0],
+      [0, 1],
+    ])
+    const ui = await mountPane($, 'terminal', 'ember-refresh')
+    expect((await ui.find({ type: 'Markdown' }))?.text).toContain('Idle compaction: 1 pauses skipped (1 returned, 0 exits).')
+    await ui.unmount()
+  })
+
+  test('the evidence is store-wide: each turn reads what another session wrote or cleared', async ($, on) => {
+    const w = world(on)
+    await start($, w)
+    await turn($, w, 't1', big)
+    expect(refreshOf(w).pause?.skip).toBe(0)
+    w.store.set(KEY, T0)
+    await turn($, w, 't2', big)
+    expect(refreshOf(w).pause?.skip).toBe(3)
+    w.store.delete(KEY)
+    await turn($, w, 't3', big)
+    expect(refreshOf(w).pause?.skip).toBe(0)
+  })
+
+  test('/ember-refresh says, from session start, whether idle compaction was seen', async ($, on) => {
+    const w = world(on, { entries: { [KEY]: Date.UTC(2026, 9, 21, 12) } })
+    await start($, w)
+    const ui = await mountPane($, 'terminal', 'ember-refresh')
+    expect((await ui.find({ type: 'Markdown' }))?.text).toContain('Idle compaction: seen 2026-10-21, ember skips the pauses it applies to.')
+    await ui.unmount()
   })
 })

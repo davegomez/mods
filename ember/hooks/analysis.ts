@@ -1,4 +1,4 @@
-import { decodeRec, ENDS, IDLE_COMPACTION_TTL_MINUTES, leadMs, maxRefreshes, OUTCOMES, READ_WEIGHT, refreshesAt, SHORT_TTL_MINUTES, SKIPS, writeWeight } from './refresh.ts'
+import { decodeRec, ENDS, IDLE_COMPACTION_TTL_MINUTES, IDLE_COMPACTION_TTL_SHARE, leadMs, maxRefreshes, OUTCOMES, READ_WEIGHT, refreshesAt, SHORT_TTL_MINUTES, SKIPS, writeWeight } from './refresh.ts'
 import type { PauseRec, RefreshConfig, RefreshRec, RefreshState } from './refresh.ts'
 import { band, BANDS, duration, percent, tokens } from './stats.ts'
 
@@ -12,7 +12,7 @@ const KM_POINTS_MS = [5, 30, 55, 60, 120, 480].map(m => m * MIN)
 export type Policy = number | 'off'
 
 /** One pause as the replay sees it: the cache age when it ended, and whether the person came back then. */
-export type Trace = { ageMs: number; isReturn: boolean; ttlMinutes: number; prefix: number }
+export type Trace = { ageMs: number; isReturn: boolean; ttlMinutes: number; prefix: number; isIdleCompacted?: boolean }
 
 /**
  * A pause's cache cost under a policy, in prefix units: 0.1 per refresh, then 0.1 for a warm return or the
@@ -103,7 +103,7 @@ function decode(sessions: readonly SessionLog[]): Decoded {
     }
     // An open pause of another session never closed (the process ended): an exit at its last write.
     const p = s.state.pause
-    if (!s.isCurrent && p !== undefined) out.open.push({ ageMs: Math.max(0, s.updatedAt - p.anchorMs), isReturn: false, ttlMinutes: p.ttlMinutes, prefix: p.prefix, skip: p.skip })
+    if (!s.isCurrent && p !== undefined) out.open.push({ ageMs: Math.max(0, s.updatedAt - p.anchorMs), isReturn: false, ttlMinutes: p.ttlMinutes, prefix: p.prefix, skip: p.skip, isIdleCompacted: p.idleCompactMs !== undefined })
   }
   return out
 }
@@ -112,7 +112,7 @@ const EXIT = ENDS.indexOf('exit')
 const IDLE = SKIPS.indexOf('idle compaction')
 
 export const tracesOf = (pauses: readonly PauseRec[], open: readonly Trace[]): Trace[] => [
-  ...pauses.map(p => ({ ageMs: p.ageMs, isReturn: p.end !== EXIT, ttlMinutes: p.ttlMinutes, prefix: p.prefix })),
+  ...pauses.map(p => ({ ageMs: p.ageMs, isReturn: p.end !== EXIT, ttlMinutes: p.ttlMinutes, prefix: p.prefix, isIdleCompacted: p.idleCompacted === 1 })),
   ...open,
 ]
 
@@ -129,11 +129,9 @@ export function headLine(config: RefreshConfig, ttl: { minutes: number; source: 
   return `Refresh ${config.isOn ? 'on' : 'off'} · ${tail}`
 }
 
-/** Idle compaction runs at this share of the TTL: Claude Code docs, "about 54 minutes have passed since the last request" on the 1 h cache. */
-export const IDLE_COMPACTION_TTL_SHARE = 0.9
-
 /**
- * The pauses ember left to idle compaction. With `"idleCompaction": false` (the full conversation kept): X, refresh
+ * The pauses ember left to idle compaction; X, Y and Z cover only the long ones where it was recorded running, and
+ * a long one with none recorded is named instead (ember now refreshes those). With `"idleCompaction": false` (the full conversation kept): X, refresh
  * at the configured lead, and Y, no refresh (one cold rewrite at return). Idle compaction on the same pauses costs
  * at least Z, one cache read of the conversation per pause that reaches its time; its summary's output and the
  * write at return report no usage ember can see, so X - Z bounds the extra cost of the full conversation from above.
@@ -142,12 +140,15 @@ export const IDLE_COMPACTION_TTL_SHARE = 0.9
 export function idleCompactionLines(traces: readonly Trace[], config: RefreshConfig): string[] {
   if (traces.length === 0) return []
   const returns = traces.filter(t => t.isReturn).length
-  const head = `Idle compaction: ${traces.length} pauses skipped (${returns} returned, ${traces.length - returns} exits).`
-  if (returns < MIN_RETURNS) return [head, `Not enough data for an idle compaction recommendation: ${returns} returned pauses, ${MIN_RETURNS} needed. Keep idle compaction on.`]
-  const compacted = traces.filter(t => t.ageMs >= IDLE_COMPACTION_TTL_SHARE * t.ttlMinutes * MIN)
   const runsAt = duration(IDLE_COMPACTION_TTL_SHARE * IDLE_COMPACTION_TTL_MINUTES * MIN)
+  const long = traces.filter(t => t.ageMs >= IDLE_COMPACTION_TTL_SHARE * t.ttlMinutes * MIN)
+  const compacted = long.filter(t => t.isIdleCompacted === true)
+  const missed = long.length - compacted.length
+  const head = `Idle compaction: ${traces.length} pauses skipped (${returns} returned, ${traces.length - returns} exits).${missed > 0 ? ` ${missed} lasted past ${runsAt} with no idle compaction recorded; ember now refreshes such pauses until it sees idle compaction run.` : ''}`
+  if (returns < MIN_RETURNS) return [head, `Not enough data for an idle compaction recommendation: ${returns} returned pauses, ${MIN_RETURNS} needed. Keep idle compaction on.`]
+  if (missed > 0 && compacted.length === 0) return [head]
   if (compacted.length === 0) return [`${head} None lasted past ${runsAt}, so idle compaction did not run on these pauses and the setting made no difference. Keep idle compaction on.`]
-  const scope = `${head} ${compacted.length} of ${traces.length} pauses lasted past ${runsAt}; shorter pauses cost the same either way.`
+  const scope = `${head} ${compacted.length} of ${traces.length} pauses lasted past ${runsAt} with idle compaction recorded; shorter pauses cost the same either way.`
   const z = compacted.reduce((sum, t) => sum + READ_WEIGHT * t.prefix, 0)
   const y = replay(compacted, () => 'off')
   const zLine = `Idle compaction on the same pauses: at least ${tokens(Math.round(z))} tokens, one cache read of the conversation for each of the ${compacted.length} pauses past ${runsAt}. Not measured: the summary's output and its write at return.`
@@ -176,7 +177,15 @@ export function idleCompactionLines(traces: readonly Trace[], config: RefreshCon
   ]
 }
 
-export type AnalysisView = { config: RefreshConfig; ttl: { minutes: number; source: string }; sessions: readonly SessionLog[] }
+export type AnalysisView = { config: RefreshConfig; ttl: { minutes: number; source: string }; sessions: readonly SessionLog[]; idleSeenMs?: number }
+
+/** At the 1 h TTL with refresh on: whether ember has seen idle compaction run, which decides if it skips long conversations. */
+function idleSeenLine(v: AnalysisView): string | undefined {
+  if (!v.config.isOn || v.ttl.minutes !== IDLE_COMPACTION_TTL_MINUTES) return undefined
+  return v.idleSeenMs === undefined
+    ? 'Idle compaction: not seen, ember refreshes long conversations too.'
+    : `Idle compaction: seen ${new Date(v.idleSeenMs).toISOString().slice(0, 10)}, ember skips the pauses it applies to.`
+}
 
 /** The `/ember-refresh` report as Markdown: hit rate, misses by age, savings, survival, candidates, recommendation, idle compaction. */
 export function analyze(v: AnalysisView): string {
@@ -192,8 +201,10 @@ export function analyze(v: AnalysisView): string {
   const returns = traces.filter(t => t.isReturn).length
   const ttl = v.ttl.minutes
   const currentLead = leadMs(ttl, v.config.leadSeconds)
+  const seen = idleSeenLine(v)
   const head = [
     headLine(v.config, v.ttl),
+    ...(seen === undefined ? [] : [seen]),
     `Sample: ${traces.length} pauses (${returns} returned, ${traces.length - returns} exits) · ${refreshes.length} refreshes · ${v.sessions.length} sessions`,
   ]
 
