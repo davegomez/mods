@@ -24,7 +24,8 @@ export type Sums = { input: number; read: number; created: number }
 export type Agg = {
   updatedAt: number
   buckets: Record<Bucket, Totals>
-  bands: Record<Band, number>
+  /** Per `user` gap band, like `buckets`. Before 0.3.0 a band held its count alone. */
+  bands: Record<Band, Totals>
   /** Largest cache age at a `user` request that read >= half the previous prefix. */
   warmMaxMs?: number
   /** Smallest cache age at a `user` request that read < half the previous prefix. */
@@ -70,11 +71,14 @@ export type Step = {
 
 export const emptyMain: Main = { lastToolNames: [], isCompactPending: false }
 
+const zeros = <K extends string>(keys: readonly K[]) => Object.fromEntries(keys.map(k => [k, { n: 0, read: 0, total: 0 }])) as Record<K, Totals>
+const addTotals = (x: Totals, y: Totals): Totals => ({ n: x.n + y.n, read: x.read + y.read, total: x.total + y.total })
+
 export function emptyAgg(updatedAt: number): Agg {
   return {
     updatedAt,
-    buckets: Object.fromEntries(BUCKETS.map(b => [b, { n: 0, read: 0, total: 0 }])) as Record<Bucket, Totals>,
-    bands: Object.fromEntries(BANDS.map(b => [b, 0])) as Record<Band, number>,
+    buckets: zeros(BUCKETS),
+    bands: zeros(BANDS),
     compactions: 0,
     modelSwitches: 0,
     sums: { input: 0, read: 0, created: 0 },
@@ -123,12 +127,7 @@ export function classify(main: Main, index: number, isModelSwitch: boolean): Buc
 }
 
 function addSample(agg: Agg, bucket: Bucket, t: { read: number; total: number }, now: number): Agg {
-  const b = agg.buckets[bucket]
-  return {
-    ...agg,
-    updatedAt: now,
-    buckets: { ...agg.buckets, [bucket]: { n: b.n + 1, read: b.read + t.read, total: b.total + t.total } },
-  }
+  return { ...agg, updatedAt: now, buckets: { ...agg.buckets, [bucket]: addTotals(agg.buckets[bucket], { n: 1, ...t }) } }
 }
 
 function addSums(agg: Agg, u: TurnUsage): Agg {
@@ -136,9 +135,9 @@ function addSums(agg: Agg, u: TurnUsage): Agg {
   return { ...agg, sums: { input: s.input + u.input_tokens, read: s.read + u.cache_read_input_tokens, created: s.created + u.cache_creation_input_tokens } }
 }
 
-function addBand(agg: Agg, gapMs: number): Agg {
+function addBand(agg: Agg, gapMs: number, t: { read: number; total: number }): Agg {
   const name = band(gapMs)
-  return { ...agg, bands: { ...agg.bands, [name]: agg.bands[name] + 1 } }
+  return { ...agg, bands: { ...agg.bands, [name]: addTotals(agg.bands[name], { n: 1, ...t }) } }
 }
 
 function addTtlEvidence(agg: Agg, ageMs: number, isWarm: boolean): Agg {
@@ -170,7 +169,7 @@ export function observe(agg: Agg, main: Main, step: Step): { agg: Agg; main: Mai
   const bucket = classify(main, step.index, isModelSwitch)
   let out = addSums(addSample(agg, bucket, t, step.endedMs), step.usage)
   if (isModelSwitch) out = { ...out, modelSwitches: out.modelSwitches + 1 }
-  if (bucket === 'user' && main.lastEndMs !== undefined) out = addBand(out, step.startedMs - main.lastEndMs)
+  if (bucket === 'user' && main.lastEndMs !== undefined) out = addBand(out, step.startedMs - main.lastEndMs, t)
   const prevPrefix = main.lastPrefix ?? 0
   if (bucket === 'user' && main.lastStartMs !== undefined && prevPrefix > 0) {
     out = addTtlEvidence(out, step.startedMs - main.lastStartMs, t.read >= WARM_PREFIX_SHARE * prevPrefix)
@@ -227,6 +226,8 @@ export function withSavedPct(agg: Agg): Agg {
 
 const isRecord = (v: unknown): v is Record<string, unknown> => typeof v === 'object' && v !== null && !Array.isArray(v)
 const count = (v: unknown): number => (typeof v === 'number' && Number.isFinite(v) && v >= 0 ? v : 0)
+/** A band stored before 0.3.0 is a bare count: its requests, with no tokens and so no hit ratio. */
+const totalsOf = (v: unknown): Totals => (isRecord(v) ? { n: count(v.n), read: count(v.read), total: count(v.total) } : { n: count(v), read: 0, total: 0 })
 const optMs = (v: unknown): number | undefined => (typeof v === 'number' && Number.isFinite(v) && v >= 0 ? v : undefined)
 
 function parseLive(v: unknown): CacheLive | undefined {
@@ -257,11 +258,8 @@ export function parseAgg(value: unknown): Agg | undefined {
   const bands = isRecord(value.bands) ? value.bands : {}
   const sums = isRecord(value.sums) ? value.sums : {}
   const agg = emptyAgg(value.updatedAt)
-  for (const b of BUCKETS) {
-    const t = isRecord(buckets[b]) ? buckets[b] : {}
-    agg.buckets[b] = { n: count(t.n), read: count(t.read), total: count(t.total) }
-  }
-  for (const b of BANDS) agg.bands[b] = count(bands[b])
+  for (const b of BUCKETS) agg.buckets[b] = totalsOf(buckets[b])
+  for (const b of BANDS) agg.bands[b] = totalsOf(bands[b])
   const warmMaxMs = optMs(value.warmMaxMs)
   const coldMinMs = optMs(value.coldMinMs)
   const live = parseLive(value.live)
@@ -284,12 +282,8 @@ const maxOf = (a?: number, b?: number) => (a === undefined ? b : b === undefined
 export function mergeAggs(aggs: readonly Agg[]): Agg {
   return aggs.reduce<Agg>((sum, a) => {
     const out = emptyAgg(Math.max(sum.updatedAt, a.updatedAt))
-    for (const b of BUCKETS) {
-      const x = sum.buckets[b]
-      const y = a.buckets[b]
-      out.buckets[b] = { n: x.n + y.n, read: x.read + y.read, total: x.total + y.total }
-    }
-    for (const b of BANDS) out.bands[b] = sum.bands[b] + a.bands[b]
+    for (const b of BUCKETS) out.buckets[b] = addTotals(sum.buckets[b], a.buckets[b])
+    for (const b of BANDS) out.bands[b] = addTotals(sum.bands[b], a.bands[b])
     const warmMaxMs = maxOf(sum.warmMaxMs, a.warmMaxMs)
     const coldMinMs = minOf(sum.coldMinMs, a.coldMinMs)
     return {
@@ -377,16 +371,17 @@ export function warning(v: StatusView, warnedStartMs?: number): string | undefin
 
 const orDash = (ms?: number) => (ms === undefined ? '–' : duration(ms))
 
-/** The pane's report for one scope as Markdown: the buckets with requests, then bands, bounds and counts. */
+/** A Markdown table of the rows with requests and their token-weighted hit ratio; `empty` when there are none. */
+function hitTable<K extends string>(head: string, keys: readonly K[], totals: Record<K, Totals>, empty: string): string {
+  const rows = keys.filter(k => totals[k].n > 0).map(k => `| ${k} | ${totals[k].n} | ${percent(totals[k].read, totals[k].total)} |`)
+  return rows.length > 0 ? [`| ${head} | Requests | Hit |`, '| --- | ---: | ---: |', ...rows].join('\n') : empty
+}
+
+/** The pane's report for one scope as Markdown: the buckets with requests, the user gap bands, bounds and counts. */
 export function report(agg: Agg): string {
-  const rows = BUCKETS.filter(b => agg.buckets[b].n > 0).map(b => {
-    const t = agg.buckets[b]
-    return `| ${b} | ${t.n} | ${percent(t.read, t.total)} |`
-  })
-  const table = rows.length > 0 ? ['| Gap type | Requests | Hit |', '| --- | ---: | ---: |', ...rows].join('\n') : 'No requests yet.'
   return [
-    table,
-    `User gaps: ${BANDS.map(b => `${b} ${agg.bands[b]}`).join(' · ')}`,
+    hitTable('Gap type', BUCKETS, agg.buckets, 'No requests yet.'),
+    hitTable('User gap', BANDS, agg.bands, 'No user gaps yet.'),
     `Observed TTL: warm up to ${orDash(agg.warmMaxMs)} · cold from ${orDash(agg.coldMinMs)}`,
     `Compactions ${agg.compactions} · model switches ${agg.modelSwitches}`,
   ].join('\n\n')

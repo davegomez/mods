@@ -160,14 +160,14 @@ describe('observe', () => {
   test('the first main request has no gap', () => {
     const out = observe(emptyAgg(0), emptyMain, step({ index: 0, startedMs: 100, endedMs: 200 }))
     expect(out.agg.buckets.first.n).toBe(1)
-    expect(out.agg.bands['<1m']).toBe(0)
+    expect(out.agg.bands['<1m'].n).toBe(0)
     expect(out.main.lastStartMs).toBe(100)
     expect(out.main.lastEndMs).toBe(200)
     expect(out.main.lastHit).toBe(0.9)
     expect(out.main.lastPrefix).toBe(90)
   })
 
-  test('a user gap counts its band and widens the observed TTL bounds', () => {
+  test('a user gap adds its tokens to its band and widens the observed TTL bounds', () => {
     let agg = emptyAgg(0)
     let main = warmMain({ lastStartMs: 0, lastEndMs: 0, lastPrefix: 1000 })
     // Each request reads `read` and writes `created` tokens to the cache; the next one starts `gapMs` after its end.
@@ -182,8 +182,8 @@ describe('observe', () => {
     userStep(7 * MIN, 499, 501)
     userStep(9 * MIN, 0, 1000)
     expect(agg.buckets.user).toEqual({ n: 4, read: 1999, total: 4040 })
-    expect(agg.bands['1-5m']).toBe(2)
-    expect(agg.bands['5-15m']).toBe(2)
+    expect(agg.bands['1-5m']).toEqual({ n: 2, read: 1500, total: 2020 })
+    expect(agg.bands['5-15m']).toEqual({ n: 2, read: 499, total: 2020 })
     expect(agg.warmMaxMs).toBe(4 * MIN)
     expect(agg.coldMinMs).toBe(7 * MIN)
   })
@@ -207,7 +207,7 @@ describe('observe', () => {
   test('a previous prefix of 0 gives no TTL evidence but still counts the band', () => {
     const main = warmMain({ lastStartMs: 0, lastEndMs: 0, lastPrefix: 0 })
     const out = observe(emptyAgg(0), main, step({ index: 0, startedMs: 2 * MIN }))
-    expect(out.agg.bands['1-5m']).toBe(1)
+    expect(out.agg.bands['1-5m'].n).toBe(1)
     expect(out.agg.warmMaxMs).toBeUndefined()
     expect(out.agg.coldMinMs).toBeUndefined()
   })
@@ -215,14 +215,14 @@ describe('observe', () => {
   test('cache age runs from the previous request start, the gap band from its end', () => {
     const main = warmMain({ lastStartMs: 0, lastEndMs: 8 * MIN, lastPrefix: 100 })
     const out = observe(emptyAgg(0), main, step({ index: 0, startedMs: 8 * MIN + 30_000 }))
-    expect(out.agg.bands['<1m']).toBe(1)
+    expect(out.agg.bands['<1m'].n).toBe(1)
     expect(out.agg.warmMaxMs).toBe(8 * MIN + 30_000)
   })
 
   test('a gap inside a turn counts no band', () => {
     const out = observe(emptyAgg(0), warmMain(), step({ index: 4, startedMs: 2000 }))
     expect(out.agg.buckets.tool.n).toBe(1)
-    expect(Object.values(out.agg.bands).every(n => n === 0)).toBe(true)
+    expect(Object.values(out.agg.bands).every(t => t.n === 0)).toBe(true)
   })
 
   test('a new model counts a switch and clears the compact flag', () => {
@@ -252,11 +252,19 @@ describe('parseAgg', () => {
     const agg = parseAgg({ updatedAt: 7, buckets: { user: { n: 2, read: 'x', total: 10 } }, bands: { '<1m': -3 }, warmMaxMs: 'big', coldMinMs: 60_000, compactions: 1 })
     expect(agg?.buckets.user).toEqual({ n: 2, read: 0, total: 10 })
     expect(agg?.buckets.tool).toEqual({ n: 0, read: 0, total: 0 })
-    expect(agg?.bands['<1m']).toBe(0)
+    expect(agg?.bands['<1m']).toEqual({ n: 0, read: 0, total: 0 })
     expect(agg?.warmMaxMs).toBeUndefined()
     expect(agg?.coldMinMs).toBe(60_000)
     expect(agg?.compactions).toBe(1)
     expect(agg?.modelSwitches).toBe(0)
+  })
+
+  test('reads a band stored before 0.3.0 as a bare count: requests with no hit ratio', () => {
+    const agg = parseAgg({ updatedAt: 1, bands: { '1-5m': 3, '<1m': { n: 2, read: 5, total: 10 }, '>60m': { n: 'x' } } })
+    expect(agg?.bands['1-5m']).toEqual({ n: 3, read: 0, total: 0 })
+    expect(agg?.bands['<1m']).toEqual({ n: 2, read: 5, total: 10 })
+    expect(agg?.bands['>60m']).toEqual({ n: 0, read: 0, total: 0 })
+    expect(report(agg ?? emptyAgg(0))).toContain('| <1m | 2 | 50% |\n| 1-5m | 3 | – |')
   })
 
   test('reads back its own JSON', () => {
@@ -268,13 +276,13 @@ describe('parseAgg', () => {
 test('mergeAggs sums counts and keeps the widest bounds', () => {
   const a: Agg = { ...emptyAgg(1), warmMaxMs: 3 * MIN, coldMinMs: 9 * MIN, compactions: 1 }
   a.buckets.user = { n: 1, read: 5, total: 10 }
-  a.bands['1-5m'] = 1
+  a.bands['1-5m'] = { n: 1, read: 5, total: 10 }
   const b: Agg = { ...emptyAgg(4), warmMaxMs: 4 * MIN, coldMinMs: 8 * MIN, modelSwitches: 2 }
   b.buckets = { ...b.buckets, user: { n: 2, read: 1, total: 4 } }
-  b.bands = { ...b.bands, '1-5m': 2 }
+  b.bands = { ...b.bands, '1-5m': { n: 2, read: 1, total: 4 } }
   const merged = mergeAggs([a, b, emptyAgg(2)])
   expect(merged.buckets.user).toEqual({ n: 3, read: 6, total: 14 })
-  expect(merged.bands['1-5m']).toBe(3)
+  expect(merged.bands['1-5m']).toEqual({ n: 3, read: 6, total: 14 })
   expect(merged.warmMaxMs).toBe(4 * MIN)
   expect(merged.coldMinMs).toBe(8 * MIN)
   expect(merged.compactions).toBe(1)
@@ -404,11 +412,12 @@ describe('warning', () => {
   })
 })
 
-test('report is a Markdown table of the buckets with requests, then bands, bounds and counts', () => {
+test('report is a Markdown table of the buckets with requests, then one of the user gap bands, bounds and counts', () => {
   const agg: Agg = { ...emptyAgg(0), warmMaxMs: 4 * MIN, coldMinMs: 90 * MIN, compactions: 2, modelSwitches: 1 }
   agg.buckets.user = { n: 3, read: 150, total: 200 }
   agg.buckets.tool = { n: 1, read: 0, total: 0 }
-  agg.bands['1-5m'] = 3
+  agg.bands['1-5m'] = { n: 3, read: 150, total: 200 }
+  agg.bands['>60m'] = { n: 1, read: 0, total: 50 }
   expect(report(agg)).toBe(
     [
       '| Gap type | Requests | Hit |',
@@ -416,7 +425,10 @@ test('report is a Markdown table of the buckets with requests, then bands, bound
       '| user | 3 | 75% |',
       '| tool | 1 | – |',
       '',
-      'User gaps: <1m 0 · 1-5m 3 · 5-15m 0 · 15-30m 0 · 30-60m 0 · >60m 0',
+      '| User gap | Requests | Hit |',
+      '| --- | ---: | ---: |',
+      '| 1-5m | 3 | 75% |',
+      '| >60m | 1 | 0% |',
       '',
       'Observed TTL: warm up to 4m00s · cold from 1h30m',
       '',
@@ -429,6 +441,7 @@ test('report says when there are no requests yet and dashes unknown bounds', () 
   const text = report(emptyAgg(0))
   expect(text.split('\n')[0]).toBe('No requests yet.')
   expect(text).not.toContain('| Gap type')
+  expect(text).toContain('No user gaps yet.')
   expect(text).toContain('Observed TTL: warm up to – · cold from –')
 })
 

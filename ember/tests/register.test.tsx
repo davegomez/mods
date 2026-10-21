@@ -160,7 +160,7 @@ const SUMMARY = [{ role: 'user' as const, text: 'summary', toolUses: [] }]
 const runEmber = ($: Engine) =>
   $.command.run({ command: 'ember', args: '', origin: { kind: 'composer' }, presentation: { isFullscreen: false, columns: 80 } })
 
-type Stored = { buckets: Record<string, { n: number }>; bands: Record<string, number>; compactions: number; modelSwitches: number; warmMaxMs?: number; coldMinMs?: number; updatedAt: number; live?: unknown; sums: Sums }
+type Stored = { buckets: Record<string, { n: number }>; bands: Record<string, { n: number }>; compactions: number; modelSwitches: number; warmMaxMs?: number; coldMinMs?: number; updatedAt: number; live?: unknown; sums: Sums }
 
 const PANE = {
   plugin: 'ember',
@@ -212,7 +212,7 @@ test('every gap type lands in its bucket', async ($, on) => {
   const s = stored(w)
   const counts = Object.fromEntries(Object.entries(s.buckets).map(([k, v]) => [k, v.n]))
   expect(counts).toEqual({ first: 1, user: 1, ask: 1, subagent: 1, tool: 1, compact: 1, 'model-switch': 1, agent: 1 })
-  expect(s.bands['1-5m']).toBe(1)
+  expect(s.bands['1-5m']?.n).toBe(1)
   expect(s.warmMaxMs).toBe(3 * MIN)
   expect(s.coldMinMs).toBeUndefined()
   expect(s.compactions).toBe(1)
@@ -310,6 +310,8 @@ for (const surface of ['terminal', 'desktop'] as const) {
     expect(all).toContain('| user | 3 | 39% |')
     expect(all).toContain('Observed TTL: warm up to 2m00s · cold from 1h30m')
     expect(all).toContain('Compactions 3 · model switches 0')
+    // OLD stored its bands as bare counts: requests counted, no hit ratio.
+    expect(all).toContain('| 1-5m | 1 | 98% |\n| >60m | 2 | – |')
 
     await ui.press({ key: 'tab-session' })
     await w.clock.settle()
