@@ -2,7 +2,7 @@
 
 ember is a Claude Code mod that measures how warm your prompt cache stays across idle pauses, and refreshes the cache shortly before it expires. It changes no request, prompt, or tool call, and it never submits a prompt. Its only model calls are the refresh forks, which are on by default.
 
-> **Unverified.** Nobody has yet measured on a live session that a refresh keeps the main cache warm without a new full write. A [live test](#live-test-results) measured the cache report, but no refresh ran. Until the [probe](#how-to-check-that-the-refresh-works) passes, treat the refresh savings as estimates. Each refresh spends plan usage or API credit.
+> **Verified.** A [live session](#live-test-results) showed that the refresh keeps the main cache warm through a long pause without a new full write. Results can differ by account and plan, and each refresh spends plan usage or API credit.
 
 Tested with Claude Code v2.1.306.
 
@@ -102,8 +102,11 @@ If your shell runs with `set -f`, use `find` instead of the glob. If you use the
    - If your TTL is 5 minutes or less and it says to set `refreshShortTtl` to `false`, set it in the same `options` object. If it says to set it to `true`, set it to `true` or remove it. If it says to keep `refreshShortTtl` on, change nothing.
    - If it says `Not enough data`, wait for more pauses.
 4. If the refresh paused itself after 2 misses, read the `Refresh age` table. Misses at ages below your TTL mean that the real TTL is shorter. [Set the TTL for your plan](#how-to-set-the-ttl-for-your-plan).
+5. If the pane ends with an `Idle compaction` section, read it before you change the `idleCompaction` setting. It estimates the cost of `"idleCompaction": false` from your own pauses. See [Keep the cache of a long conversation](#how-to-keep-the-cache-of-a-long-conversation).
 
 ### How to check that the refresh works
+
+A live session verified the refresh on 1 account. This guide checks it on yours.
 
 > This guide spends plan usage or API credit: each probe is 1 fork.
 
@@ -121,8 +124,9 @@ If steps 3 to 5 pass, the refresh works on your account.
 
 On the 60-minute TTL, Claude Code can compact an idle conversation about 54 minutes after the last request. ember does not refresh a pause where this can happen. To let ember keep the full cache instead:
 
-1. Set `"idleCompaction": false` in `~/.claude/settings.json`.
-2. Start a new session.
+1. Run `/ember-refresh` and read its idle compaction section. It estimates what `"idleCompaction": false` costs on your own pauses, and it recommends whether to change the setting.
+2. Set `"idleCompaction": false` in `~/.claude/settings.json`.
+3. Start a new session.
 
 ## Reference
 
@@ -143,7 +147,9 @@ From top to bottom:
 1. `TTL <minutes>m (<source>)`, dim.
 2. The tabs `1: This session` and `2: All sessions`, only when other sessions are stored. Keys `1` and `2` switch them.
 3. A table `| Gap type | Requests | Hit |` with each gap type that has requests, or `No requests yet.`
-4. The `user` gap bands, the observed TTL bounds, and the counts of compactions and model switches.
+4. A table `| User gap | Requests | Hit |` with each `user` gap band that has requests, or `No user gaps yet.`
+5. `Observed TTL: warm up to <duration> · cold from <duration>`, with `–` for a bound not yet seen.
+6. `Compactions <n> · model switches <n>`.
 
 Gap types:
 
@@ -158,7 +164,7 @@ Gap types:
 | `model-switch` | first after a change of model |
 | `agent` | from a subagent |
 
-The hit ratio is `cache read / (input + cache read + cache creation)`, weighted by tokens. The `user` gap bands are `<1m`, `1-5m`, `5-15m`, `15-30m`, `30-60m`, and `>60m`, measured from the end of the previous response. A `user` request is warm when its cache read is at least half of the previous main prefix, and cold when it is less. The observed TTL bounds are the longest warm gap and the shortest cold gap, measured from the start of the previous request.
+The hit ratio is `cache read / (input + cache read + cache creation)`, weighted by tokens, in both tables. The `user` gap bands are `<1m`, `1-5m`, `5-15m`, `15-30m`, `30-60m`, and `>60m`, measured from the end of the previous response. Bands recorded before version 0.3.0 hold no token totals, so their hit shows `–`. A `user` request is warm when its cache read is at least half of the previous main prefix, and cold when it is less. The observed TTL bounds are the longest warm gap and the shortest cold gap, measured from the start of the previous request.
 
 ### The `/ember-refresh` pane
 
@@ -170,6 +176,22 @@ Sample: 30 pauses (28 returned, 2 exits) · 5 refreshes · 4 sessions
 Refreshes: 5 hit · 0 miss · 0 refused · hit rate 100%
 Net saved: ~620k tokens (4 cold rewrites avoided).
 Recommendation: keep refresh on, keep the current lead (lead 5m00s (auto)): about 10k tokens saved per pause.
+```
+
+The pane ends with an idle compaction section when ember skipped any pause because idle compaction could run. This happens on the 60-minute TTL only. The section first counts the skipped pauses, returned and exits. With fewer than 20 returned pauses, it shows only the counts and says to keep idle compaction on. Otherwise it counts only the pauses that lasted at least 54 minutes, because shorter pauses cost the same either way. For those pauses it shows:
+
+- The cost of keeping the full conversation with `"idleCompaction": false`, with refresh at your lead and with no refresh.
+- A lower bound for idle compaction's own cost: 1 cache read of the conversation per pause. The summary's output and its write are not measured.
+- The extra cost of keeping the full conversation, as an upper bound, in total and per pause.
+- A recommendation.
+
+When the refresh is off, the section recommends to keep idle compaction on. It never claims a saving against idle compaction, and it does not price what a summary loses. ember never changes the setting. Example on a sample log:
+
+```text
+Idle compaction: 21 pauses skipped (20 returned, 1 exits). 6 of 21 pauses lasted past 54m00s; shorter pauses cost the same either way. With "idleCompaction": false, which keeps the full conversation: refresh at lead 5m00s (auto) 500k · no refresh 2.5M tokens.
+Idle compaction on the same pauses: at least 150k tokens, one cache read of the conversation for each of the 6 pauses past 54m00s. Not measured: the summary's output and its write at return.
+Keeping the full conversation costs at most 350k tokens more (58k per pause). Not priced: what a summary loses (the detail of the conversation).
+Recommendation: keep idle compaction on unless the full conversation is worth about 58k tokens per pause to you. If you set "idleCompaction": false, keep refresh on: it costs 2.0M tokens less than no refresh.
 ```
 
 ### Options
@@ -225,7 +247,7 @@ Idle compaction can run when the TTL is 60 minutes, `idleCompaction` and `autoCo
 
 ### Live test results
 
-One test on 2026-10-20, Claude Code v2.1.305, 1 Claude subscription account, TTL 60m (`ttlMinutes` option). 4 sessions, 12 main requests.
+The first test ran on 2026-10-20, Claude Code v2.1.305, 1 Claude subscription account, TTL 60m (`ttlMinutes` option). 4 sessions, 12 main requests.
 
 | Gap type | Requests | Hit |
 | :- | :- | :- |
@@ -236,13 +258,30 @@ One test on 2026-10-20, Claude Code v2.1.305, 1 Claude subscription account, TTL
 
 The 2 `user` pauses fell in the `5-15m` and `15-30m` bands, and both stayed warm. The longest warm pause was 29m03s, measured from the start of the previous request. That is longer than a 5-minute TTL, so the 60-minute TTL applied on this account. No cold `user` pause was recorded, so the test gives no upper bound for the TTL.
 
-No timed refresh and no `/ember-probe` ran. The 2 pauses that the refresh log recorded ended with a session exit, so no refresh was due. This test does not verify the refresh.
+This first test ran no refresh. The 2 pauses that the refresh log recorded ended with a session exit, so no refresh was due. The second test covers the refresh.
 
-The sample is small: 1 evening on 1 account. Run `/ember` and `/ember-refresh` to see your own numbers.
+The second test ran on Claude Code v2.1.306, with the installed copy, on the same account and a 60-minute TTL. It recorded 1 pause, from 2026-10-20 22:25 to 2026-10-21 05:16, 6 h 51 min. The cached conversation was 133,373 tokens.
+
+| Measure | Result |
+| :- | :- |
+| Timed refreshes | 7, 55 minutes apart |
+| Cache read per refresh | 133,373 tokens (100%) |
+| Cache write per refresh | 443 tokens |
+| Uncached input per refresh | 16 tokens |
+| Misses | 0 |
+| Next message after the pause | Warm |
+| Fork steps seen | 0 |
+| Net saving | About 152k tokens |
+
+The 7 refreshes cost about 102k tokens, and the warm read at return about 13k, against a cold rewrite of 2 × 133,373 tokens. The saving is in input-token units at API prices. A fork step count of 0 means that fork requests do not reach the `turn.step` event. No `/ember-probe` ran in this test.
+
+The sample is small: 2 tests on 1 account. Run `/ember` and `/ember-refresh` to see your own numbers.
 
 ### Stored data
 
 ember stores numbers only, in the file `~/.claude/plugins/store/ember_davegomez-<hash>.json`. Each session has one key, `session:<session id>`. It holds the gap-type totals, the gap bands, the TTL bounds, the event counts, `live`, and `refresh`. Keys older than 30 days are deleted, and at most 500 session keys are kept.
+
+Each gap band holds `{ n, read, total }`, like the gap-type totals: the request count, the cache read tokens, and the sum of input, cache read, and cache creation tokens. Before version 0.3.0 a band held a bare count, which ember still reads.
 
 `live`:
 
@@ -261,7 +300,7 @@ ember stores numbers only, in the file `~/.claude/plugins/store/ember_davegomez-
 - Pause: `[0, startMs, lenMs, ageMs, ttlMinutes, source, leadMs, prefix, refreshes, end, skip, cost, saved]`
 - Refresh: `[1, startMs, ageMs, ttlMinutes, source, leadMs, prefix, read, creation, input, output, outcome, steps, agentSteps, isProbe]`
 
-`end` is 0 warm, 1 cold, 2 exit, or 3 unknown. `outcome` is 0 hit, 1 miss, or 2 refused. `source` and `skip` are indexes into the lists in `hooks/refresh.ts`.
+`end` is 0 warm, 1 cold, 2 exit, or 3 unknown. `outcome` is 0 hit, 1 miss, or 2 refused. `source` and `skip` are indexes into the lists in `hooks/refresh.ts`. A pause that ember left to idle compaction keeps the skip reason `idle compaction`, even when a compaction runs in it.
 
 ## Explanation
 
@@ -269,21 +308,39 @@ ember stores numbers only, in the file `~/.claude/plugins/store/ember_davegomez-
 
 On each turn, Claude Code sends the whole conversation to the model again. The API keeps the processed start of that conversation, the prefix, for a time to live (TTL) after the start of the last request that read it. During the tool loop, requests come seconds apart, so almost every request reads the prefix from the cache. When you read a diff or go to lunch, the pause can be longer than the TTL. The next request then writes the whole prefix again, which is slower and costs more. ember exists to show this cost and to reduce it.
 
+Public data shows the same pattern. In the FreeInference trace (paper, Harvard, 12,002 sessions), the mean cache hit ratio is 97% after tool gaps and 84% after user idle. The hit ratio falls to about 58% for gaps of 15 to 30 minutes and to 18% for gaps over 1 hour. The trace comes mostly from open-source harnesses and other providers, not only from Claude Code.
+
 ### Why a refresh can save money, and when it cannot
 
 A cache read costs 0.1 times the input price. A cache write costs 2 times on the 60-minute TTL and 1.25 times on the 5-minute TTL. One read that restarts the TTL is therefore much cheaper than one cold rewrite, but only if you come back. If you never come back, every refresh is waste.
 
 ember does not know when you will return, so it uses the ski-rental rule from online algorithms: it rents (refreshes) until the rent paid equals the price of buying (one cold rewrite), and then it stops. No policy that cannot see the future can do better than 2 times the cost of a policy that knows your return time, and this rule meets that bound. A replay of synthetic traces met the 2 times bound on every trace with a return. It did not meet a stretch goal of 1.25 times on 5 of 15 traces. With the 5-minute TTL, the refresh cost less than having it off on most traces, such as coffee breaks, returns just after expiry, and mixed pauses. It cost more on some traces, such as short returns and overnight returns. With a 5-minute TTL, each refresh buys only a few minutes, and the cap allows only 12. A cold rewrite costs only 1.25 times the input price, so the refreshes have little to save. For this reason the `refreshShortTtl` option exists, and `/ember-refresh` checks whether the refresh saves on your pauses. Set `refreshShortTtl` to `false` when `/ember-refresh` recommends it.
 
-### Why the refresh is unverified
+A public study points the same way. "Keepalive economics" (paper, one author, 5 pages, arXiv 2607.19214) found that replaying the prefix on a timer during a pause cuts post-pause request cost by up to 12.5 times across Anthropic, OpenAI, Google and DeepSeek. The cheapest interval is the largest one safely under the provider's TTL, about 4 minutes for a 5-minute TTL. ember's automatic lead follows the same rule: it refreshes 55 minutes into a 60-minute TTL and 4 minutes into a 5-minute TTL. The paper replays API prompts, not Claude Code forks. For ember's own evidence, see the [live test results](#live-test-results).
 
-A fork sends the main conversation's last request again with a short prompt after it. The type declarations say that a fork reuses the main thread's last cache breakpoint and adds none of its own. That should make it a read of the prefix that restarts the TTL. Nobody has yet measured this on a live session, and the declarations do not say whether fork requests reach the `turn.step` event. The probe answers both questions. The [live test](#live-test-results) measured the cache report, but no refresh or probe ran.
+### How the refresh was verified
+
+A fork sends the main conversation's last request again with a short prompt after it. The type declarations say that a fork reuses the main thread's last cache breakpoint and adds none of its own. That should make it a read of the prefix that restarts the TTL.
+
+A [live session](#live-test-results) confirmed it. Over a pause of 6 h 51 min on a 60-minute TTL, 7 timed refreshes each read the whole 133,373-token conversation from the cache and wrote only 443 tokens, and the next message was warm. The fork step count was 0, so fork requests do not reach the `turn.step` event.
 
 The savings are API-price estimates in input-token units. The docs say that cached history is read again "at the cached token rate" and still draws plan usage, but Anthropic does not publish how fork reads count toward subscription limits.
 
 ### Why ember stays away from idle compaction
 
 On the 60-minute TTL, Claude Code can compact an idle conversation about 54 minutes after the last request. That is before ember's 55-minute refresh, and the docs do not say whether a fork restarts the compaction timer. A refresh that races a compaction pays for a read and then loses the prefix anyway. So ember skips those pauses and leaves the choice to you through the `idleCompaction` setting.
+
+If you consider `"idleCompaction": false`, compare what each choice costs on a 60-minute TTL. Costs are in input-price units: a cache read is 0.1 and a 1-hour cache write is 2.
+
+| Setting | While you are away | Your next message |
+|---|---|---|
+| Idle compaction on (the default) | 1 summary request at about 54 minutes | Sends a summary. Claude loses detail of the conversation. |
+| Off, refresh on | About 0.1 times the conversation size per hour, up to the cap of 20 refreshes, about the cost of 1 cold rewrite | Warm. Keeps the full conversation. |
+| Off, refresh off or failed | Nothing | 1 cold rewrite, 2 times the conversation size. Keeps the full conversation. |
+
+For these costs on your own pauses, read the idle compaction section of the [`/ember-refresh` pane](#the-ember-refresh-pane).
+
+Public evidence on this choice is thin. A replay of the FreeInference trace (sim) found that human-driven sessions need about a day of retention. At a 1-hour TTL they prefill 21% more tokens than with no expiry, and 7% more at 6 hours. The Copilot study (paper, vendor-authored) says that compaction and model switches "drastically" invalidate the cache. The article below lists the serving cost of compaction strategies, tied to task outcome, as not yet measured. Turning compaction off pays when you come back within some hours and costs the most on a session you abandon, so ember leaves the choice to you. To change it, see [How to keep the cache of a long conversation](#how-to-keep-the-cache-of-a-long-conversation).
 
 ### Why the reports open in panes
 
@@ -292,3 +349,9 @@ Text that a command returns goes into the conversation that the model reads. Tha
 ### Why ember stores only numbers
 
 Every session on the machine shares the store file, and other tools, such as a status line, read it. Counts, token totals, and timestamps are enough to measure the cache. Prompt text, file paths, model output, and tool inputs stay out of the store.
+
+### Further reading
+
+- [Your coding agent loses its cache while it waits for you](https://siddhantkhare.com/writing/agentic-inference-field-guide), Siddhant Khare, 18 October 2026: a map of public measurements of agent cache hits, with an evidence label on each number.
+- [The FreeInference paper](https://data.agentic-system.org/pdf/paper/from-requests-to-sessions.pdf), Harvard, 6 October 2026: cache hit ratio by pause length and TTL replays on 12,002 sessions.
+- [Keepalive economics](https://arxiv.org/abs/2607.19214): the cost of replaying the prefix on a timer during a pause, across 4 providers.
