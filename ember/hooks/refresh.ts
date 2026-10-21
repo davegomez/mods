@@ -35,19 +35,19 @@ export const skipCode = (s: Skip) => SKIPS.indexOf(s)
 export const endCode = (e: End) => ENDS.indexOf(e)
 export const sourceCode = (source: string) => Math.max(0, SOURCES.indexOf(source as (typeof SOURCES)[number]))
 
-/** At or under this TTL a refresh can cost more than it saves, so it runs only when `refreshShortTtl` asks. */
+/** At or under this TTL each refresh buys only a few minutes, so `refreshShortTtl: false` can turn refresh off here. */
 export const SHORT_TTL_MINUTES = 5
 
 export type RefreshConfig = { isOn: boolean; leadSeconds: number; isShortTtlOn: boolean }
 
-/** The options as validated: refresh is on unless `false`; short-TTL refresh only for `true`; a lead outside 10 to 3600 s is 0, the automatic lead. */
+/** The options as validated: refresh is on unless `false`; short-TTL refresh on unless `false`; a lead outside 10 to 3600 s is 0, the automatic lead. */
 export function refreshConfig(options: { refresh?: unknown; refreshLeadSeconds?: unknown; refreshShortTtl?: unknown }): RefreshConfig {
   const lead = options.refreshLeadSeconds
   const isValid = typeof lead === 'number' && Number.isFinite(lead) && lead >= MIN_LEAD_SECONDS && lead <= MAX_LEAD_SECONDS
-  return { isOn: options.refresh !== false, leadSeconds: isValid ? lead : 0, isShortTtlOn: options.refreshShortTtl === true }
+  return { isOn: options.refresh !== false, leadSeconds: isValid ? lead : 0, isShortTtlOn: options.refreshShortTtl !== false }
 }
 
-/** Whether refresh runs at this TTL: on, and the TTL is above 5 min or short-TTL refresh is asked for. */
+/** Whether refresh runs at this TTL: on, and the TTL is above 5 min or short-TTL refresh is not turned off. */
 export const refreshesAt = (config: RefreshConfig, ttlMinutes: number) => config.isOn && (ttlMinutes > SHORT_TTL_MINUTES || config.isShortTtlOn)
 
 /** The API's write price for the TTL: 1.25 for the 5-minute cache, 2 for the 1-hour one. */

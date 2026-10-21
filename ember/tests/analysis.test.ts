@@ -1,6 +1,6 @@
 import { describe, expect, test } from 'claude-code/testing'
 
-import { analyze, defaultPolicy, expectedCost, kaplanMeier, MIN_RETURNS, optimum, optimumCost, pauseCost, replay, survivalAt } from '../hooks/analysis.ts'
+import { analyze, defaultPolicy, headLine, expectedCost, kaplanMeier, MIN_RETURNS, optimum, optimumCost, pauseCost, replay, survivalAt } from '../hooks/analysis.ts'
 import type { SessionLog, Trace } from '../hooks/analysis.ts'
 import { decodeRec, emptyRefresh, encodeRec, leadMs, maxRefreshes, READ_WEIGHT, writeWeight } from '../hooks/refresh.ts'
 import type { PauseRec, RefreshRec } from '../hooks/refresh.ts'
@@ -9,7 +9,7 @@ import { EXIT_TRACES, TRACES } from './traces.ts'
 const MIN = 60_000
 const T0 = 1_800_000_000_000
 const auto = (t: Trace) => leadMs(t.ttlMinutes, 0)
-const byDefault = (t: Trace) => defaultPolicy(t.ttlMinutes, false)
+const byDefault = (t: Trace) => defaultPolicy(t.ttlMinutes)
 
 describe('pause cost', () => {
   test('off pays 0.1 for a warm return and the write weight for a cold one', () => {
@@ -59,20 +59,13 @@ describe('Kaplan-Meier', () => {
 
 describe('replay of recorded and synthetic pause traces', () => {
   for (const [name, traces] of Object.entries(TRACES)) {
-    test(`${name}: refresh with refreshShortTtl costs at most 2x the offline optimum`, () => {
-      expect(replay(traces, auto) / optimum(traces)).toBeLessThanOrEqual(2 + 1e-9)
+    test(`${name}: the default policy costs at most 2x the offline optimum`, () => {
+      expect(replay(traces, byDefault) / optimum(traces)).toBeLessThanOrEqual(2 + 1e-9)
     })
   }
 
-  test('the default policy is off at a TTL of 5 min or less and the automatic lead above', () => {
-    expect([defaultPolicy(5, false), defaultPolicy(2, false), defaultPolicy(5, true), defaultPolicy(60, false)]).toEqual(['off', 'off', MIN, 5 * MIN])
-  })
-
-  test('the default policy costs at most 2x the optimum on every trace but the two 5-min ones where off is not competitive', () => {
-    const over = Object.entries(TRACES)
-      .filter(([, t]) => replay(t, byDefault) / optimum(t) > 2 + 1e-9)
-      .map(([name]) => name)
-    expect(over).toEqual(['coffee-5', 'just-after-expiry-5'])
+  test('the default policy is the automatic lead at every TTL; opted out, it is off at 5 min or less', () => {
+    expect([defaultPolicy(5), defaultPolicy(60), defaultPolicy(5, false), defaultPolicy(2, false), defaultPolicy(60, false)]).toEqual([MIN, 5 * MIN, 'off', 'off', 5 * MIN])
   })
 
   test('the 1.25x stretch holds on every trace but these five', () => {
@@ -98,7 +91,7 @@ const session = (log: number[][], over: Partial<SessionLog> = {}): SessionLog =>
   const saved = log.map(r => decodeRec(r)).reduce((sum, r) => sum + (r?.kind === 'pause' ? r.saved : 0), 0)
   return { state: { ...emptyRefresh, log, saved }, updatedAt: T0, isCurrent: false, ...over }
 }
-const view = (sessions: SessionLog[], ttlMinutes = 60, isShortTtlOn = false) => ({ config: { isOn: true, leadSeconds: 0, isShortTtlOn }, ttl: { minutes: ttlMinutes, source: 'ttlMinutes option' }, sessions })
+const view = (sessions: SessionLog[], ttlMinutes = 60, isShortTtlOn = true) => ({ config: { isOn: true, leadSeconds: 0, isShortTtlOn }, ttl: { minutes: ttlMinutes, source: 'ttlMinutes option' }, sessions })
 
 /** 24 short returns, 4 warm returns after refreshes, 1 exit record and 1 pause left open: enough data, refresh pays. */
 const FIXTURE: SessionLog[] = [
@@ -141,17 +134,30 @@ describe('analysis output on fixture logs', () => {
 
   const short = (ageMs: number, over: Partial<PauseRec> = {}) => pause(ageMs, { ttlMinutes: 5, leadMs: MIN, skip: 13, ...over })
 
-  test('at a 5 min TTL, when refreshing would save, it says to set refreshShortTtl to true', () => {
-    const md = analyze(view([session([...Array.from({ length: 20 }, (_, i) => short(((i + 1) * MIN) / 5)), ...Array.from({ length: 10 }, () => short(6 * MIN, { end: 1 }))])], 5))
+  test('at a 5 min TTL, when refreshing would save, it says to keep refreshShortTtl on, or to set it to true when opted out', () => {
+    const log = [session([...Array.from({ length: 20 }, (_, i) => short(((i + 1) * MIN) / 5)), ...Array.from({ length: 10 }, () => short(6 * MIN, { end: 1 }))])]
+    const md = analyze(view(log, 5, false))
+    expect(md).toContain('Refresh off at TTL 5m (refreshShortTtl: false) · lead 1m00s (auto) · TTL 5m (ttlMinutes option)')
     expect(md).toContain('Pauses not refreshed or stopped: short-ttl 30')
     expect(md).toContain('Recommendation: set refreshShortTtl to true, keep the current lead (lead 1m00s (auto))')
+    expect(analyze(view(log, 5))).toContain('Recommendation: keep refresh on, keep refreshShortTtl on, keep the current lead (lead 1m00s (auto))')
   })
 
   test('at a 5 min TTL, when refreshing would not save, it says to keep refreshShortTtl off', () => {
     const exits = Array.from({ length: 11 }, () => short(10 * 60 * MIN, { end: 2 }))
-    const md = analyze(view([session([...Array.from({ length: 20 }, (_, i) => short(((i + 1) * MIN) / 5)), ...exits])], 5))
+    const md = analyze(view([session([...Array.from({ length: 20 }, (_, i) => short(((i + 1) * MIN) / 5)), ...exits])], 5, false))
     expect(md).toContain('Recommendation: keep refreshShortTtl off (refreshShortTtl: false). At a 5m TTL the refreshes cost more than the cold rewrites they avoid.')
     expect(analyze(view([session([...Array.from({ length: 20 }, (_, i) => short(((i + 1) * MIN) / 5)), ...exits])], 5, true))).toContain('Recommendation: set refreshShortTtl to false.')
+  })
+
+  test('the first line says refresh is off when the short-TTL rule stops it', () => {
+    const ttl = (minutes: number) => ({ minutes, source: 'ttlMinutes option' })
+    const config = (isOn: boolean, isShortTtlOn: boolean) => ({ isOn, leadSeconds: 0, isShortTtlOn })
+    expect(headLine(config(true, false), ttl(5))).toBe('Refresh off at TTL 5m (refreshShortTtl: false) · lead 1m00s (auto) · TTL 5m (ttlMinutes option)')
+    expect(headLine(config(true, false), ttl(2))).toMatch(/^Refresh off at TTL 2m \(refreshShortTtl: false\)/)
+    expect(headLine(config(true, true), ttl(5))).toBe('Refresh on · lead 1m00s (auto) · TTL 5m (ttlMinutes option)')
+    expect(headLine(config(true, false), ttl(6))).toMatch(/^Refresh on · /)
+    expect(headLine(config(false, false), ttl(5))).toMatch(/^Refresh off · /)
   })
 
   test('at a 5 min TTL with too few returns the not-enough-data rule still applies', () => {

@@ -1,4 +1,4 @@
-import { decodeRec, ENDS, leadMs, maxRefreshes, OUTCOMES, READ_WEIGHT, SHORT_TTL_MINUTES, SKIPS, writeWeight } from './refresh.ts'
+import { decodeRec, ENDS, leadMs, maxRefreshes, OUTCOMES, READ_WEIGHT, refreshesAt, SHORT_TTL_MINUTES, SKIPS, writeWeight } from './refresh.ts'
 import type { PauseRec, RefreshConfig, RefreshRec, RefreshState } from './refresh.ts'
 import { band, BANDS, duration, percent, tokens } from './stats.ts'
 
@@ -115,11 +115,18 @@ export const tracesOf = (pauses: readonly PauseRec[], open: readonly Trace[]): T
   ...open,
 ]
 
-/** The policy the defaults run at a TTL: the automatic lead, or off at a short TTL unless opted in. */
-export const defaultPolicy = (ttlMinutes: number, isShortTtlOn: boolean): Policy => (ttlMinutes > SHORT_TTL_MINUTES || isShortTtlOn ? leadMs(ttlMinutes, 0) : 'off')
+/** The policy the defaults run at a TTL: the automatic lead, or off at a short TTL when opted out. */
+export const defaultPolicy = (ttlMinutes: number, isShortTtlOn = true): Policy => (ttlMinutes > SHORT_TTL_MINUTES || isShortTtlOn ? leadMs(ttlMinutes, 0) : 'off')
 
 const signed = (n: number) => (n < 0 ? `-${tokens(Math.round(-n))}` : tokens(Math.round(n)))
 const leadName = (ms: number) => duration(ms)
+
+/** The report's first line; when the short-TTL rule stops refresh it says so, not `Refresh on`. */
+export function headLine(config: RefreshConfig, ttl: { minutes: number; source: string }): string {
+  const tail = `lead ${leadName(leadMs(ttl.minutes, config.leadSeconds))}${config.leadSeconds === 0 ? ' (auto)' : ''} · TTL ${ttl.minutes}m (${ttl.source})`
+  if (config.isOn && !refreshesAt(config, ttl.minutes)) return `Refresh off at TTL ${ttl.minutes}m (refreshShortTtl: false) · ${tail}`
+  return `Refresh ${config.isOn ? 'on' : 'off'} · ${tail}`
+}
 
 export type AnalysisView = { config: RefreshConfig; ttl: { minutes: number; source: string }; sessions: readonly SessionLog[] }
 
@@ -131,7 +138,7 @@ export function analyze(v: AnalysisView): string {
   const ttl = v.ttl.minutes
   const currentLead = leadMs(ttl, v.config.leadSeconds)
   const head = [
-    `Refresh ${v.config.isOn ? 'on' : 'off'} · lead ${leadName(currentLead)}${v.config.leadSeconds === 0 ? ' (auto)' : ''} · TTL ${ttl}m (${v.ttl.source})`,
+    headLine(v.config, v.ttl),
     `Sample: ${traces.length} pauses (${returns} returned, ${traces.length - returns} exits) · ${refreshes.length} refreshes · ${v.sessions.length} sessions`,
   ]
 
@@ -211,6 +218,6 @@ function recommend(rows: readonly Row[], currentLead: number, config: RefreshCon
   const lead = pick.policy === 'off' ? 0 : pick.policy
   const setting = pick === current ? 'keep the current lead' : `set refreshLeadSeconds to ${Math.round(lead / 1000)}`
   const turnOn = config.isOn ? 'keep refresh on' : 'turn refresh on (refresh: true)'
-  const head = !isShort ? turnOn : config.isShortTtlOn ? `${turnOn}, keep refreshShortTtl true` : `set refreshShortTtl to true${config.isOn ? '' : ' and refresh to true'}`
+  const head = !isShort ? turnOn : config.isShortTtlOn ? `${turnOn}, keep refreshShortTtl on` : `set refreshShortTtl to true${config.isOn ? '' : ' and refresh to true'}`
   return `Recommendation: ${head}, ${setting} (${name(pick.policy)}): about ${signed(pick.perPause)} tokens saved per pause.`
 }

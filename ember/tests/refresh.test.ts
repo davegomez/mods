@@ -30,7 +30,7 @@ const T0 = 1_800_000_000_000
 const P = 100_000
 
 const ctx = (over: Partial<PauseContext> = {}): PauseContext => ({
-  config: { isOn: true, leadSeconds: 0, isShortTtlOn: false },
+  config: { isOn: true, leadSeconds: 0, isShortTtlOn: true },
   ttlMinutes: 60,
   source: 'ttlMinutes option',
   isInteractive: true,
@@ -41,7 +41,7 @@ const ctx = (over: Partial<PauseContext> = {}): PauseContext => ({
   ...over,
 })
 
-const SHORT_ON = { config: { isOn: true, leadSeconds: 0, isShortTtlOn: true } }
+const SHORT_OFF = { config: { isOn: true, leadSeconds: 0, isShortTtlOn: false } }
 const pauseAt = (ttlMinutes = 60, over: Partial<PauseContext> = {}, prefix = P): Pause =>
   openPause({ startMs: T0, endMs: T0 + 10_000, prefix }, ctx({ ttlMinutes, ...over }))
 
@@ -58,15 +58,15 @@ const fired = (pause: Pause, firedMs: number, isProbe = false): Fired => ({ paus
 
 describe('options', () => {
   test('refresh is on by default, off only for false; a lead outside 10 to 3600 s is automatic', () => {
-    expect(refreshConfig({})).toEqual({ isOn: true, leadSeconds: 0, isShortTtlOn: false })
-    expect(refreshConfig({ refresh: false, refreshLeadSeconds: 90 })).toEqual({ isOn: false, leadSeconds: 90, isShortTtlOn: false })
+    expect(refreshConfig({})).toEqual({ isOn: true, leadSeconds: 0, isShortTtlOn: true })
+    expect(refreshConfig({ refresh: false, refreshLeadSeconds: 90 })).toEqual({ isOn: false, leadSeconds: 90, isShortTtlOn: true })
     expect(refreshConfig({ refresh: 'no' }).isOn).toBe(true)
     for (const bad of [5, 3601, -1, Number.NaN, '60']) expect(refreshConfig({ refreshLeadSeconds: bad }).leadSeconds).toBe(0)
   })
 
-  test('short-TTL refresh is off by default, on only for true', () => {
-    expect(refreshConfig({ refreshShortTtl: true }).isShortTtlOn).toBe(true)
-    for (const bad of [false, 'true', 1, null, undefined]) expect(refreshConfig({ refreshShortTtl: bad }).isShortTtlOn).toBe(false)
+  test('short-TTL refresh is on by default, off only for false', () => {
+    expect(refreshConfig({ refreshShortTtl: false }).isShortTtlOn).toBe(false)
+    for (const other of [true, 'false', 0, null, undefined]) expect(refreshConfig({ refreshShortTtl: other }).isShortTtlOn).toBe(true)
   })
 })
 
@@ -82,7 +82,7 @@ describe('refresh timing', () => {
 
   for (const [ttl, lead] of [[60, 5 * MIN], [5, MIN]] as const) {
     test(`at a ${ttl} min TTL it fires ${lead / MIN} min before expiry, never in the last 5 s`, () => {
-      const p = pauseAt(ttl, SHORT_ON)
+      const p = pauseAt(ttl)
       const due = T0 + ttl * MIN - lead
       expect(planRefresh(p, due - 1)).toEqual({ kind: 'wait' })
       expect(planRefresh(p, due)).toEqual({ kind: 'fire' })
@@ -92,7 +92,7 @@ describe('refresh timing', () => {
   }
 
   test('a set lead moves the slot; after a hit the next slot runs from the refresh', () => {
-    const p = openPause({ startMs: T0, endMs: T0, prefix: P }, ctx({ config: { isOn: true, leadSeconds: 120, isShortTtlOn: false } }))
+    const p = openPause({ startMs: T0, endMs: T0, prefix: P }, ctx({ config: { isOn: true, leadSeconds: 120, isShortTtlOn: true } }))
     expect(planRefresh(p, T0 + 58 * MIN - 1).kind).toBe('wait')
     expect(planRefresh(p, T0 + 58 * MIN).kind).toBe('fire')
     const after = applyRefresh({ ...emptyRefresh, pause: p }, fired(p, T0 + 58 * MIN), hit, true).state.pause as Pause
@@ -128,7 +128,7 @@ describe('ski-rental cap', () => {
 
   for (const ttl of [60, 5]) {
     test(`a pause with no return stops after ${maxRefreshes(ttl)} hits at ${ttl} min`, () => {
-      let s: RefreshState = { ...emptyRefresh, pause: pauseAt(ttl, SHORT_ON) }
+      let s: RefreshState = { ...emptyRefresh, pause: pauseAt(ttl) }
       let fires = 0
       for (let now = T0; now < T0 + 48 * 60 * MIN; now += 1000) {
         const p = s.pause as Pause
@@ -210,8 +210,8 @@ describe('pauses', () => {
     const skipOf = (over: Partial<PauseContext>, prefix = P) => SKIPS[openPause({ startMs: T0, endMs: T0, prefix }, ctx(over)).skip]
     expect(skipOf({})).toBe('none')
     expect(skipOf({ config: { isOn: false, leadSeconds: 0, isShortTtlOn: true } })).toBe('off')
-    expect(skipOf({ ttlMinutes: 5 })).toBe('short-ttl')
-    expect(skipOf({ ttlMinutes: 5, isInteractive: false })).toBe('short-ttl')
+    expect(skipOf({ ttlMinutes: 5, ...SHORT_OFF })).toBe('short-ttl')
+    expect(skipOf({ ttlMinutes: 5, isInteractive: false, ...SHORT_OFF })).toBe('short-ttl')
     expect(skipOf({ isInteractive: false })).toBe('not interactive')
     expect(skipOf({ isAborted: true })).toBe('interrupted')
     expect(skipOf({}, 0)).toBe('no prefix')
@@ -219,23 +219,23 @@ describe('pauses', () => {
     expect(skipOf({ isIdleCompaction: true })).toBe('idle compaction')
   })
 
-  test('at a TTL of 5 min or less the defaults do not refresh; refreshShortTtl turns it on', () => {
+  test('at a TTL of 5 min or less the defaults refresh; refreshShortTtl: false turns it off', () => {
     for (const ttl of [5, 2]) {
-      const p = pauseAt(ttl)
+      const p = pauseAt(ttl, SHORT_OFF)
       expect(SKIPS[p.skip]).toBe('short-ttl')
       expect(planRefresh(p, T0 + (ttl - 1) * MIN).kind).toBe('wait')
       expect(isRefreshPlanned(p)).toBe(false)
-      expect(SKIPS[pauseAt(ttl, SHORT_ON).skip]).toBe('none')
-      expect(planRefresh(pauseAt(ttl, SHORT_ON), T0 + (ttl - leadMs(ttl, 0) / MIN) * MIN).kind).toBe('fire')
+      expect(SKIPS[pauseAt(ttl).skip]).toBe('none')
+      expect(planRefresh(pauseAt(ttl), T0 + (ttl - leadMs(ttl, 0) / MIN) * MIN).kind).toBe('fire')
     }
-    expect(SKIPS[pauseAt(6).skip]).toBe('none')
+    expect(SKIPS[pauseAt(6, SHORT_OFF).skip]).toBe('none')
   })
 
-  test('after a miss moves the plan TTL to 5 min, the next pause is short-ttl unless opted in', () => {
+  test('after a miss moves the plan TTL to 5 min, the next pause is short-ttl when opted out', () => {
     const s = applyRefresh({ ...emptyRefresh, pause: pauseAt() }, fired(pauseAt(), T0 + 55 * MIN), miss, true).state
     const ttl = effectiveTtl({ minutes: 60, source: 'ttlMinutes option' }, s)
-    expect(SKIPS[pauseAt(ttl.minutes).skip]).toBe('short-ttl')
-    expect(SKIPS[pauseAt(ttl.minutes, SHORT_ON).skip]).toBe('none')
+    expect(SKIPS[pauseAt(ttl.minutes, SHORT_OFF).skip]).toBe('short-ttl')
+    expect(SKIPS[pauseAt(ttl.minutes).skip]).toBe('none')
   })
 
   test('short-ttl is appended to the skip list, so stored indexes keep their meaning', () => {

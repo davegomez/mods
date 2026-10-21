@@ -21,8 +21,8 @@
     "refreshShortTtl": {
       "type": "boolean",
       "title": "Also refresh when the TTL is 5 minutes or less",
-      "description": "Off by default: at a 5-minute TTL a refresh can cost more than the cold rewrites it avoids. Run /ember-refresh to see whether it saves on your pauses.",
-      "default": false
+      "description": "On by default. Set it to false to opt out at a 5-minute TTL. At a short TTL each refresh buys only a few minutes, so run /ember-refresh to check whether it pays on your pauses.",
+      "default": true
     },
     "refreshLeadSeconds": {
       "type": "number",

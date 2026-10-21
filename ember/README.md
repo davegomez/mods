@@ -71,7 +71,7 @@ To change when the refresh runs instead, set `refreshLeadSeconds` in the same `o
 ember cannot see your plan, so it assumes 60 minutes unless a Claude Code setting says otherwise.
 
 - If you use a Claude subscription within its usage, change nothing. Claude Code uses a 60-minute TTL.
-- If you use an API key, a cloud provider, or usage credits, Claude Code uses a 5-minute TTL. Set `"promptCacheTtl": "5m"` in `~/.claude/settings.json`, or set the `ttlMinutes` option to `5`. At 5 minutes the refresh stays off unless you set the `refreshShortTtl` option to `true`.
+- If you use an API key, a cloud provider, or usage credits, Claude Code uses a 5-minute TTL. Set `"promptCacheTtl": "5m"` in `~/.claude/settings.json`, or set the `ttlMinutes` option to `5`. At 5 minutes the refresh stays on unless you set the `refreshShortTtl` option to `false`.
 - If you want the 60-minute TTL everywhere, set `"promptCacheTtl": "1h"`. Cache writes then cost 2 times the input price instead of 1.25 times.
 
 Run `/ember` to check the result. The first line names the TTL and its source.
@@ -101,7 +101,7 @@ If your shell runs with `set -f`, use `find` instead of the glob. If you use the
 3. Read the `Recommendation` line at the end.
    - If it says to turn the refresh off, [turn it off](#how-to-turn-the-refresh-off).
    - If it names a different lead, set `refreshLeadSeconds` to that value.
-   - If your TTL is 5 minutes or less and it says to set `refreshShortTtl` to `true`, set it in the same `options` object. If it says to keep `refreshShortTtl` off, change nothing.
+   - If your TTL is 5 minutes or less and it says to set `refreshShortTtl` to `false`, set it in the same `options` object. If it says to set it to `true`, set it to `true` or remove it. If it says to keep `refreshShortTtl` on, change nothing.
    - If it says `Not enough data`, wait for more pauses.
 4. If the refresh paused itself after 2 misses, read the `Refresh age` table. Misses at ages below your TTL mean that the real TTL is shorter. [Set the TTL for your plan](#how-to-set-the-ttl-for-your-plan).
 
@@ -180,7 +180,7 @@ Recommendation: keep refresh on, keep the current lead (lead 5m00s (auto)): abou
 | :- | :- | :- | :- |
 | `refresh` | Boolean | `true` | `false` turns the refresh off. |
 | `refreshLeadSeconds` | number | `0` | `0` is the automatic lead. Otherwise 10 to 3600 seconds before expiry. A lead that leaves less than 10 s of TTL falls back to automatic. |
-| `refreshShortTtl` | Boolean | `false` | `true` also refreshes when the TTL is 5 minutes or less. Any other value counts as `false`. |
+| `refreshShortTtl` | Boolean | `true` | `false` stops the refresh when the TTL is 5 minutes or less. Any other value counts as `true`. |
 | `ttlMinutes` | number | `60` | 1 to 1440. Used only when no setting in [TTL resolution](#ttl-resolution) applies. |
 
 Set the options in `/config`, or under `pluginConfigs` in `~/.claude/settings.json`.
@@ -256,7 +256,7 @@ On each turn, Claude Code sends the whole conversation to the model again. The A
 
 A cache read costs 0.1 times the input price. A cache write costs 2 times on the 60-minute TTL and 1.25 times on the 5-minute TTL. One read that restarts the TTL is therefore much cheaper than one cold rewrite, but only if you come back. If you never come back, every refresh is waste.
 
-ember does not know when you will return, so it uses the ski-rental rule from online algorithms: it rents (refreshes) until the rent paid equals the price of buying (one cold rewrite), and then it stops. No policy that cannot see the future can do better than 2 times the cost of a policy that knows your return time, and this rule meets that bound. A replay of synthetic traces met the 2 times bound on every trace with a return. It did not meet a stretch goal of 1.25 times on 5 of 15 traces, and on mixed traces with the 5-minute TTL, the refresh cost more than having it off. With a 5-minute TTL, each refresh buys only a few minutes, and the cap allows only 12. This is the case that `/ember-refresh` exists to detect. For this reason the refresh is off by default at a TTL of 5 minutes or less: a cold rewrite costs only 1.25 times the input price, so the refreshes have little to save and can cost more than they save. Set `refreshShortTtl` to `true` when `/ember-refresh` shows that the refresh saves on your pauses.
+ember does not know when you will return, so it uses the ski-rental rule from online algorithms: it rents (refreshes) until the rent paid equals the price of buying (one cold rewrite), and then it stops. No policy that cannot see the future can do better than 2 times the cost of a policy that knows your return time, and this rule meets that bound. A replay of synthetic traces met the 2 times bound on every trace with a return. It did not meet a stretch goal of 1.25 times on 5 of 15 traces. With the 5-minute TTL, the refresh cost less than having it off on most traces, such as coffee breaks, returns just after expiry, and mixed pauses. It cost more on some traces, such as short returns and overnight returns. With a 5-minute TTL, each refresh buys only a few minutes, and the cap allows only 12. A cold rewrite costs only 1.25 times the input price, so the refreshes have little to save. For this reason the `refreshShortTtl` option exists, and `/ember-refresh` checks whether the refresh saves on your pauses. Set `refreshShortTtl` to `false` when `/ember-refresh` recommends it.
 
 ### Why the refresh is unverified
 

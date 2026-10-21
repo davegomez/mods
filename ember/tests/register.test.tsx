@@ -637,7 +637,7 @@ describe('cache refresh', () => {
     expect(w.forks.length).toBe(2)
   })
 
-  test('a 5m TTL is not refreshed by default: the cold toast shows and the pause logs short-ttl', async ($, on) => {
+  test('with refreshShortTtl: false a 5m TTL is not refreshed: the cold toast shows and the pause logs short-ttl', { options: { refreshShortTtl: false } }, async ($, on) => {
     const w = world(on, { settings: { promptCacheTtl: '5m' } })
     await start($, w)
     await turn($, w, 't1')
@@ -649,7 +649,7 @@ describe('cache refresh', () => {
     expect(recs(w)[0]).toMatchObject({ kind: 'pause', end: 1, skip: 13, refreshes: 0, ageMs: 6 * MIN })
   })
 
-  test('with refreshShortTtl a 5m TTL setting refreshes 1 min before expiry', { options: { refreshShortTtl: true } }, async ($, on) => {
+  test('by default a 5m TTL setting refreshes 1 min before expiry', async ($, on) => {
     const w = world(on, { settings: { promptCacheTtl: '5m' } })
     await start($, w)
     await turn($, w, 't1')
@@ -659,7 +659,7 @@ describe('cache refresh', () => {
     expect(w.forks.length).toBe(1)
   })
 
-  test('the cap stops a pause with no return after 12 refreshes at a 5 min TTL', { options: { refreshShortTtl: true } }, async ($, on) => {
+  test('the cap stops a pause with no return after 12 refreshes at a 5 min TTL', async ($, on) => {
     const w = world(on, { settings: { promptCacheTtl: '5m' } })
     await start($, w)
     await turn($, w, 't1')
@@ -767,7 +767,7 @@ describe('cache refresh', () => {
     expect(refreshOf(w).pause?.skip).toBe(4)
   })
 
-  test('after a refresh miss moves the plan to 5 min, the defaults stop refreshing', async ($, on) => {
+  test('with refreshShortTtl: false, a refresh miss that moves the plan to 5 min stops the refreshes', { options: { refreshShortTtl: false } }, async ($, on) => {
     const w = world(on)
     await start($, w)
     await turn($, w, 't1')
@@ -781,7 +781,7 @@ describe('cache refresh', () => {
     expect(refreshOf(w).pause?.skip).toBe(13)
   })
 
-  test('a TTL that drops to 5 min mid-session: a refresh that found the cache gone moves the plan to 5 min', { options: { refreshShortTtl: true } }, async ($, on) => {
+  test('a TTL that drops to 5 min mid-session: a refresh that found the cache gone moves the plan to 5 min', async ($, on) => {
     const w = world(on)
     await start($, w)
     await turn($, w, 't1')
