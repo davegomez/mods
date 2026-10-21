@@ -27,4 +27,4 @@ Auto-update is off for third-party marketplaces. To turn it on, open `/plugin`, 
 
 A mod runs with your permissions. Read its README before you install it.
 
-The mods are tested with Claude Code v2.1.305. Each mod's README states the version it was tested with.
+The mods are tested with Claude Code v2.1.306. Each mod's README states the version it was tested with.

@@ -4,7 +4,7 @@ ember is a Claude Code mod that measures how warm your prompt cache stays across
 
 > **Unverified.** Nobody has yet measured on a live session that a refresh keeps the main cache warm without a new full write. A [live test](#live-test-results) measured the cache report, but no refresh ran. Until the [probe](#how-to-check-that-the-refresh-works) passes, treat the refresh savings as estimates. Each refresh spends plan usage or API credit.
 
-Tested with Claude Code v2.1.305.
+Tested with Claude Code v2.1.306.
 
 To install ember, run `/plugin install ember --marketplace davegomez/mods` in a Claude Code session. For the shell and the desktop app, see [Install a mod](../README.md#install-a-mod).
 
