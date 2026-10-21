@@ -8,38 +8,23 @@ Mods for [Claude Code](https://code.claude.com/docs/en/plugins/mods/overview). A
 | :- | :- |
 | [ember](ember/README.md) | Tracks how warm the prompt cache stays across idle pauses, and refreshes it before it expires. |
 
-## Try a mod
+## Install a mod
 
-Load a mod for one session from its directory:
+In a Claude Code session, run `/plugin install ember --marketplace davegomez/mods`. Answer `y` to add the marketplace, then pick a scope.
+
+From a shell:
 
 ```bash
-claude --plugin-dir ./ember
+claude plugin marketplace add davegomez/mods
+claude plugin install ember@davegomez
 ```
 
+In the desktop app, `/plugin` does not run. Click + next to the prompt box, then Plugins. Choose Add marketplace, enter `davegomez/mods`, then choose Add plugin.
+
+Without a GitHub SSH key, set `CLAUDE_CODE_PLUGIN_PREFER_HTTPS=1` before you install. Without it, installs and updates from `/plugin` fail.
+
+Auto-update is off for third-party marketplaces. To turn it on, open `/plugin`, go to the Marketplaces tab, select `davegomez`, and choose Enable auto-update.
+
+A mod runs with your permissions. Read its README before you install it.
+
 The mods are tested with Claude Code v2.1.305. Each mod's README states the version it was tested with.
-
-## Change a mod
-
-1. Load the built-in `plugin-authoring` skill. It knows the events, the API, and the type declarations of the installed Claude Code version.
-2. Write a test that fails, in `<mod>/tests/`.
-3. Change the code. Keep the logic in pure functions and the hooks module thin.
-4. The change is done when both commands pass in the mod directory:
-
-   ```bash
-   claude plugin test
-   claude plugin validate --strict .
-   ```
-
-## Conventions
-
-These rules apply to every mod here:
-
-- The store holds numbers only: counts, token totals, and timestamps. Prompt text, file paths, model output, and tool inputs stay out of it.
-- A hook that observes returns the event result unchanged, and it saves to the store without waiting.
-- A live model call (`$.model.*`) spends the owner's plan usage. Get the owner's approval before a live run.
-
-## Agent skills
-
-Project skills live in `.agents/skills/` and are linked into `.claude/skills/`. `skills-lock.json` pins the source of each skill.
-
-Use `writing-for-agents` when you write a skill, an `AGENTS.md`, a `CLAUDE.md`, or a README that agents read.
