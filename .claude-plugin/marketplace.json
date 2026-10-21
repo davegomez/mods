@@ -1,6 +1,6 @@
 {
-  "name": "davegomez",
-  "owner": { "name": "David Gomez" },
-  "description": "Claude Code mods by David Gomez.",
-  "plugins": [{ "name": "ember", "source": "./ember" }]
+	"name": "davegomez",
+	"owner": { "name": "David Gomez" },
+	"description": "Claude Code mods by David Gomez.",
+	"plugins": [{ "name": "ember", "source": "./ember" }]
 }

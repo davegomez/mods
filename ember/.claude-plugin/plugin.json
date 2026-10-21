@@ -1,36 +1,36 @@
 {
-  "name": "ember",
-  "version": "0.3.0",
-  "description": "Measures how warm the prompt cache stays across your idle gaps, and refreshes it before it expires.",
-  "author": { "name": "David" },
-  "userConfig": {
-    "ttlMinutes": {
-      "type": "number",
-      "title": "Cache TTL (minutes)",
-      "description": "How long ember assumes Claude keeps the saved copy of your conversation (the cache), from 1 to 1440 minutes. Leave it empty to use 60, because a Claude subscription keeps the cache for 60 minutes while you are within your usage. Set 5 if you use an API key, a cloud provider, or usage credits, which keep it for 5 minutes. A Claude Code cache setting such as promptCacheTtl overrides this option.",
-      "default": 60,
-      "min": 1,
-      "max": 1440
-    },
-    "refresh": {
-      "type": "boolean",
-      "title": "Refresh the cache before it expires",
-      "description": "While you are away, ember re-reads the saved copy of your conversation shortly before it expires, so your next message is fast and cheap. It is on by default because a re-read costs about a tenth of the normal input price, while rebuilding an expired cache costs 2 times that price (60-minute cache) or 1.25 times (5-minute cache). Each refresh uses some of your plan usage or API credit. During a pause, ember stops refreshing once the refreshes have cost as much as one rebuild.",
-      "default": true
-    },
-    "refreshShortTtl": {
-      "type": "boolean",
-      "title": "Also refresh when the cache lasts 5 minutes or less",
-      "description": "Lets ember refresh a cache that lasts only 5 minutes or less. It is on by default because, in tests, it cost less than no refresh for most patterns of pauses. The saving is small, though, because each refresh buys only a few minutes and a rebuild costs less (1.25 times the normal input price). Run /ember-refresh to see whether refreshing saves money on your pauses, and turn this off if it recommends that.",
-      "default": true
-    },
-    "refreshLeadSeconds": {
-      "type": "number",
-      "title": "Refresh lead (seconds before expiry)",
-      "description": "How many seconds before the cache expires ember runs the refresh. Leave it empty or at 0 for automatic, which is 5 minutes before expiry for a 60-minute cache and 1 minute for a 5-minute cache (one fifth of the cache time, at most 5 minutes). This leaves the refresh enough time to finish before the cache expires. A custom value can be 10 to 3600 seconds, and one that leaves less than 10 seconds falls back to automatic.",
-      "default": 0,
-      "min": 0,
-      "max": 3600
-    }
-  }
+	"name": "ember",
+	"version": "0.3.0",
+	"description": "Measures how warm the prompt cache stays across your idle gaps, and refreshes it before it expires.",
+	"author": { "name": "David" },
+	"userConfig": {
+		"ttlMinutes": {
+			"type": "number",
+			"title": "Cache TTL (minutes)",
+			"description": "How long ember assumes Claude keeps the saved copy of your conversation (the cache), from 1 to 1440 minutes. Leave it empty to use 60, because a Claude subscription keeps the cache for 60 minutes while you are within your usage. Set 5 if you use an API key, a cloud provider, or usage credits, which keep it for 5 minutes. A Claude Code cache setting such as promptCacheTtl overrides this option.",
+			"default": 60,
+			"min": 1,
+			"max": 1440
+		},
+		"refresh": {
+			"type": "boolean",
+			"title": "Refresh the cache before it expires",
+			"description": "While you are away, ember re-reads the saved copy of your conversation shortly before it expires, so your next message is fast and cheap. It is on by default because a re-read costs about a tenth of the normal input price, while rebuilding an expired cache costs 2 times that price (60-minute cache) or 1.25 times (5-minute cache). Each refresh uses some of your plan usage or API credit. During a pause, ember stops refreshing once the refreshes have cost as much as one rebuild.",
+			"default": true
+		},
+		"refreshShortTtl": {
+			"type": "boolean",
+			"title": "Also refresh when the cache lasts 5 minutes or less",
+			"description": "Lets ember refresh a cache that lasts only 5 minutes or less. It is on by default because, in tests, it cost less than no refresh for most patterns of pauses. The saving is small, though, because each refresh buys only a few minutes and a rebuild costs less (1.25 times the normal input price). Run /ember-refresh to see whether refreshing saves money on your pauses, and turn this off if it recommends that.",
+			"default": true
+		},
+		"refreshLeadSeconds": {
+			"type": "number",
+			"title": "Refresh lead (seconds before expiry)",
+			"description": "How many seconds before the cache expires ember runs the refresh. Leave it empty or at 0 for automatic, which is 5 minutes before expiry for a 60-minute cache and 1 minute for a 5-minute cache (one fifth of the cache time, at most 5 minutes). This leaves the refresh enough time to finish before the cache expires. A custom value can be 10 to 3600 seconds, and one that leaves less than 10 seconds falls back to automatic.",
+			"default": 0,
+			"min": 0,
+			"max": 3600
+		}
+	}
 }
