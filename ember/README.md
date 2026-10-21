@@ -25,9 +25,9 @@ In this tutorial, we start a session with ember, send 2 short prompts, and read 
    Reply with the word hello.
    ```
 
-3. Run `/ember`. A pane opens. The first line shows the TTL that ember uses, for example `TTL 60m (ttlMinutes option)`. The table has 1 row, `first`, with 1 request.
+3. Run `/ember`. A pane opens. Its `Status` section shows the TTL that ember uses, for example `TTL 60m (ttlMinutes option)`. The `Cache hit by gap type` table has 1 row, `first`, with 1 request.
 
-4. Press Esc to close the pane.
+4. Click `Close` at the top right of the pane.
 
 5. Within 2 minutes, send a second prompt:
 
@@ -37,7 +37,7 @@ In this tutorial, we start a session with ember, send 2 short prompts, and read 
 
 6. Run `/ember` again. Notice the new `user` row. Its hit ratio is high, because the second request read the first request's prefix from the cache.
 
-7. Press Esc.
+7. Click `Close`.
 
 You have measured your own prompt cache. From now on, each pause between your prompts adds a row to the report. When you stay idle for close to the TTL, ember refreshes the cache before it expires.
 
@@ -72,7 +72,7 @@ ember cannot see your plan, so it assumes 60 minutes unless a Claude Code settin
 - If you use an API key, a cloud provider, or usage credits, Claude Code uses a 5-minute TTL. Set `"promptCacheTtl": "5m"` in `~/.claude/settings.json`, or set the `ttlMinutes` option to `5` in the install screen or in `/config`. At 5 minutes the refresh stays on unless you set the `refreshShortTtl` option to `false`.
 - If you want the 60-minute TTL everywhere, set `"promptCacheTtl": "1h"`. Cache writes then cost 2 times the input price instead of 1.25 times.
 
-Run `/ember` to check the result. The first line names the TTL and its source.
+Run `/ember` to check the result. The `TTL` row of the `Status` section names the TTL and its source.
 
 ### How to show the cache in your status line
 
@@ -96,7 +96,7 @@ If your shell runs with `set -f`, use `find` instead of the glob. If you use the
 
 1. Use Claude Code as usual until `/ember-refresh` has at least 20 returned pauses.
 2. Run `/ember-refresh`.
-3. Read the `Recommendation` line at the end.
+3. Read the `Recommendation` box at the end of the `Lead options` section.
    - If it says to turn the refresh off, [turn it off](#how-to-turn-the-refresh-off).
    - If it names a different lead, set `refreshLeadSeconds` to that value.
    - If your TTL is 5 minutes or less and it says to set `refreshShortTtl` to `false`, set it in the same `options` object. If it says to set it to `true`, set it to `true` or remove it. If it says to keep `refreshShortTtl` on, change nothing.
@@ -124,7 +124,7 @@ If steps 3 to 5 pass, the refresh works on your account.
 
 On the 60-minute TTL, Claude Code can compact an idle conversation about 54 minutes after the last request.
 
-- If idle compaction does not run for your account, change nothing. ember already keeps the cache warm. `/ember-refresh` shows `Idle compaction: not seen`.
+- If idle compaction does not run for your account, change nothing. ember already keeps the cache warm. `/ember-refresh` shows `Idle compaction` as `not seen` in its `Status` section.
 - If idle compaction runs, ember yields to it, and the conversation is replaced by a summary. To keep the full conversation instead, which ember then refreshes:
 
   1. Run `/ember-refresh` and read its idle compaction section. It estimates what `"idleCompaction": false` costs on your own pauses, and it recommends whether to change the setting.
@@ -137,22 +137,42 @@ On the 60-minute TTL, Claude Code can compact an idle conversation about 54 minu
 
 | Command | What it does |
 | :- | :- |
-| `/ember` | Opens the `ember` pane with the cache report. Esc closes it. |
+| `/ember` | Opens the `ember` pane with the cache report. |
 | `/ember-refresh` | Opens the `ember refresh` pane with the refresh analysis across all stored sessions. |
+
+Each pane closes with a click on `Close` at its top right, with `q` while the pane has the keyboard, or with Esc.
 | `/ember-probe` | Sends 1 refresh now and shows its result in a toast. It does not count toward the cap or the circuit breaker. |
 
 You can run all 3 commands while Claude works. `/ember-probe` then refuses with `a turn is running`, and while a refresh runs, with `a refresh is running`.
 
 ### The `/ember` pane
 
-From top to bottom:
+The first row holds the title `ember`, the tabs `1: This session` and `2: All sessions`, and `q: Close` at the right. The tabs show only when other sessions are stored. Keys `1` and `2` switch them.
 
-1. `TTL <minutes>m (<source>)`, dim.
-2. The tabs `1: This session` and `2: All sessions`, only when other sessions are stored. Keys `1` and `2` switch them.
-3. A table `| Gap type | Requests | Hit |` with each gap type that has requests, or `No requests yet.`
-4. A table `| User gap | Requests | Hit |` with each `user` gap band that has requests, or `No user gaps yet.`
-5. `Observed TTL: warm up to <duration> · cold from <duration>`, with `–` for a bound not yet seen.
-6. `Compactions <n> · model switches <n>`.
+Below it come 3 sections, each under a bold title. They stand side by side in a wide pane and wrap to the next row in a narrow one.
+
+| Section | What it shows |
+| :- | :- |
+| `Status` | `TTL <minutes>m (<source>)`; `Observed TTL warm up to <duration> · cold from <duration>`, with `–` for a bound not yet seen; `Compactions <n>`; `Model switches <n>`. |
+| `Cache hit by gap type` | A table `Gap type`, `Requests`, `Hit` with each gap type that has requests, or `No requests yet.` |
+| `Cache hit by user gap` | A table `User gap`, `Requests`, `Hit` with each `user` gap band that has requests, or `No user gaps yet.` |
+
+Labels are dim and values bold. A hit ratio is green from 80%, yellow from 50%, and red below 50%. Example in a 70-column pane:
+
+```text
+ember  1: This session  2: All sessions                       q: Close
+
+Status
+TTL              60m (ttlMinutes option)
+Observed TTL     warm up to 2m00s · cold from –
+Compactions      0
+Model switches   0
+
+Cache hit by gap type      Cache hit by user gap
+Gap type  Requests  Hit    User gap  Requests  Hit
+first            1  90%    1-5m             1  98%
+user             1  98%
+```
 
 Gap types:
 
@@ -171,23 +191,69 @@ The hit ratio is `cache read / (input + cache read + cache creation)`, weighted 
 
 ### The `/ember-refresh` pane
 
-The pane shows the sample size, whether ember has seen idle compaction run, the refresh hit rate, hits and misses by refresh age, the net saving, and the reasons that pauses were not refreshed. With at least 20 returned pauses, it also shows the Kaplan-Meier share of pauses still idle at 5m, 30m, 55m, 1h, 2h, and 8h, the expected saving per pause of each lead and of `off`, the replay cost of the recorded pauses, and a recommendation. Below 20 returned pauses, it shows `Not enough data`. Example on a sample log:
+The first row holds the title `ember refresh` and `q: Close` at the right. Below it, the pane groups its rows into sections, each under a bold title. The sections stand side by side where the pane is wide enough, and wrap to the next row where it is not:
+
+| Section | What it shows |
+| :- | :- |
+| `Status` | Whether the refresh is on, the lead, the TTL and its source, whether ember has seen idle compaction run, and the sample size. |
+| `Refreshes` | The refresh hits, misses, refusals, and hit rate, then hits and misses by refresh age. |
+| `Savings` | The net saving, and the reasons that pauses were not refreshed. |
+| `Idle time (survival)` | The Kaplan-Meier share of pauses still idle at 5m, 30m, 55m, 1h, 2h, and 8h. |
+| `Lead options` | For each lead and for `off`: the expected saving per pause, the replay cost of the recorded pauses, and the saving against `off` in that replay. Then the recommendation, in a box. |
+
+Values are bold. Green marks a hit and a positive saving, red a miss and a negative saving, yellow a refusal, a refresh that is off, and a warning. Caveats are dim, under the value they qualify. In the `Lead options` table, `▸` marks the recommended row and `•` the policy that runs now. The table keeps its numbers whole in a narrow pane and shortens the policy names instead.
+
+`Idle time (survival)` and the table show only with at least 20 returned pauses. Below that, `Lead options` shows `Not enough data`. Example on a sample log, in a 70-column pane:
 
 ```text
-Refresh on · lead 5m00s (auto) · TTL 60m (ttlMinutes option)
-Idle compaction: not seen, ember refreshes long conversations too.
-Sample: 30 pauses (28 returned, 2 exits) · 5 refreshes · 4 sessions
-Refreshes: 5 hit · 0 miss · 0 refused · hit rate 100%
-Net saved: ~620k tokens (4 cold rewrites avoided).
-Recommendation: keep refresh on, keep the current lead (lead 5m00s (auto)): about 10k tokens saved per pause.
+ember refresh                                                 q: Close
+
+Status
+Refresh          on
+Lead             5m00s (auto)
+TTL              60m (ttlMinutes option)
+Idle compaction  not seen, ember refreshes long conversations too.
+Sample           30 pauses (28 returned, 2 exits) · 5 refreshes · 4
+                 sessions
+
+Refreshes
+5 hit · 0 miss · 0 refused · hit rate 100%
+Refresh age  Hit  Miss
+30-60m         4     0
+>60m           1     0
+
+Savings
+Net saved        ~620k tokens (4 cold rewrites avoided)
+                 API-price estimate in input-token units: Anthropic
+                 does not publish how fork cache reads count toward
+                 plan limits.
+
+Idle time (survival)
+Kaplan-Meier, exits censored
+Idle for    5m00s  30m00s  55m00s  1h00m  2h00m  8h00m
+Still idle    83%     20%     20%    20%    10%     7%
+
+Lead options
+   Policy             Per pause  Replay  vs off
+   off                        –    1.0M       –
+   lead 1m00s               10k    420k    620k
+   lead 2m00s               10k    420k    620k
+▸  lead 5m00s (auto)        10k    420k    620k
+   lead 10m00s              10k    430k    610k
+Per pause: saved per pause (survival) · Replay: replay cost · vs off:
+saved vs off (replay) · ▸ recommended · • current
+╭────────────────────────────────────────────────────────────────────╮
+│ Recommendation: keep refresh on, keep the current lead (lead 5m00s │
+│ (auto)): about 10k tokens saved per pause.                         │
+╰────────────────────────────────────────────────────────────────────╯
 ```
 
-The second line shows only at a 60-minute TTL with the refresh on. It is one of:
+The `Idle compaction` row of `Status` shows only at a 60-minute TTL with the refresh on. It is one of:
 
-- `Idle compaction: not seen, ember refreshes long conversations too.`
-- `Idle compaction: seen <YYYY-MM-DD>, ember skips the pauses it applies to.`
+- `not seen, ember refreshes long conversations too.`
+- `seen <YYYY-MM-DD>, ember skips the pauses it applies to.`
 
-The pane ends with an idle compaction section when ember left any pause to idle compaction. This happens on the 60-minute TTL only. The section first counts the skipped pauses, returned and exits. If some of them lasted at least 54 minutes and no idle compaction was recorded in them, it adds `<n> lasted past 54m00s with no idle compaction recorded; ember now refreshes such pauses until it sees idle compaction run.` With fewer than 20 returned pauses, it shows only the counts and says to keep idle compaction on. Otherwise it counts only the pauses that lasted at least 54 minutes with idle compaction recorded, because shorter pauses cost the same either way. If no such pause exists, it stops after the counts. For those pauses it shows:
+The pane ends with an `Idle compaction` section when ember left any pause to idle compaction. This happens on the 60-minute TTL only. The section first counts the skipped pauses, returned and exits. If some of them lasted at least 54 minutes and no idle compaction was recorded in them, it adds `<n> lasted past 54m00s with no idle compaction recorded; ember now refreshes such pauses until it sees idle compaction run.` With fewer than 20 returned pauses, it shows only the counts and says to keep idle compaction on. Otherwise it counts only the pauses that lasted at least 54 minutes with idle compaction recorded, because shorter pauses cost the same either way. If no such pause exists, it stops after the counts. For those pauses it shows:
 
 - The cost of keeping the full conversation with `"idleCompaction": false`, with refresh at your lead and with no refresh.
 - A lower bound for idle compaction's own cost: 1 cache read of the conversation per pause. The summary's output and its write are not measured.
@@ -197,10 +263,24 @@ The pane ends with an idle compaction section when ember left any pause to idle 
 A pause that ember rescued counts as a refreshed pause, not in this section. When the refresh is off, the section recommends to keep idle compaction on. It never claims a saving against idle compaction, and it does not price what a summary loses. ember never changes the setting. Example on a sample log:
 
 ```text
-Idle compaction: 21 pauses skipped (20 returned, 1 exits). 6 of 21 pauses lasted past 54m00s with idle compaction recorded; shorter pauses cost the same either way. With "idleCompaction": false, which keeps the full conversation: refresh at lead 5m00s (auto) 500k · no refresh 2.5M tokens.
-Idle compaction on the same pauses: at least 150k tokens, one cache read of the conversation for each of the 6 pauses past 54m00s. Not measured: the summary's output and its write at return.
-Keeping the full conversation costs at most 350k tokens more (58k per pause). Not priced: what a summary loses (the detail of the conversation).
-Recommendation: keep idle compaction on unless the full conversation is worth about 58k tokens per pause to you. If you set "idleCompaction": false, keep refresh on: it costs 2.0M tokens less than no refresh.
+Idle compaction
+21 pauses skipped (20 returned, 1 exits).
+6 of 21 pauses lasted past 54m00s with idle compaction recorded;
+shorter pauses cost the same either way.
+With "idleCompaction": false, which keeps the full conversation:
+refresh at lead 5m00s (auto) 500k · no refresh 2.5M tokens.
+Idle compaction on the same pauses: at least 150k tokens, one cache
+read of the conversation for each of the 6 pauses past 54m00s.
+Not measured: the summary's output and its write at return.
+Keeping the full conversation costs at most 350k tokens more (58k per
+pause).
+Not priced: what a summary loses (the detail of the conversation).
+╭────────────────────────────────────────────────────────────────────╮
+│ Recommendation: keep idle compaction on unless the full            │
+│ conversation is worth about 58k tokens per pause to you. If you    │
+│ set "idleCompaction": false, keep refresh on: it costs 2.0M tokens │
+│ less than no refresh.                                              │
+╰────────────────────────────────────────────────────────────────────╯
 ```
 
 ### Options
