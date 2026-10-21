@@ -69,7 +69,7 @@ To change when the refresh runs instead, set `refreshLeadSeconds` in the same `o
 ember cannot see your plan, so it assumes 60 minutes unless a Claude Code setting says otherwise.
 
 - If you use a Claude subscription within its usage, change nothing. Claude Code uses a 60-minute TTL.
-- If you use an API key, a cloud provider, or usage credits, Claude Code uses a 5-minute TTL. Set `"promptCacheTtl": "5m"` in `~/.claude/settings.json`, or set the `ttlMinutes` option to `5`. At 5 minutes the refresh stays on unless you set the `refreshShortTtl` option to `false`.
+- If you use an API key, a cloud provider, or usage credits, Claude Code uses a 5-minute TTL. Set `"promptCacheTtl": "5m"` in `~/.claude/settings.json`, or set the `ttlMinutes` option to `5` in the install screen or in `/config`. At 5 minutes the refresh stays on unless you set the `refreshShortTtl` option to `false`.
 - If you want the 60-minute TTL everywhere, set `"promptCacheTtl": "1h"`. Cache writes then cost 2 times the input price instead of 1.25 times.
 
 Run `/ember` to check the result. The first line names the TTL and its source.
@@ -181,7 +181,9 @@ Recommendation: keep refresh on, keep the current lead (lead 5m00s (auto)): abou
 | `refreshShortTtl` | Boolean | `true` | `false` stops the refresh when the TTL is 5 minutes or less. Any other value counts as `true`. |
 | `ttlMinutes` | number | `60` | 1 to 1440. Used only when no setting in [TTL resolution](#ttl-resolution) applies. |
 
-Set the options in `/config`, or under `pluginConfigs` in `~/.claude/settings.json`.
+The install screen of `/plugin install` shows `refreshLeadSeconds` and `ttlMinutes` as empty fields. An empty field uses the default.
+
+Set the options in the install screen, in `/config`, or under `pluginConfigs` in `~/.claude/settings.json`.
 
 ### TTL resolution
 
