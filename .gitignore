@@ -1,4 +1,7 @@
+# macOS Finder metadata, created in every folder you open
 .DS_Store
+
+# Local agent skills: kept on this machine only, not shared with the mods
 .agents/
 .claude/
 skills-lock.json
