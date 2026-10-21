@@ -2,9 +2,11 @@
 
 ember is a Claude Code mod that measures how warm your prompt cache stays across idle pauses, and refreshes the cache shortly before it expires. It changes no request, prompt, or tool call, and it never submits a prompt. Its only model calls are the refresh forks, which are on by default.
 
-> **Unverified.** Nobody has yet measured on a live session that a refresh keeps the main cache warm without a new full write. Until the [probe](#how-to-check-that-the-refresh-works) passes, treat the refresh savings as estimates. Each refresh spends plan usage or API credit.
+> **Unverified.** Nobody has yet measured on a live session that a refresh keeps the main cache warm without a new full write. A [live test](#live-test-results) measured the cache report, but no refresh ran. Until the [probe](#how-to-check-that-the-refresh-works) passes, treat the refresh savings as estimates. Each refresh spends plan usage or API credit.
 
 Tested with Claude Code v2.1.305.
+
+To install ember, run `/plugin install ember --marketplace davegomez/mods` in a Claude Code session. For the shell and the desktop app, see [Install a mod](../README.md#install-a-mod).
 
 - [Tutorial: see your cache warmth](#tutorial-see-your-cache-warmth)
 - How-to guides: [turn the refresh off](#how-to-turn-the-refresh-off), [set the TTL for your plan](#how-to-set-the-ttl-for-your-plan), [show the cache in your status line](#how-to-show-the-cache-in-your-status-line), [tune the refresh](#how-to-tune-the-refresh), [check that the refresh works](#how-to-check-that-the-refresh-works), [keep the cache of a long conversation](#how-to-keep-the-cache-of-a-long-conversation)
@@ -13,13 +15,9 @@ Tested with Claude Code v2.1.305.
 
 ## Tutorial: see your cache warmth
 
-In this tutorial, we load ember, send 2 short prompts, and read the cache report. It takes about 3 minutes.
+In this tutorial, we start a session with ember, send 2 short prompts, and read the cache report. It takes about 3 minutes.
 
-1. Start Claude Code with ember loaded:
-
-   ```bash
-   claude --plugin-dir /path/to/ember
-   ```
+1. If ember is not installed, install it as shown above. Then start a new Claude Code session.
 
 2. Send this prompt and wait for the answer:
 
@@ -48,12 +46,12 @@ You have measured your own prompt cache. From now on, each pause between your pr
 ### How to turn the refresh off
 
 1. Open `~/.claude/settings.json`.
-2. Add the option under the plugin ID. For a mod loaded with `--plugin-dir`, the ID is `ember@inline`. For an installed copy, use `ember@<marketplace>`.
+2. Add the option under the plugin ID `ember@davegomez`.
 
    ```json
    {
      "pluginConfigs": {
-       "ember@inline": {
+       "ember@davegomez": {
          "options": { "refresh": false }
        }
      }
@@ -109,7 +107,7 @@ If your shell runs with `set -f`, use `find` instead of the glob. If you use the
 
 > This guide spends plan usage or API credit: each probe is 1 fork.
 
-1. Start Claude Code with ember loaded.
+1. Start a new Claude Code session with ember installed.
 2. Build a cached prefix of at least 10k tokens, for example by asking Claude to read a large file, and let the turn finish.
 3. Within 1 minute, run `/ember-probe`. Expect a toast with `hit`, a read of at least 90%, and `created` of at most 1024. Note the `fork steps seen` count: 0 means that fork requests do not reach `turn.step`.
 4. Stay idle for 10 minutes, then run `/ember-probe` again. Expect a hit again, because the first probe restarted the TTL.
@@ -164,7 +162,7 @@ The hit ratio is `cache read / (input + cache read + cache creation)`, weighted 
 
 ### The `/ember-refresh` pane
 
-The pane shows the sample size, the refresh hit rate, hits and misses by refresh age, the net saving, and the reasons that pauses were not refreshed. With at least 20 returned pauses, it also shows the Kaplan-Meier share of pauses still idle at 5m, 30m, 55m, 1h, 2h, and 8h, the expected saving per pause of each lead and of `off`, the replay cost of the recorded pauses, and a recommendation. Below 20 returned pauses, it shows `Not enough data`. Example on a fixture log:
+The pane shows the sample size, the refresh hit rate, hits and misses by refresh age, the net saving, and the reasons that pauses were not refreshed. With at least 20 returned pauses, it also shows the Kaplan-Meier share of pauses still idle at 5m, 30m, 55m, 1h, 2h, and 8h, the expected saving per pause of each lead and of `off`, the replay cost of the recorded pauses, and a recommendation. Below 20 returned pauses, it shows `Not enough data`. Example on a sample log:
 
 ```text
 Refresh on · lead 5m00s (auto) · TTL 60m (ttlMinutes option)
@@ -223,9 +221,26 @@ Idle compaction can run when the TTL is 60 minutes, `idleCompaction` and `autoCo
 | Toast | When the circuit breaker trips: `ember: cache refresh paused after 2 misses in a row. Run /ember-refresh for details.` |
 | Status line | VS Code only: `idle 12m03s · last hit 97% · 142k cached · cold in ~47m57s`, or `session hit 95%` while a main request runs. |
 
+### Live test results
+
+One test on 2026-10-20, Claude Code v2.1.305, 1 Claude subscription account, TTL 60m (`ttlMinutes` option). 4 sessions, 12 main requests.
+
+| Gap type | Requests | Hit |
+| :- | :- | :- |
+| `first` | 5 | 62.6% |
+| `user` | 2 | 98.4% |
+| `tool` | 5 | 93.3% |
+| All | 12 | 83.0% |
+
+The 2 `user` pauses fell in the `5-15m` and `15-30m` bands, and both stayed warm. The longest warm pause was 29m03s, measured from the start of the previous request. That is longer than a 5-minute TTL, so the 60-minute TTL applied on this account. No cold `user` pause was recorded, so the test gives no upper bound for the TTL.
+
+No timed refresh and no `/ember-probe` ran. The 2 pauses that the refresh log recorded ended with a session exit, so no refresh was due. This test does not verify the refresh.
+
+The sample is small: 1 evening on 1 account. Run `/ember` and `/ember-refresh` to see your own numbers.
+
 ### Stored data
 
-ember stores numbers only, in one JSON file per plugin under `~/.claude/plugins/store/`: `ember_inline-<hash>.json` for a `--plugin-dir` load. Each session has one key, `session:<session id>`. It holds the gap-type totals, the gap bands, the TTL bounds, the event counts, `live`, and `refresh`. Keys older than 30 days are deleted, and at most 500 session keys are kept.
+ember stores numbers only, in the file `~/.claude/plugins/store/ember_davegomez-<hash>.json`. Each session has one key, `session:<session id>`. It holds the gap-type totals, the gap bands, the TTL bounds, the event counts, `live`, and `refresh`. Keys older than 30 days are deleted, and at most 500 session keys are kept.
 
 `live`:
 
@@ -260,7 +275,7 @@ ember does not know when you will return, so it uses the ski-rental rule from on
 
 ### Why the refresh is unverified
 
-A fork sends the main conversation's last request again with a short prompt after it. The type declarations say that a fork reuses the main thread's last cache breakpoint and adds none of its own. That should make it a read of the prefix that restarts the TTL. Nobody has yet measured this on a live session, and the declarations do not say whether fork requests reach the `turn.step` event. The probe answers both questions.
+A fork sends the main conversation's last request again with a short prompt after it. The type declarations say that a fork reuses the main thread's last cache breakpoint and adds none of its own. That should make it a read of the prefix that restarts the TTL. Nobody has yet measured this on a live session, and the declarations do not say whether fork requests reach the `turn.step` event. The probe answers both questions. The [live test](#live-test-results) measured the cache report, but no refresh or probe ran.
 
 The savings are API-price estimates in input-token units. The docs say that cached history is read again "at the cached token rate" and still draws plan usage, but Anthropic does not publish how fork reads count toward subscription limits.
 
