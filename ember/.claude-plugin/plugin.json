@@ -1,0 +1,36 @@
+{
+  "name": "ember",
+  "version": "0.2.0",
+  "description": "Measures how warm the prompt cache stays across your idle gaps, and refreshes it before it expires.",
+  "author": { "name": "David" },
+  "userConfig": {
+    "ttlMinutes": {
+      "type": "number",
+      "title": "Cache TTL (minutes)",
+      "description": "Cache TTL in minutes, 1 to 1440, used when no FORCE_PROMPT_CACHING_5M, CLAUDE_CODE_PROMPT_CACHE_TTL, promptCacheTtl or ENABLE_PROMPT_CACHING_1H sets it. Set it to your plan default.",
+      "default": 60,
+      "min": 1,
+      "max": 1440
+    },
+    "refresh": {
+      "type": "boolean",
+      "title": "Refresh the cache before it expires",
+      "description": "While you are idle, re-read the cached conversation shortly before the TTL ends, so that your next message finds the cache warm. Each refresh costs a cache read. Stops for a pause once the refreshes cost as much as one cold rewrite.",
+      "default": true
+    },
+    "refreshShortTtl": {
+      "type": "boolean",
+      "title": "Also refresh when the TTL is 5 minutes or less",
+      "description": "Off by default: at a 5-minute TTL a refresh can cost more than the cold rewrites it avoids. Run /ember-refresh to see whether it saves on your pauses.",
+      "default": false
+    },
+    "refreshLeadSeconds": {
+      "type": "number",
+      "title": "Refresh lead (seconds before expiry)",
+      "description": "How long before the computed expiry a refresh runs, 10 to 3600. 0 picks the automatic lead: min(5 min, TTL / 5), so 5 min for a 60 min TTL and 1 min for a 5 min TTL. A lead that leaves under 10 s of TTL falls back to the automatic one.",
+      "default": 0,
+      "min": 0,
+      "max": 3600
+    }
+  }
+}
