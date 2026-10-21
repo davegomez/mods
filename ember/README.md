@@ -122,11 +122,14 @@ If steps 3 to 5 pass, the refresh works on your account.
 
 ### How to keep the cache of a long conversation
 
-On the 60-minute TTL, Claude Code can compact an idle conversation about 54 minutes after the last request. ember does not refresh a pause where this can happen. To let ember keep the full cache instead:
+On the 60-minute TTL, Claude Code can compact an idle conversation about 54 minutes after the last request.
 
-1. Run `/ember-refresh` and read its idle compaction section. It estimates what `"idleCompaction": false` costs on your own pauses, and it recommends whether to change the setting.
-2. Set `"idleCompaction": false` in `~/.claude/settings.json`.
-3. Start a new session.
+- If idle compaction does not run for your account, change nothing. ember already keeps the cache warm. `/ember-refresh` shows `Idle compaction: not seen`.
+- If idle compaction runs, ember yields to it, and the conversation is replaced by a summary. To keep the full conversation instead, which ember then refreshes:
+
+  1. Run `/ember-refresh` and read its idle compaction section. It estimates what `"idleCompaction": false` costs on your own pauses, and it recommends whether to change the setting.
+  2. Set `"idleCompaction": false` in `~/.claude/settings.json`.
+  3. Start a new session.
 
 ## Reference
 
@@ -168,27 +171,33 @@ The hit ratio is `cache read / (input + cache read + cache creation)`, weighted 
 
 ### The `/ember-refresh` pane
 
-The pane shows the sample size, the refresh hit rate, hits and misses by refresh age, the net saving, and the reasons that pauses were not refreshed. With at least 20 returned pauses, it also shows the Kaplan-Meier share of pauses still idle at 5m, 30m, 55m, 1h, 2h, and 8h, the expected saving per pause of each lead and of `off`, the replay cost of the recorded pauses, and a recommendation. Below 20 returned pauses, it shows `Not enough data`. Example on a sample log:
+The pane shows the sample size, whether ember has seen idle compaction run, the refresh hit rate, hits and misses by refresh age, the net saving, and the reasons that pauses were not refreshed. With at least 20 returned pauses, it also shows the Kaplan-Meier share of pauses still idle at 5m, 30m, 55m, 1h, 2h, and 8h, the expected saving per pause of each lead and of `off`, the replay cost of the recorded pauses, and a recommendation. Below 20 returned pauses, it shows `Not enough data`. Example on a sample log:
 
 ```text
 Refresh on · lead 5m00s (auto) · TTL 60m (ttlMinutes option)
+Idle compaction: not seen, ember refreshes long conversations too.
 Sample: 30 pauses (28 returned, 2 exits) · 5 refreshes · 4 sessions
 Refreshes: 5 hit · 0 miss · 0 refused · hit rate 100%
 Net saved: ~620k tokens (4 cold rewrites avoided).
 Recommendation: keep refresh on, keep the current lead (lead 5m00s (auto)): about 10k tokens saved per pause.
 ```
 
-The pane ends with an idle compaction section when ember skipped any pause because idle compaction could run. This happens on the 60-minute TTL only. The section first counts the skipped pauses, returned and exits. With fewer than 20 returned pauses, it shows only the counts and says to keep idle compaction on. Otherwise it counts only the pauses that lasted at least 54 minutes, because shorter pauses cost the same either way. For those pauses it shows:
+The second line shows only at a 60-minute TTL with the refresh on. It is one of:
+
+- `Idle compaction: not seen, ember refreshes long conversations too.`
+- `Idle compaction: seen <YYYY-MM-DD>, ember skips the pauses it applies to.`
+
+The pane ends with an idle compaction section when ember left any pause to idle compaction. This happens on the 60-minute TTL only. The section first counts the skipped pauses, returned and exits. If some of them lasted at least 54 minutes and no idle compaction was recorded in them, it adds `<n> lasted past 54m00s with no idle compaction recorded; ember now refreshes such pauses until it sees idle compaction run.` With fewer than 20 returned pauses, it shows only the counts and says to keep idle compaction on. Otherwise it counts only the pauses that lasted at least 54 minutes with idle compaction recorded, because shorter pauses cost the same either way. If no such pause exists, it stops after the counts. For those pauses it shows:
 
 - The cost of keeping the full conversation with `"idleCompaction": false`, with refresh at your lead and with no refresh.
 - A lower bound for idle compaction's own cost: 1 cache read of the conversation per pause. The summary's output and its write are not measured.
 - The extra cost of keeping the full conversation, as an upper bound, in total and per pause.
 - A recommendation.
 
-When the refresh is off, the section recommends to keep idle compaction on. It never claims a saving against idle compaction, and it does not price what a summary loses. ember never changes the setting. Example on a sample log:
+A pause that ember rescued counts as a refreshed pause, not in this section. When the refresh is off, the section recommends to keep idle compaction on. It never claims a saving against idle compaction, and it does not price what a summary loses. ember never changes the setting. Example on a sample log:
 
 ```text
-Idle compaction: 21 pauses skipped (20 returned, 1 exits). 6 of 21 pauses lasted past 54m00s; shorter pauses cost the same either way. With "idleCompaction": false, which keeps the full conversation: refresh at lead 5m00s (auto) 500k · no refresh 2.5M tokens.
+Idle compaction: 21 pauses skipped (20 returned, 1 exits). 6 of 21 pauses lasted past 54m00s with idle compaction recorded; shorter pauses cost the same either way. With "idleCompaction": false, which keeps the full conversation: refresh at lead 5m00s (auto) 500k · no refresh 2.5M tokens.
 Idle compaction on the same pauses: at least 150k tokens, one cache read of the conversation for each of the 6 pauses past 54m00s. Not measured: the summary's output and its write at return.
 Keeping the full conversation costs at most 350k tokens more (58k per pause). Not priced: what a summary loses (the detail of the conversation).
 Recommendation: keep idle compaction on unless the full conversation is worth about 58k tokens per pause to you. If you set "idleCompaction": false, keep refresh on: it costs 2.0M tokens less than no refresh.
@@ -233,15 +242,16 @@ Other values, and a read that fails, go to the next rule. ember reads the TTL at
 | Miss | Any other result. A miss stops the refresh for that pause. |
 | Circuit breaker | 2 misses in a row stop the refresh for the session, with 1 toast. |
 | Refused call | An API error, an abort, or a rejected call retries after 30 s, at most 3 times per pause. `nothing-to-fork` stops the pause. |
-| No refresh | Refresh off; `claude -p` or the Agent SDK; a turn stopped with Esc; a prefix of 0; a compaction in or before the pause; the circuit breaker; a pause where idle compaction can run; a TTL of 5 minutes or less while `refreshShortTtl` is `false`, also after a refresh miss sets the TTL to 5 minutes. ember logs that pause with the reason `short-ttl`, so `/ember-refresh` can evaluate it. |
-
-Idle compaction can run when the TTL is 60 minutes, `idleCompaction` and `autoCompactEnabled` are not `false`, `DISABLE_AUTO_COMPACT` is not set, and the prefix is at least 90% of `CLAUDE_CODE_IDLE_COMPACT_MIN_TOKENS` (default 200,000).
+| No refresh | Refresh off; `claude -p` or the Agent SDK; a turn stopped with Esc; a prefix of 0; a compaction in or before the pause; the circuit breaker; a pause left to idle compaction, until the rescue; a TTL of 5 minutes or less while `refreshShortTtl` is `false`, also after a refresh miss sets the TTL to 5 minutes. ember logs that pause with the reason `short-ttl`, so `/ember-refresh` can evaluate it. |
+| Idle compaction | ember skips a pause with the reason `idle compaction` only when all of these hold: the TTL is 60 minutes, the session is interactive, idle compaction is not turned off (`"idleCompaction": false`, `"autoCompactEnabled": false`, or `DISABLE_AUTO_COMPACT` set to `1` or `true`), the prefix is at least 90% of the idle compaction threshold, and ember has seen idle compaction run on this computer. The threshold is 200,000 tokens, or `CLAUDE_CODE_IDLE_COMPACT_MIN_TOKENS` with a floor of 100,000. Without that evidence, ember refreshes these pauses at the usual lead. At any other TTL, no pause is skipped for idle compaction. |
+| Rescue | In a skipped pause, if no compaction is seen by 57 m 30 s after the last cache read, ember deletes the evidence and refreshes then. The pause then continues like any other: refreshes at the lead, the cap, and the circuit breaker. Later pauses refresh until ember sees idle compaction run again. A manual compaction in a skipped pause stops the rescue. |
+| Compaction after a rescue | If idle compaction runs after a rescue, the refreshes stop for that pause, and ember records the evidence again. |
 
 ### Notifications
 
 | Where | What |
 | :- | :- |
-| Toast | Once per idle pause, when the time left first falls to the automatic lead: `cache goes cold in ~4m59s (142k tokens)`. Not shown while a request runs, when the prefix is 0, or while a refresh will still run before expiry. |
+| Toast | Once per idle pause, when the time left first falls to the automatic lead: `cache goes cold in ~4m59s (142k tokens)`. Not shown while a request runs, when the prefix is 0, while a refresh will still run before expiry, or while a pause waits for the idle compaction rescue. |
 | Toast | When the circuit breaker trips: `ember: cache refresh paused after 2 misses in a row. Run /ember-refresh for details.` |
 | Status line | VS Code only: `idle 12m03s · last hit 97% · 142k cached · cold in ~47m57s`, or `session hit 95%` while a main request runs. |
 
@@ -273,13 +283,15 @@ The second test ran on Claude Code v2.1.306, with the installed copy, on the sam
 | Fork steps seen | 0 |
 | Net saving | About 152k tokens |
 
-The 7 refreshes cost about 102k tokens, and the warm read at return about 13k, against a cold rewrite of 2 × 133,373 tokens. The saving is in input-token units at API prices. A fork step count of 0 means that fork requests do not reach the `turn.step` event. No `/ember-probe` ran in this test.
+The 7 refreshes cost about 102k tokens, and the warm read at return about 13k, against a cold rewrite of 2 × 133,373 tokens. The saving is in input-token units at API prices. A fork step count of 0 means that fork requests do not reach the `turn.step` event. No `/ember-probe` ran in this test. A later pause of 69.7 minutes in the same session, with a 238k-token cache, went cold: ember skipped it because it assumed idle compaction would run, and no compaction ran. This led to the [rescue](#refresh-policy) in the refresh policy.
 
 The sample is small: 2 tests on 1 account. Run `/ember` and `/ember-refresh` to see your own numbers.
 
 ### Stored data
 
 ember stores numbers only, in the file `~/.claude/plugins/store/ember_davegomez-<hash>.json`. Each session has one key, `session:<session id>`. It holds the gap-type totals, the gap bands, the TTL bounds, the event counts, `live`, and `refresh`. Keys older than 30 days are deleted, and at most 500 session keys are kept.
+
+The store-wide key `idleCompactionSeenMs` holds one timestamp: when ember last saw idle compaction run, in epoch milliseconds. All sessions on the computer share it. ember deletes it at a rescue, or when a skipped pause closes after the rescue time with no compaction.
 
 Each gap band holds `{ n, read, total }`, like the gap-type totals: the request count, the cache read tokens, and the sum of input, cache read, and cache creation tokens. Before version 0.3.0 a band held a bare count, which ember still reads.
 
@@ -297,10 +309,10 @@ Each gap band holds `{ n, read, total }`, like the gap-type totals: the request 
 
 `refresh.log` keeps the newest 32 records of the session as number arrays:
 
-- Pause: `[0, startMs, lenMs, ageMs, ttlMinutes, source, leadMs, prefix, refreshes, end, skip, cost, saved]`
+- Pause: `[0, startMs, lenMs, ageMs, ttlMinutes, source, leadMs, prefix, refreshes, end, skip, cost, saved, idleCompacted]`
 - Refresh: `[1, startMs, ageMs, ttlMinutes, source, leadMs, prefix, read, creation, input, output, outcome, steps, agentSteps, isProbe]`
 
-`end` is 0 warm, 1 cold, 2 exit, or 3 unknown. `outcome` is 0 hit, 1 miss, or 2 refused. `source` and `skip` are indexes into the lists in `hooks/refresh.ts`. A pause that ember left to idle compaction keeps the skip reason `idle compaction`, even when a compaction runs in it.
+`end` is 0 warm, 1 cold, 2 exit, or 3 unknown. `outcome` is 0 hit, 1 miss, or 2 refused. `source` and `skip` are indexes into the lists in `hooks/refresh.ts`. `idleCompacted` is 1 when idle compaction was seen in the pause, else 0. Records written before this field existed read as 0. The open pause, `refresh.pause`, holds the same as `idleCompactMs`, the time it was seen. A pause that ember left to idle compaction keeps the skip reason `idle compaction` when idle compaction runs in it. A rescued pause records the skip reason `none`, or a later stop reason, and its refreshes.
 
 ## Explanation
 
@@ -328,7 +340,11 @@ The savings are API-price estimates in input-token units. The docs say that cach
 
 ### Why ember stays away from idle compaction
 
-On the 60-minute TTL, Claude Code can compact an idle conversation about 54 minutes after the last request. That is before ember's 55-minute refresh, and the docs do not say whether a fork restarts the compaction timer. A refresh that races a compaction pays for a read and then loses the prefix anyway. So ember skips those pauses and leaves the choice to you through the `idleCompaction` setting.
+On the 60-minute TTL, Claude Code can compact an idle conversation about 54 minutes after the last request. That is before ember's 55-minute refresh. The compaction replaces the cached conversation with a summary, so a refresh just before it is paid for nothing. That is why ember yields to idle compaction and leaves the choice to you through the `idleCompaction` setting.
+
+Settings alone do not tell ember whether idle compaction will run. It can be off for your account through a server setting that a mod cannot read, or stopped by conditions in a session. An earlier version of ember yielded whenever the settings allowed idle compaction, and a 238k-token cache went cold when none ran. So ember now yields only after it has seen idle compaction run: an automatic compaction of the main conversation while you are away. `/compact`, a compaction during a turn, and a subagent's compaction do not count.
+
+The evidence can go stale. Claude Code starts idle compaction at a fraction of the cache lifetime, 0.9 by default and at most 0.95, so it has started by 57 minutes on a 60-minute cache. ember checks at 57 m 30 s and refreshes if nothing happened, so yielding does not make the cache go cold. Finding out that the evidence was stale costs 1 refresh, about 0.1 times the conversation size.
 
 If you consider `"idleCompaction": false`, compare what each choice costs on a 60-minute TTL. Costs are in input-price units: a cache read is 0.1 and a 1-hour cache write is 2.
 
