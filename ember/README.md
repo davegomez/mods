@@ -96,7 +96,7 @@ If your shell runs with `set -f`, use `find` instead of the glob. If you use the
 
 1. Use Claude Code as usual until `/ember-refresh` has at least 20 returned pauses.
 2. Run `/ember-refresh`.
-3. Read the `Recommendation` box at the end of the `Lead options` section.
+3. Read the `Recommendation` box at the top of the pane.
    - If it says to turn the refresh off, [turn it off](#how-to-turn-the-refresh-off).
    - If it names a different lead, set `refreshLeadSeconds` to that value.
    - If your TTL is 5 minutes or less and it says to set `refreshShortTtl` to `false`, set it in the same `options` object. If it says to set it to `true`, set it to `true` or remove it. If it says to keep `refreshShortTtl` on, change nothing.
@@ -164,7 +164,7 @@ ember  1: This session  2: All sessions                       q: Close
 
 Status
 TTL              60m (ttlMinutes option)
-Observed TTL     warm up to 2m00s · cold from –
+Observed TTL     warm up to 2m · cold from –
 Compactions      0
 Model switches   0
 
@@ -191,28 +191,33 @@ The hit ratio is `cache read / (input + cache read + cache creation)`, weighted 
 
 ### The `/ember-refresh` pane
 
-The first row holds the title `ember refresh` and `q: Close` at the right. Below it, the pane groups its rows into sections, each under a bold title. The sections stand side by side where the pane is wide enough, and wrap to the next row where it is not:
+The first row holds the title `ember refresh` and `q: Close` at the right. Below it comes the recommendation, in a box as wide as its text, then any idle compaction warning. The pane groups the other rows into sections, each under a bold title. The sections stand side by side where the pane is wide enough, and wrap to the next row where it is not:
 
 | Section | What it shows |
 | :- | :- |
-| `Status` | Whether the refresh is on, the lead, the TTL and its source, whether ember has seen idle compaction run, and the sample size. |
+| `Status` | Whether the refresh is on, the lead, the TTL and its source, whether ember has seen idle compaction run and how many pauses it left to it, and the sample size. |
 | `Refreshes` | The refresh hits, misses, refusals, and hit rate, then hits and misses by refresh age. |
-| `Savings` | The net saving, and the reasons that pauses were not refreshed. |
-| `Idle time (survival)` | The Kaplan-Meier share of pauses still idle at 5m, 30m, 55m, 1h, 2h, and 8h. |
-| `Lead options` | For each lead and for `off`: the expected saving per pause, the replay cost of the recorded pauses, and the saving against `off` in that replay. Then the recommendation, in a box. |
+| `Savings` | The net saving, measured on the refreshes ember ran, and under `Not refreshed` the reasons that pauses were not refreshed. Idle compaction is among the reasons only when `Status` has no `Idle compaction` row. |
+| `Idle time (survival)` | The Kaplan-Meier share of pauses still idle at 5m, 30m, 55m, 1h, 2h, and 8h, with exits censored. |
+| `Lead options` | For each lead and for `off`: `Saved/pause`, the expected saving per pause; `Replay cost`, the cost of the recorded pauses replayed under that policy; and `Saved vs off`, the saving against `off` in that replay. The replay covers every pause in the sample, skipped ones included, and counts each refresh as a hit, so `Saved vs off` can exceed `Net saved`. |
 
-Values are bold. Green marks a hit and a positive saving, red a miss and a negative saving, yellow a refusal, a refresh that is off, and a warning. Caveats are dim, under the value they qualify. In the `Lead options` table, `▸` marks the recommended row and `•` the policy that runs now. The table keeps its numbers whole in a narrow pane and shortens the policy names instead.
+Values are bold. Green marks a hit and a positive saving, red a miss and a negative saving, yellow a refusal, a refresh that is off, and a warning. Caveats are dim, under the value they qualify. In the `Lead options` table, `▸` marks the recommended row, and `•` and `(current)` in the name mark the policy that runs now. When the recommended row is also the current one, `(current)` still shows. Durations drop a zero part: `5m`, `1h`, but `59m59s` and `1h05m`. The table keeps its numbers whole in a narrow pane and shortens the policy names instead.
 
-`Idle time (survival)` and the table show only with at least 20 returned pauses. Below that, `Lead options` shows `Not enough data`. Example on a sample log, in a 70-column pane:
+`Idle time (survival)` and `Lead options` show only with at least 20 returned pauses. Below that, the recommendation says `Not enough data`. Example on a sample log, in a 70-column pane:
 
 ```text
 ember refresh                                                 q: Close
 
+╭─────────────────────────────────────────────────────────────────╮
+│ Recommendation: keep refresh on, keep the current lead (lead 5m │
+│ (auto)): about 10k tokens saved per pause versus refresh off.   │
+╰─────────────────────────────────────────────────────────────────╯
+
 Status
 Refresh          on
-Lead             5m00s (auto)
+Lead             5m (auto)
 TTL              60m (ttlMinutes option)
-Idle compaction  not seen, ember refreshes long conversations too.
+Idle compaction  not seen, ember refreshes long conversations too
 Sample           30 pauses (28 returned, 2 exits) · 5 refreshes · 4
                  sessions
 
@@ -229,31 +234,32 @@ Net saved        ~620k tokens (4 cold rewrites avoided)
                  plan limits.
 
 Idle time (survival)
-Kaplan-Meier, exits censored
-Idle for    5m00s  30m00s  55m00s  1h00m  2h00m  8h00m
-Still idle    83%     20%     20%    20%    10%     7%
+Share of pauses still idle after each time
+Idle for     5m  30m  55m   1h   2h  8h
+Still idle  83%  20%  20%  20%  10%  7%
 
 Lead options
-   Policy             Per pause  Replay  vs off
-   off                        –    1.0M       –
-   lead 1m00s               10k    420k    620k
-   lead 2m00s               10k    420k    620k
-▸  lead 5m00s (auto)        10k    420k    620k
-   lead 10m00s              10k    430k    610k
-Per pause: saved per pause (survival) · Replay: replay cost · vs off:
-saved vs off (replay) · ▸ recommended · • current
-╭────────────────────────────────────────────────────────────────────╮
-│ Recommendation: keep refresh on, keep the current lead (lead 5m00s │
-│ (auto)): about 10k tokens saved per pause.                         │
-╰────────────────────────────────────────────────────────────────────╯
+   Policy                   Saved/pause  Replay cost  Saved vs off
+   off                                –         1.0M             –
+   lead 1m                          10k         420k          620k
+   lead 2m                          10k         420k          620k
+▸  lead 5m (auto, current)          10k         420k          620k
+   lead 10m                         10k         430k          610k
+▸ recommended · • current
+Saved vs off replays every pause in the sample, skipped ones too, as
+if each refresh hit; Net saved counts only the refreshes ember ran.
 ```
 
 The `Idle compaction` row of `Status` shows only at a 60-minute TTL with the refresh on. It is one of:
 
-- `not seen, ember refreshes long conversations too.`
-- `seen <YYYY-MM-DD>, ember skips the pauses it applies to.`
+- `not seen, ember refreshes long conversations too`
+- `seen <YYYY-MM-DD>, ember skips the pauses it applies to`
 
-The pane ends with an `Idle compaction` section when ember left any pause to idle compaction. This happens on the 60-minute TTL only. The section first counts the skipped pauses, returned and exits. If some of them lasted at least 54 minutes and no idle compaction was recorded in them, it adds `<n> lasted past 54m00s with no idle compaction recorded; ember now refreshes such pauses until it sees idle compaction run.` With fewer than 20 returned pauses, it shows only the counts and says to keep idle compaction on. Otherwise it counts only the pauses that lasted at least 54 minutes with idle compaction recorded, because shorter pauses cost the same either way. If no such pause exists, it stops after the counts. For those pauses it shows:
+When ember left any pause to idle compaction, the row adds the count: `· <n> pauses skipped`, or `· <n> pauses skipped earlier` when idle compaction is not seen now.
+
+If some skipped pauses lasted at least 54 minutes and no idle compaction was recorded in them, the warning under the recommendation says `<n> skipped pauses lasted past 54m with no idle compaction recorded; ember now refreshes such pauses until it sees idle compaction run.`
+
+The pane ends with an `Idle compaction` section when ember left pauses to idle compaction and either has fewer than 20 returned ones, or recorded idle compaction in some that lasted at least 54 minutes. This happens on the 60-minute TTL only. With fewer than 20 returned pauses, the section says there is not enough data and to keep idle compaction on. Otherwise it counts only the pauses that lasted at least 54 minutes with idle compaction recorded, because shorter pauses cost the same either way. For those pauses it shows:
 
 - The cost of keeping the full conversation with `"idleCompaction": false`, with refresh at your lead and with no refresh.
 - A lower bound for idle compaction's own cost: 1 cache read of the conversation per pause. The summary's output and its write are not measured.
@@ -264,13 +270,12 @@ A pause that ember rescued counts as a refreshed pause, not in this section. Whe
 
 ```text
 Idle compaction
-21 pauses skipped (20 returned, 1 exits).
-6 of 21 pauses lasted past 54m00s with idle compaction recorded;
+6 of 21 pauses lasted past 54m with idle compaction recorded;
 shorter pauses cost the same either way.
 With "idleCompaction": false, which keeps the full conversation:
-refresh at lead 5m00s (auto) 500k · no refresh 2.5M tokens.
+refresh at lead 5m (auto) 500k · no refresh 2.5M tokens.
 Idle compaction on the same pauses: at least 150k tokens, one cache
-read of the conversation for each of the 6 pauses past 54m00s.
+read of the conversation for each of the 6 pauses past 54m.
 Not measured: the summary's output and its write at return.
 Keeping the full conversation costs at most 350k tokens more (58k per
 pause).
