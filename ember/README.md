@@ -112,7 +112,7 @@ A live session verified the refresh on 1 account. This guide checks it on yours.
 
 1. Start a new Claude Code session with ember installed.
 2. Build a cached prefix of at least 10k tokens, for example by asking Claude to read a large file, and let the turn finish.
-3. Within 1 minute, run `/ember-probe`. Expect a toast with `hit`, a read of at least 90%, and `created` of at most 1024. Note the `fork steps seen` count: 0 means that fork requests do not reach `turn.step`.
+3. Within 1 minute, run `/ember-probe`. Expect a toast with `hit` and a read of at least 90%. Note the `fork steps seen` count: 0 means that fork requests do not reach `turn.step`.
 4. Stay idle for 10 minutes, then run `/ember-probe` again. Expect a hit again, because the first probe restarted the TTL.
 5. Send a one-word prompt, then run `/ember`. Check that the `user` row has a high hit ratio and that the `agent` and `first` rows did not grow.
 6. To check the TTL edge, start a session with `CLAUDE_CODE_PROMPT_CACHE_TTL=5m`, finish a turn, wait 6 minutes, and run `/ember-probe`. Expect a miss with a read near 0.
@@ -318,7 +318,7 @@ Other values, and a read that fails, go to the next rule. ember reads the TTL at
 | Expiry | TTL after the start of the last request that read the cache: the main request, or the last refresh that hit. |
 | Late limit | No refresh starts in the last 5 s before expiry. |
 | Cap per pause | `floor(write weight / 0.1)` refreshes: 20 for 60 minutes, 12 for 5 minutes. |
-| Hit | Cache read at least 90% of the last main prefix, and cache creation at most 1024 tokens. |
+| Hit | Cache read at least 90% of the last main prefix. |
 | Miss | Any other result. A miss stops the refresh for that pause. |
 | Circuit breaker | 2 misses in a row stop the refresh for the session, with 1 toast. |
 | Refused call | An API error, an abort, or a rejected call retries after 30 s, at most 3 times per pause. `nothing-to-fork` stops the pause. |
