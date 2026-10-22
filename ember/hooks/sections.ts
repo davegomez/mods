@@ -10,7 +10,8 @@ export type TableRow = { cells: Cell[]; isPick?: boolean; isCurrent?: boolean };
 export type Table = { head: string[]; rows: TableRow[]; legend?: string };
 /** `pick` is a recommendation, drawn apart from the rest. */
 export type Block = { line: Line } | { table: Table } | { pick: Line };
-export type Section = { title: string; blocks: Block[] };
+/** A section with no title leads the pane, above the titled ones. */
+export type Section = { title?: string; blocks: Block[] };
 
 export const bold = (text: string, tone?: Tone): Run =>
 	tone === undefined ? { text, style: "bold" } : { text, style: "bold", tone };

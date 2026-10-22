@@ -11,9 +11,14 @@ const blockText = (b: Block) =>
 				...b.table.rows.map((r) => rowText(r.cells.map((c) => c.text))),
 			].join("\n")
 		: lineText("line" in b ? b.line : b.pick);
-/** The report as plain text, one row per line, each section under its title. */
+/** The report as plain text, one row per line, each section under its title if it has one. */
 export const textOf = (sections: readonly Section[]) =>
-	sections.flatMap((s) => [s.title, ...s.blocks.map(blockText)]).join("\n");
+	sections
+		.flatMap((s) => [
+			...(s.title === undefined ? [] : [s.title]),
+			...s.blocks.map(blockText),
+		])
+		.join("\n");
 
 type El = {
 	type: string;

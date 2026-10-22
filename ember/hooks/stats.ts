@@ -487,8 +487,9 @@ export function duration(ms: number): string {
 	const s = Math.max(0, Math.floor(ms / 1000));
 	const h = Math.floor(s / 3600);
 	const m = Math.floor((s % 3600) / 60);
-	if (h > 0) return `${h}h${pad(m)}m`;
-	return m > 0 ? `${m}m${pad(s % 60)}s` : `${s % 60}s`;
+	if (h > 0) return m > 0 ? `${h}h${pad(m)}m` : `${h}h`;
+	if (m === 0) return `${s % 60}s`;
+	return s % 60 > 0 ? `${m}m${pad(s % 60)}s` : `${m}m`;
 }
 
 export function tokens(n: number): string {

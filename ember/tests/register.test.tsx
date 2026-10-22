@@ -416,7 +416,7 @@ test(
 
 		await w.clock.advance(5 * MIN);
 		expect(w.statuses.at(-1)).toBe(
-			"idle 5m00s · last hit 50% · 50 cached · likely cold",
+			"idle 5m · last hit 50% · 50 cached · likely cold",
 		);
 	},
 );
@@ -443,7 +443,7 @@ test(
 		await step($, w, { index: 0 });
 		await w.clock.advance(MIN);
 		expect(w.statuses.at(-1)).toBe(
-			"idle 1m00s · last hit 90% · 90 cached · cold in ~1m00s",
+			"idle 1m · last hit 90% · 90 cached · cold in ~1m",
 		);
 	},
 );
@@ -509,7 +509,7 @@ for (const surface of ["terminal", "desktop"] as const) {
 		const all = flat(await ui.drawn());
 		expect(all).toContain("\nfirst 1 90%");
 		expect(all).toContain("\nuser 3 39%");
-		expect(all).toContain("Observed TTL warm up to 2m00s · cold from 1h30m");
+		expect(all).toContain("Observed TTL warm up to 2m · cold from 1h30m");
 		expect(all).toContain("Compactions 3\nModel switches 0");
 		// OLD stored its bands as bare counts: requests counted, no hit ratio.
 		expect(all).toContain("\n1-5m 1 98%\n>60m 2 –");
@@ -628,14 +628,14 @@ describe("the pane chrome and layout", () => {
 		await ui.press({ key: "tab-all" });
 		const text = flat(await ui.drawn());
 		expect(text).toContain(
-			"Status\nTTL 60m (ttlMinutes option)\nObserved TTL warm up to 2m00s · cold from 1h30m\nCompactions 3\nModel switches 0",
+			"Status\nTTL 60m (ttlMinutes option)\nObserved TTL warm up to 2m · cold from 1h30m\nCompactions 3\nModel switches 0",
 		);
 		for (const label of ["TTL", "Observed TTL", "Compactions"])
 			expect(
 				(await ui.find({ type: "Text", text: label }))?.props,
 			).toMatchObject({ dimColor: true });
 		// Only the status rows draw these values bold; a table's request count is plain.
-		for (const value of ["60m", "2m00s", "1h30m", "3"])
+		for (const value of ["60m", "2m", "1h30m", "3"])
 			expect(
 				(await ui.findAll({ type: "Text", text: value })).some(
 					(t) => t.text === value && t.props.weight === "bold",
@@ -914,9 +914,9 @@ test("one toast warns before the cache goes cold, again after a new request", as
 	await w.clock.advance(55 * MIN - 1000);
 	expect(w.toasts).toEqual([]);
 	await w.clock.advance(1000);
-	expect(w.toasts).toEqual(["cache goes cold in ~5m00s (142k tokens)"]);
+	expect(w.toasts).toEqual(["cache goes cold in ~5m (142k tokens)"]);
 	expect(w.statuses.at(-1)).toBe(
-		"idle 55m00s · last hit 0% · 142k cached · cold in ~5m00s",
+		"idle 55m · last hit 0% · 142k cached · cold in ~5m",
 	);
 	await w.clock.advance(10 * MIN);
 	expect(w.toasts.length).toBe(1);
@@ -924,8 +924,8 @@ test("one toast warns before the cache goes cold, again after a new request", as
 	await step($, w, { turnId: "t2", index: 0 }, { usage: bigUsage() });
 	await w.clock.advance(56 * MIN);
 	expect(w.toasts).toEqual([
-		"cache goes cold in ~5m00s (142k tokens)",
-		"cache goes cold in ~5m00s (142k tokens)",
+		"cache goes cold in ~5m (142k tokens)",
+		"cache goes cold in ~5m (142k tokens)",
 	]);
 });
 
@@ -936,7 +936,7 @@ test("a refused toast leaves the status line running", async ($, on) => {
 	await w.clock.advance(56 * MIN);
 	expect(w.toasts).toEqual([]);
 	expect(w.statuses.at(-1)).toBe(
-		"idle 56m00s · last hit 0% · 142k cached · cold in ~4m00s",
+		"idle 56m · last hit 0% · 142k cached · cold in ~4m",
 	);
 });
 
@@ -1109,7 +1109,7 @@ describe("cache refresh", () => {
 			await turn($, w, "t1");
 			await w.clock.advance(6 * MIN);
 			expect(w.forks).toEqual([]);
-			expect(w.toasts).toEqual(["cache goes cold in ~1m00s (142k tokens)"]);
+			expect(w.toasts).toEqual(["cache goes cold in ~1m (142k tokens)"]);
 			expect(refreshOf(w).pause?.skip).toBe(13);
 			await turn($, w, "t2");
 			expect(recs(w)[0]).toMatchObject({
@@ -1138,7 +1138,7 @@ describe("cache refresh", () => {
 		await turn($, w, "t1");
 		await w.clock.advance(90 * MIN);
 		expect(w.forks.length).toBe(12);
-		expect(w.toasts).toEqual(["cache goes cold in ~1m00s (142k tokens)"]);
+		expect(w.toasts).toEqual(["cache goes cold in ~1m (142k tokens)"]);
 	});
 
 	test(
@@ -1150,7 +1150,7 @@ describe("cache refresh", () => {
 			await turn($, w, "t1");
 			await w.clock.advance(56 * MIN);
 			expect(w.forks).toEqual([]);
-			expect(w.toasts).toEqual(["cache goes cold in ~5m00s (142k tokens)"]);
+			expect(w.toasts).toEqual(["cache goes cold in ~5m (142k tokens)"]);
 			expect(recs(w)).toEqual([]);
 			await turn($, w, "t2");
 			expect(recs(w)[0]).toMatchObject({
@@ -1247,7 +1247,7 @@ describe("cache refresh", () => {
 		await turn($, w, "t1", {}, true);
 		await w.clock.advance(56 * MIN);
 		expect(w.forks).toEqual([]);
-		expect(w.toasts).toEqual(["cache goes cold in ~5m00s (142k tokens)"]);
+		expect(w.toasts).toEqual(["cache goes cold in ~5m (142k tokens)"]);
 	});
 
 	test("a refused fork retries after 30 s and stops after 3; a rejected call counts as refused", async ($, on) => {
@@ -1290,9 +1290,9 @@ describe("cache refresh", () => {
 		expect(w.forks.length).toBe(2);
 		// After each miss no refresh is planned for that pause, so the cold warning is due again.
 		expect(w.toasts).toEqual([
-			"cache goes cold in ~5m00s (142k tokens)",
+			"cache goes cold in ~5m (142k tokens)",
 			REFRESH_TOAST,
-			"cache goes cold in ~5m00s (142k tokens)",
+			"cache goes cold in ~5m (142k tokens)",
 		]);
 		expect(w.debug).toContain(
 			"ember: cache refresh paused for this session after 2 misses in a row",
@@ -1480,7 +1480,7 @@ describe("cache refresh", () => {
 		const ui = await mountPane($, "terminal", "ember-refresh");
 		const md = flat(await ui.drawn());
 		expect(md).toContain(
-			"Refresh on\nLead 5m00s (auto)\nTTL 60m (ttlMinutes option)",
+			"Refresh on\nLead 5m (auto)\nTTL 60m (ttlMinutes option)",
 		);
 		expect(md).toContain(
 			"Not enough data for a recommendation: 0 returned pauses, 20 needed.",
@@ -1780,7 +1780,7 @@ describe("idle compaction evidence", () => {
 		]);
 		const ui = await mountPane($, "terminal", "ember-refresh");
 		expect(flat(await ui.drawn())).toContain(
-			"Idle compaction\n1 pauses skipped (1 returned, 0 exits).",
+			"· 1 pauses skipped earlier\nSample",
 		);
 		await ui.unmount();
 	});
@@ -1803,7 +1803,7 @@ describe("idle compaction evidence", () => {
 		await start($, w);
 		const ui = await mountPane($, "terminal", "ember-refresh");
 		expect(flat(await ui.drawn())).toContain(
-			"Idle compaction seen 2026-10-21, ember skips the pauses it applies to.",
+			"Idle compaction seen 2026-10-21, ember skips the pauses it applies to\nSample",
 		);
 		await ui.unmount();
 	});

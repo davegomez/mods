@@ -6,7 +6,15 @@ import type {
 	TextProps,
 } from "claude-code";
 
-import type { Cell, Line, Run, Section, Table, Tone } from "./sections.ts";
+import type {
+	Block,
+	Cell,
+	Line,
+	Run,
+	Section,
+	Table,
+	Tone,
+} from "./sections.ts";
 
 type Elements = {
 	Box: ElementConstructor<BoxProps>;
@@ -52,8 +60,9 @@ export const columnWidths = (t: Table): number[] =>
 	);
 
 /**
- * An ember pane: a header row (title, tabs, Close), then the sections side by side, wrapping to the next row where
- * the pane is too narrow; each section a bold title, label/value rows, `Box` tables, a recommendation boxed.
+ * An ember pane: a header row (title, tabs, Close), any untitled section under it, then the titled sections side by
+ * side, wrapping to the next row where the pane is too narrow; each section a bold title, label/value rows, `Box`
+ * tables, a recommendation boxed as wide as its text.
  */
 export function pane(
 	{ title, tabs = [], sections, onClose }: PaneView,
@@ -134,7 +143,7 @@ export function pane(
 								▸
 							</Text>
 						) : r.isCurrent === true ? (
-							<Text dimColor>•</Text>
+							<Text weight="bold">•</Text>
 						) : (
 							<Text> </Text>
 						),
@@ -144,6 +153,22 @@ export function pane(
 			</Box>
 		);
 	};
+
+	const block = (b: Block) =>
+		"table" in b ? (
+			table(b.table)
+		) : "pick" in b ? (
+			<Box
+				borderStyle="round"
+				borderColor="suggestion"
+				paddingX={1}
+				alignSelf="flex-start"
+			>
+				<Text>{runs(b.pick.runs)}</Text>
+			</Box>
+		) : (
+			line(b.line)
+		);
 
 	return (
 		<Box flexDirection="column" gap={1}>
@@ -173,25 +198,22 @@ export function pane(
 					onPress={onClose}
 				/>
 			</Box>
-			<Box flexDirection="row" flexWrap="wrap" columnGap={4} rowGap={1}>
-				{sections.map((s) => (
-					<Box flexDirection="column">
-						<Text weight="bold" color="claude">
-							{s.title}
-						</Text>
-						{s.blocks.map((b) =>
-							"table" in b ? (
-								table(b.table)
-							) : "pick" in b ? (
-								<Box borderStyle="round" borderColor="suggestion" paddingX={1}>
-									<Text>{runs(b.pick.runs)}</Text>
-								</Box>
-							) : (
-								line(b.line)
-							),
-						)}
-					</Box>
+			{sections
+				.filter((s) => s.title === undefined)
+				.map((s) => (
+					<Box flexDirection="column">{s.blocks.map(block)}</Box>
 				))}
+			<Box flexDirection="row" flexWrap="wrap" columnGap={4} rowGap={1}>
+				{sections
+					.filter((s) => s.title !== undefined)
+					.map((s) => (
+						<Box flexDirection="column">
+							<Text weight="bold" color="claude">
+								{s.title}
+							</Text>
+							{s.blocks.map(block)}
+						</Box>
+					))}
 			</Box>
 		</Box>
 	);

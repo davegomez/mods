@@ -25,6 +25,8 @@ import { BANDS, band, duration, percent, tokens, ttlLine } from "./stats.ts";
 const MIN = 60_000;
 /** Below this many returned pauses the survival estimate near the TTL rests on a handful of points. */
 export const MIN_RETURNS = 20;
+/** A lead must save at least this many tokens per pause more than the current one to be recommended over it. */
+export const MIN_GAIN_TOKENS = 500;
 const LEAD_CANDIDATES_S = [60, 120, 300, 600];
 const KM_POINTS_MS = [5, 30, 55, 60, 120, 480].map((m) => m * MIN);
 
@@ -259,9 +261,10 @@ export function statusLines(
 }
 
 /**
- * The pauses ember left to idle compaction; X, Y and Z cover only the long ones where it was recorded running, and
- * a long one with none recorded is named instead (ember now refreshes those). With `"idleCompaction": false` (the full conversation kept): X, refresh
- * at the configured lead, and Y, no refresh (one cold rewrite at return). Idle compaction on the same pauses costs
+ * The pauses ember left to idle compaction: a warning for the report's top, and the section's blocks. X, Y and Z
+ * cover only the long ones where it was recorded running; a long one with none recorded is named in the warning
+ * instead (ember now refreshes those), and with no long pause recorded there is no section. With
+ * `"idleCompaction": false` (the full conversation kept): X, refresh at the configured lead, and Y, no refresh (one cold rewrite at return). Idle compaction on the same pauses costs
  * at least Z, one cache read of the conversation per pause that reaches its time; its summary's output and the
  * write at return report no usage ember can see, so X - Z bounds the extra cost of the full conversation from above.
  * X, Y and Z cover only the pauses that reach idle compaction's time: a shorter pause costs the same under both settings.
@@ -269,8 +272,7 @@ export function statusLines(
 export function idleCompactionBlocks(
 	traces: readonly Trace[],
 	config: RefreshConfig,
-): Block[] {
-	if (traces.length === 0) return [];
+): { warning: Block[]; blocks: Block[] } {
 	const returns = traces.filter((t) => t.isReturn).length;
 	const runsAt = duration(
 		IDLE_COMPACTION_TTL_SHARE * IDLE_COMPACTION_TTL_MINUTES * MIN,
@@ -280,41 +282,29 @@ export function idleCompactionBlocks(
 	);
 	const compacted = long.filter((t) => t.isIdleCompacted === true);
 	const missed = long.length - compacted.length;
-	const head = [
-		line(
-			bold(`${traces.length} pauses skipped`),
-			plain(` (${returns} returned, ${traces.length - returns} exits).`),
-		),
-		...(missed > 0
+	const top: Block[] =
+		missed > 0
 			? [
 					line({
-						text: `${missed} lasted past ${runsAt} with no idle compaction recorded; ember now refreshes such pauses until it sees idle compaction run.`,
+						text: `${missed} skipped pauses lasted past ${runsAt} with no idle compaction recorded; ember now refreshes such pauses until it sees idle compaction run.`,
 						tone: "warn",
 					}),
 				]
-			: []),
-	];
+			: [];
+	if (traces.length === 0 || (returns >= MIN_RETURNS && compacted.length === 0))
+		return { warning: top, blocks: [] };
 	if (returns < MIN_RETURNS)
-		return [
-			...head,
-			pick(
-				plain(
-					`Not enough data for an idle compaction recommendation: ${returns} returned pauses, ${MIN_RETURNS} needed. Keep idle compaction on.`,
+		return {
+			warning: top,
+			blocks: [
+				pick(
+					plain(
+						`Not enough data for an idle compaction recommendation: ${returns} returned pauses, ${MIN_RETURNS} needed. Keep idle compaction on.`,
+					),
 				),
-			),
-		];
-	if (missed > 0 && compacted.length === 0) return head;
-	if (compacted.length === 0)
-		return [
-			...head,
-			line(
-				plain(
-					`None lasted past ${runsAt}, so idle compaction did not run on these pauses and the setting made no difference. Keep idle compaction on.`,
-				),
-			),
-		];
+			],
+		};
 	const scope = [
-		...head,
 		line(
 			bold(`${compacted.length} of ${traces.length} pauses`),
 			plain(
@@ -339,7 +329,7 @@ export function idleCompactionBlocks(
 	const lost =
 		"Not priced: what a summary loses (the detail of the conversation).";
 	if (!config.isOn) {
-		return [
+		const blocks = [
 			...scope,
 			line(
 				plain(
@@ -352,6 +342,7 @@ export function idleCompactionBlocks(
 			line(dim(lost)),
 			advice("keep idle compaction on."),
 		];
+		return { warning: top, blocks };
 	}
 	const lead = leadMs(IDLE_COMPACTION_TTL_MINUTES, config.leadSeconds);
 	const x = replay(compacted, (t) => leadMs(t.ttlMinutes, config.leadSeconds));
@@ -360,7 +351,7 @@ export function idleCompactionBlocks(
 		y > x
 			? ` If you set "idleCompaction": false, keep refresh on: it costs ${tokens(Math.round(y - x))} tokens less than no refresh.`
 			: "";
-	return [
+	const blocks = [
 		...scope,
 		line(
 			plain(
@@ -401,6 +392,7 @@ export function idleCompactionBlocks(
 					`"idleCompaction": false keeps the full conversation for no more tokens than idle compaction on these pauses; set it in ~/.claude/settings.json if you want that.${keepRefresh}`,
 				),
 	];
+	return { warning: top, blocks };
 }
 
 export type AnalysisView = {
@@ -410,39 +402,57 @@ export type AnalysisView = {
 	idleSeenMs?: number;
 };
 
-/** At the 1 h TTL with refresh on: whether ember has seen idle compaction run, which decides if it skips long conversations. */
-function idleSeenLine(v: AnalysisView): Line | undefined {
+/**
+ * At the 1 h TTL with refresh on: whether ember has seen idle compaction run, which decides if it skips long
+ * conversations, and how many pauses it left to idle compaction; not seen, those were skipped before.
+ */
+function idleSeenLine(v: AnalysisView, skipped: number): Line | undefined {
 	if (!v.config.isOn || v.ttl.minutes !== IDLE_COMPACTION_TTL_MINUTES)
 		return undefined;
+	const isSeen = v.idleSeenMs !== undefined;
 	return {
 		label: "Idle compaction",
-		runs:
-			v.idleSeenMs === undefined
-				? [bold("not seen"), plain(", ember refreshes long conversations too.")]
+		runs: [
+			...(v.idleSeenMs === undefined
+				? [bold("not seen"), plain(", ember refreshes long conversations too")]
 				: [
 						bold(`seen ${new Date(v.idleSeenMs).toISOString().slice(0, 10)}`),
-						plain(", ember skips the pauses it applies to."),
-					],
+						plain(", ember skips the pauses it applies to"),
+					]),
+			...(skipped > 0
+				? [
+						plain(" · "),
+						bold(String(skipped)),
+						plain(` pauses skipped${isSeen ? "" : " earlier"}`),
+					]
+				: []),
+		],
 	};
 }
 
-/** The `/ember-refresh` report as sections: status, refreshes by age, savings, survival, lead options with the recommendation, idle compaction. */
+/**
+ * The `/ember-refresh` report as sections: an untitled one first with the recommendation and any idle compaction
+ * warning, then status, refreshes by age, savings, survival, lead options, idle compaction.
+ */
 export function analyze(v: AnalysisView): Section[] {
 	const { pauses, refreshes, open } = decode(v.sessions);
 	const traces = tracesOf(pauses, open);
-	const idle = idleCompactionBlocks(
-		tracesOf(
-			pauses.filter((p) => p.skip === IDLE),
-			open.filter((t) => t.skip === IDLE),
-		),
-		v.config,
+	const skipped = tracesOf(
+		pauses.filter((p) => p.skip === IDLE),
+		open.filter((t) => t.skip === IDLE),
 	);
+	const idle = idleCompactionBlocks(skipped, v.config);
 	const idleSection: Section[] =
-		idle.length > 0 ? [{ title: "Idle compaction", blocks: idle }] : [];
+		idle.blocks.length > 0
+			? [{ title: "Idle compaction", blocks: idle.blocks }]
+			: [];
+	const lead = (advised: Block): Section => ({
+		blocks: [advised, ...idle.warning],
+	});
 	const returns = traces.filter((t) => t.isReturn).length;
 	const ttl = v.ttl.minutes;
 	const currentLead = leadMs(ttl, v.config.leadSeconds);
-	const seen = idleSeenLine(v);
+	const seen = idleSeenLine(v, skipped.length);
 	const status: Section = {
 		title: "Status",
 		blocks: [
@@ -546,19 +556,25 @@ export function analyze(v: AnalysisView): Section[] {
 			},
 		},
 	];
+	// The Status row counts the idle compaction skips when it shows.
 	const skips = SKIPS.map(
 		(name, i) => [name, pauses.filter((p) => p.skip === i).length] as const,
-	).filter(([name, n]) => n > 0 && name !== "none");
+	).filter(
+		([name, n]) =>
+			n > 0 &&
+			name !== "none" &&
+			(name !== "idle compaction" || seen === undefined),
+	);
 	if (skips.length > 0)
-		savings.push(
-			line(
-				dim("Pauses not refreshed or stopped: "),
-				...skips.flatMap(([name, n], i) => [
+		savings.push({
+			line: {
+				label: "Not refreshed",
+				runs: skips.flatMap(([name, n], i) => [
 					plain(`${i > 0 ? " · " : ""}${name} `),
 					bold(String(n)),
 				]),
-			),
-		);
+			},
+		});
 	const head: Section[] = [
 		status,
 		{ title: "Refreshes", blocks: outcomes },
@@ -567,17 +583,14 @@ export function analyze(v: AnalysisView): Section[] {
 
 	if (returns < MIN_RETURNS) {
 		return [
-			...head,
-			{
-				title: "Lead options",
-				blocks: [
-					pick(
-						plain(
-							`Not enough data for a recommendation: ${returns} returned pauses, ${MIN_RETURNS} needed. Keep the defaults.`,
-						),
+			lead(
+				pick(
+					plain(
+						`Not enough data for a recommendation: ${returns} returned pauses, ${MIN_RETURNS} needed. Keep the defaults.`,
 					),
-				],
-			},
+				),
+			),
+			...head,
 			...idleSection,
 		];
 	}
@@ -586,7 +599,7 @@ export function analyze(v: AnalysisView): Section[] {
 	const survival: Section = {
 		title: "Idle time (survival)",
 		blocks: [
-			line(dim("Kaplan-Meier, exits censored")),
+			line(dim("Share of pauses still idle after each time")),
 			{
 				table: {
 					head: ["Idle for", ...KM_POINTS_MS.map((t) => duration(t))],
@@ -627,18 +640,21 @@ export function analyze(v: AnalysisView): Section[] {
 		const perPause = (offKm - expectedCost(km, policy, ttl)) * meanPrefix;
 		return { policy, total, perPause, savedReplay: offReplay - total };
 	});
-	const name = (p: Policy) =>
-		p === "off"
-			? "off"
-			: `lead ${leadName(p)}${p === leadMs(ttl, 0) ? " (auto)" : ""}`;
-	const advised = recommend(rows, currentLead, v.config, ttl, name);
 	const running = refreshesAt(v.config, ttl) ? currentLead : "off";
+	const name = (p: Policy, isRow = false) => {
+		const tags = [
+			...(p !== "off" && p === leadMs(ttl, 0) ? ["auto"] : []),
+			...(isRow && p === running ? ["current"] : []),
+		];
+		return `${p === "off" ? "off" : `lead ${leadName(p)}`}${tags.length > 0 ? ` (${tags.join(", ")})` : ""}`;
+	};
+	const advised = recommend(rows, currentLead, v.config, ttl, name);
 	const none = { text: "–" };
 	const options: Table = {
-		head: ["Policy", "Per pause", "Replay", "vs off"],
+		head: ["Policy", "Saved/pause", "Replay cost", "Saved vs off"],
 		rows: rows.map((r) => ({
 			cells: [
-				{ text: name(r.policy) },
+				{ text: name(r.policy, true) },
 				r.policy === "off" ? none : signedCell(r.perPause),
 				{ text: tokens(Math.round(r.total)) },
 				r.policy === "off" ? none : signedCell(r.savedReplay),
@@ -646,20 +662,34 @@ export function analyze(v: AnalysisView): Section[] {
 			isPick: r.policy === advised.policy,
 			isCurrent: r.policy === running,
 		})),
-		legend:
-			"Per pause: saved per pause (survival) · Replay: replay cost · vs off: saved vs off (replay) · ▸ recommended · • current",
+		legend: "▸ recommended · • current",
 	};
 	return [
+		lead(advised.block),
 		...head,
 		survival,
-		{ title: "Lead options", blocks: [{ table: options }, advised.block] },
+		{
+			title: "Lead options",
+			blocks: [
+				{ table: options },
+				line(
+					dim(
+						"Saved vs off replays every pause in the sample, skipped ones too, as if each refresh hit; Net saved counts only the refreshes ember ran.",
+					),
+				),
+			],
+		},
 		...idleSection,
 	];
 }
 
 type Row = { policy: Policy; perPause: number; savedReplay: number };
 
-/** The best lead by the survival estimate; off when it saves nothing or the replay of the same pauses disagrees. At a short TTL it speaks to `refreshShortTtl`. */
+/**
+ * The best lead by the survival estimate; the current lead stays unless the best saves more than 1% and at least
+ * MIN_GAIN_TOKENS per pause more. Off when it saves nothing or the replay of the same pauses disagrees. At a short
+ * TTL it speaks to `refreshShortTtl`.
+ */
 function recommend(
 	rows: readonly Row[],
 	currentLead: number,
@@ -670,9 +700,12 @@ function recommend(
 	const on = rows.filter((r) => r.policy !== "off");
 	const best = on.reduce((a, b) => (b.perPause > a.perPause + 1e-9 ? b : a));
 	const current = on.find((r) => r.policy === currentLead) ?? best;
-	// Within 1% of the best, the configured lead stays: no churn for noise.
+	// Within 1% of the best, or a gain under the minimum while the current lead pays, the configured lead stays: no churn for noise.
+	const gain = best.perPause - current.perPause;
+	const isCurrentPaying = current.perPause > 0 && current.savedReplay > 0;
 	const pick =
-		current.perPause >= best.perPause - Math.abs(best.perPause) * 0.01
+		gain <= Math.abs(best.perPause) * 0.01 ||
+		(isCurrentPaying && gain < MIN_GAIN_TOKENS)
 			? current
 			: best;
 	const isShort = ttl <= SHORT_TTL_MINUTES;
@@ -696,10 +729,10 @@ function recommend(
 		};
 	}
 	const lead = pick.policy === "off" ? 0 : pick.policy;
-	const setting =
-		pick === current
-			? "keep the current lead"
-			: `set refreshLeadSeconds to ${Math.round(lead / 1000)}`;
+	const isKept = pick === current;
+	const setting = isKept
+		? "keep the current lead"
+		: `set refreshLeadSeconds to ${Math.round(lead / 1000)}`;
 	const turnOn = config.isOn
 		? "keep refresh on"
 		: "turn refresh on (refresh: true)";
@@ -715,8 +748,12 @@ function recommend(
 				runs: [
 					bold("Recommendation:"),
 					plain(` ${head}, ${setting} (${name(pick.policy)}): about `),
-					bold(`${signed(pick.perPause)} tokens`, "good"),
-					plain(" saved per pause."),
+					bold(`${signed(isKept ? pick.perPause : gain)} tokens`, "good"),
+					plain(
+						isKept
+							? " saved per pause versus refresh off."
+							: ` per pause more than ${name(current.policy)}.`,
+					),
 				],
 			},
 		},

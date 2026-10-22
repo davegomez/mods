@@ -461,6 +461,19 @@ test("duration and percent format short values", () => {
 	expect(duration(3_900_000)).toBe("1h05m");
 	expect(duration(-5)).toBe("0s");
 	expect(percent(97, 100)).toBe("97%");
+});
+
+test("duration drops a zero part and keeps the others", () => {
+	expect([5, 30, 54, 60, 120].map((m) => duration(m * 60_000))).toEqual([
+		"5m",
+		"30m",
+		"54m",
+		"1h",
+		"2h",
+	]);
+	expect(duration(3_599_000)).toBe("59m59s");
+	expect(duration(3_900_000)).toBe("1h05m");
+	expect(duration(3_630_000)).toBe("1h");
 	expect(percent(0, 0)).toBe("–");
 });
 
@@ -534,7 +547,7 @@ describe("statusText", () => {
 				main,
 				session: session(),
 			}),
-		).toBe("idle 5m00s · last hit 97% · 100 cached · likely cold");
+		).toBe("idle 5m · last hit 97% · 100 cached · likely cold");
 		expect(
 			statusText({
 				nowMs: 362_000,
@@ -636,21 +649,21 @@ describe("warning", () => {
 	test("warns once the time left falls to the lead time: 5 min for 1 h, TTL / 5 below", () => {
 		expect(warning(view(55 * MIN - 1000))).toBeUndefined();
 		expect(warning(view(55 * MIN))).toBe(
-			"cache goes cold in ~5m00s (142k tokens)",
+			"cache goes cold in ~5m (142k tokens)",
 		);
 		expect(warning(view(55 * MIN + 1000))).toBe(
 			"cache goes cold in ~4m59s (142k tokens)",
 		);
 		expect(warning(view(4 * MIN - 1000, {}, 5 * MIN))).toBeUndefined();
 		expect(warning(view(4 * MIN, {}, 5 * MIN))).toBe(
-			"cache goes cold in ~1m00s (142k tokens)",
+			"cache goes cold in ~1m (142k tokens)",
 		);
 	});
 
 	test("stays quiet once warned for this request, when cold, in flight, or with no prefix", () => {
 		expect(warning(view(56 * MIN), 0)).toBeUndefined();
 		expect(warning(view(56 * MIN), -1)).toBe(
-			"cache goes cold in ~4m00s (142k tokens)",
+			"cache goes cold in ~4m (142k tokens)",
 		);
 		expect(warning(view(hour))).toBeUndefined();
 		expect(warning(view(56 * MIN, {}, hour, true))).toBeUndefined();
@@ -679,7 +692,7 @@ test("report is a status section, then a table of the buckets with requests, the
 		[
 			"Status",
 			"TTL: 60m (ttlMinutes option)",
-			"Observed TTL: warm up to 4m00s · cold from 1h30m",
+			"Observed TTL: warm up to 4m · cold from 1h30m",
 			"Compactions: 2",
 			"Model switches: 1",
 			"Cache hit by gap type",
