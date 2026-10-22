@@ -10,8 +10,6 @@ export const OUTPUT_WEIGHT = 5;
 export const HIT_READ_SHARE = 0.9;
 /** A refresh read under this share of the prefix found the entry gone: TTL evidence. */
 export const COLD_READ_SHARE = 0.5;
-/** The most cache creation a hit may show: the fork prompt is a few tokens, the rest is slack. */
-export const CREATION_TOLERANCE = 1024;
 export const MISS_LIMIT = 2;
 export const MAX_TRIES = 3;
 export const RETRY_MS = 30_000;
@@ -411,10 +409,8 @@ export function judgeFork(
 	};
 	if (!r.isAnswered && (r.reason === "api-error" || r.reason === "aborted"))
 		return { outcome: "refused", ...tokens };
-	const isHit =
-		prefix > 0 &&
-		tokens.read >= HIT_READ_SHARE * prefix &&
-		tokens.creation <= CREATION_TOLERANCE;
+	// Creation is not checked: the fork also caches the last main response, which lies outside the prefix.
+	const isHit = prefix > 0 && tokens.read >= HIT_READ_SHARE * prefix;
 	return { outcome: isHit ? "hit" : "miss", ...tokens };
 }
 

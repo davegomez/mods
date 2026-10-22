@@ -1084,6 +1084,22 @@ describe("cache refresh", () => {
 		expect(w.forks.length).toBe(2);
 	});
 
+	test("a refresh that reads the full prefix is a hit even when it caches the last response (creation 2192)", async ($, on) => {
+		const w = world(on);
+		await start($, w);
+		w.fork = forkHit(141_600, 2192);
+		await turn($, w, "t1");
+		await w.clock.advance(55 * MIN);
+		await w.clock.settle();
+		expect(stored(w).live).toMatchObject({
+			lastStartMs: T0 + 55 * MIN,
+			refreshes: 1,
+		});
+		expect(refreshOf(w).missStreak).toBe(0);
+		await w.clock.advance(55 * MIN);
+		expect(w.forks.length).toBe(2);
+	});
+
 	test(
 		"with refreshShortTtl: false a 5m TTL is not refreshed: the cold toast shows and the pause logs short-ttl",
 		{ options: { refreshShortTtl: false } },
@@ -1266,7 +1282,7 @@ describe("cache refresh", () => {
 	test("two misses in a row pause refresh for the session, with one toast pointing to /ember-refresh", async ($, on) => {
 		const w = world(on);
 		await start($, w);
-		w.fork = forkHit(141_600, 141_600);
+		w.fork = forkHit(100_000, 41_600);
 		await turn($, w, "t1");
 		await w.clock.advance(56 * MIN);
 		await turn($, w, "t2");

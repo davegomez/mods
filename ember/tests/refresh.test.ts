@@ -257,10 +257,18 @@ describe("ski-rental cap", () => {
 });
 
 describe("miss detection and the circuit breaker", () => {
-	test("a hit reads >= 90% of the prefix and creates <= 1024 tokens; anything else that answered is a miss", () => {
+	test("a hit reads >= 90% of the prefix; anything else that answered is a miss", () => {
 		expect(judgeFork(answered(usage(90_000, 1024)), P).outcome).toBe("hit");
 		expect(judgeFork(answered(usage(89_999)), P).outcome).toBe("miss");
-		expect(judgeFork(answered(usage(P, 1025)), P).outcome).toBe("miss");
+	});
+
+	test("cache creation does not decide a hit: the fork also caches the last main response, which is outside the prefix", () => {
+		expect(judgeFork(answered(usage(P, 2192)), P).outcome).toBe("hit");
+		expect(judgeFork(answered(usage(P, 50_000)), P).outcome).toBe("hit");
+		expect(judgeFork(answered(usage(89_999, 50_000)), P).outcome).toBe("miss");
+	});
+
+	test("an empty reply is judged by its usage; a prefix of 0 never hits", () => {
 		expect(
 			judgeFork(
 				{ isAnswered: false, reason: "empty-reply", usage: usage(P) },
