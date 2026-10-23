@@ -6,3 +6,6 @@ AGENTS.md
 .agents/
 .claude/
 skills-lock.json
+
+# Private plan for the local ember benchmark
+docs/ideas/ember-bench.md
