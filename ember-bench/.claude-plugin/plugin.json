@@ -1,0 +1,7 @@
+{
+	"name": "ember-bench",
+	"version": "0.1.0",
+	"description": "Records, on this machine only, the data that measures how many tokens ember saves.",
+	"author": { "name": "David" },
+	"dependencies": ["ember@davegomez"]
+}
