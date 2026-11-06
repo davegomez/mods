@@ -155,7 +155,7 @@ The first try showed that `claude plugin test` cannot import `dotenv`. Keep `pac
 
 ## T11. `tsc` as the 4th check (Q24)
 
-- [ ] `cd blindfold && bunx tsc -p .` reports 0 errors. The generated types come from a `claude --plugin-dir ./blindfold` load and are not committed.
+- [x] `cd blindfold && bunx tsc -p .` reports 0 errors. The generated types come from a `claude --plugin-dir ./blindfold` load and are not committed.
   - Acceptance: no `any`, no `@ts-ignore`, no `@ts-expect-error`, no weaker test. The out-of-date test name `R6: text or output above MAX_FILE_CHARS is too-large` matches what it checks.
   - Acceptance: `AGENTS.md` lists the `tsc` command for `blindfold` and says how to get the types.
   - Verify: the 3 commands and `tsc` pass.
