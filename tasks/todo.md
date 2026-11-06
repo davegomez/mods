@@ -182,9 +182,9 @@ Spec: `docs/specs/blindfold/SPEC-shield.md`. Commands, run for every task: the 3
 `SPEC-shield.md` R4, R5, R15, Q26.
 
 - Acceptance:
-  - [ ] Before `next`: a hit is `{ deny }`, and `next` is never called with changed arguments (P2). `refreshIfNamed` runs before the scan and again after `next`.
-  - [ ] After `next`: `pass` returns the same object. `rewrite` returns a new object without `ref` and `text`. `stop` returns the withhold `{ deny }`. A deny text with a hit is masked.
-  - [ ] The `.catch` refuses before `next` and withholds after it. `register.ts` wires the hook with no matcher.
+  - [x] Before `next`: a hit is `{ deny }`, and `next` is never called with changed arguments (P2). `refreshIfNamed` runs before the scan and again after `next`.
+  - [x] After `next`: `pass` returns the same object. `rewrite` returns a new object without `ref` and `text`. `stop` returns the withhold `{ deny }`. A deny text with a hit is masked.
+  - [x] The `.catch` refuses before `next` and withholds after it. `register.ts` wires the hook with no matcher.
 - Verify: the 4 commands pass, and validate lists a `.catch` for `tool.call`. Tests name R4, R5, R15.
 - Files: `blindfold/hooks/shield.ts`, `blindfold/hooks/register.ts`, `blindfold/tests/shield.test.ts`, `blindfold/tests/smoke.test.ts`.
 - Depends on: T12. Size: M.
