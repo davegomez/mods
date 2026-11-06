@@ -20,9 +20,13 @@ export type Verdict<T> =
 	| { kind: "pass" }                                 // clean: pass the original on
 	| { kind: "rewrite"; value: T; count: number }     // the copy, with markers
 	| { kind: "stop"; reason: Unscannable["reason"] }; // refuse before next, withhold after
+export type ArgsVerdict =
+	| { kind: "pass" }                                 // no hit, or context rule hits only (Q30)
+	| { kind: "refuse" }                               // a known value, a private key, or a vendor rule
+	| { kind: "stop"; reason: Unscannable["reason"] };
 export function guardText(text: string, set: KnownSet, clock: Clock): Verdict<string>;
 export function guardValue(value: unknown, set: KnownSet, clock: Clock): Verdict<unknown>;
-export function guardArgs(args: unknown, set: KnownSet, clock: Clock): Verdict<never>; // R4
+export function guardArgs(args: unknown, set: KnownSet, clock: Clock): ArgsVerdict; // R4, Q30
 export function clockFor(remainingMs: number, now: () => number): Clock;              // R2
 
 // 1 handler per event, each with its `.catch` handler. Plain functions, because the host refuses `$` passed to a method.
