@@ -79,7 +79,7 @@ Same as `SPEC-detect.md`. Files: `blindfold/hooks/dotenv.ts` and `blindfold/test
 - A round-trip table for R5 to R7: for each value below, set it in each base file, then parse and compare all entries.
   - Values: plain, with `$`, with `#`, with `"`, with a backslash, with `=`, with spaces at both ends, with a tab, unicode, a PEM-like multiline value, 4096 characters.
   - Base files: empty, no final line break, CRLF, a byte order mark, comments, `export` entries, a multiline entry with the same name, the name present once.
-- Refusal tests: a `'` together with a newline, a carriage return, a NUL, an empty value, a duplicate name, a bad name, text above `MAX_FILE_CHARS`.
+- Refusal tests: a `'` without a newline (R5 has no form for it), a carriage return, a NUL, an empty value, a duplicate name, a bad name, text above `MAX_FILE_CHARS`.
 - A test that no `reason` and no `badLines` entry holds the fake value.
 
 ## Boundaries

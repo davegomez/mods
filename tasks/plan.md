@@ -34,8 +34,8 @@ Tasks with full criteria: `tasks/todo.md`.
 
 ### Phase 3: `dotenv`
 
-- [ ] T7. Parser.
-- [ ] T8. Writer and the cross-check against `dotenv`.
+- [x] T7. Parser.
+- [x] T8. Writer and the cross-check against `dotenv`.
 
 ### Checkpoint C: step 1 done
 

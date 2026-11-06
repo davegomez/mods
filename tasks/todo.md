@@ -97,9 +97,9 @@ The first try showed that `claude plugin test` cannot import `dotenv`. Keep `pac
 `SPEC-dotenv.md` R1, R2, R3, R8 for `parse`.
 
 - Acceptance:
-  - [ ] Each R1 rule has a fixture.
-  - [ ] `badLines` holds line numbers only. Duplicates are listed.
-  - [ ] Every R1 fixture is in `dotenv-cases.ts`, the script has run, and `parse` gives the saved `dotenv` result for each one.
+  - [x] Each R1 rule has a fixture.
+  - [x] `badLines` holds line numbers only. Duplicates are listed.
+  - [x] Every R1 fixture is in `dotenv-cases.ts`, the script has run, and `parse` gives the saved `dotenv` result for each one.
 - Verify: the 3 commands pass. Tests name R1, R2, R3, R8.
 - Files: `blindfold/hooks/dotenv.ts`, `blindfold/tests/dotenv.test.ts`, `blindfold/tests/dotenv-cases.ts`, `blindfold/tests/dotenv-expected.ts`, `scripts/dotenv-expected.ts` (output path from `import.meta.dir`).
 - Depends on: Checkpoint B. Size: M.
@@ -109,15 +109,15 @@ The first try showed that `claude plugin test` cannot import `dotenv`. Keep `pac
 `SPEC-dotenv.md` R4 to R8 for `setValue` and `isValidName`.
 
 - Acceptance:
-  - [ ] Every round-trip pair is in `dotenv-cases.ts`. The script runs the real `dotenv.parse` on each `setValue` output, and each saved result holds the new value and all other values unchanged.
-  - [ ] Every refusal case returns its `reason`, and no `reason` holds the value.
-  - [ ] Comments, blank lines, the byte order mark, `export`, and CRLF stay unchanged.
+  - [x] Every round-trip pair is in `dotenv-cases.ts`. The script runs the real `dotenv.parse` on each `setValue` output, and each saved result holds the new value and all other values unchanged.
+  - [x] Every refusal case returns its `reason`, and no `reason` holds the value.
+  - [x] Comments, blank lines, the byte order mark, `export`, and CRLF stay unchanged.
 - Verify: the 3 commands pass. Tests name R4 to R8.
 - Files: `blindfold/hooks/dotenv.ts`, `blindfold/tests/dotenv.test.ts`, `blindfold/tests/dotenv-cases.ts`, `blindfold/tests/dotenv-expected.ts`.
 - Depends on: T7. Size: M.
 
 ## Checkpoint C
 
-- [ ] The 3 commands pass.
-- [ ] The main session reviews the diff.
+- [x] The 3 commands pass.
+- [x] The main session reviews the diff.
 - [ ] The owner approves step 1. Next: `SPEC-enroll.md`.
