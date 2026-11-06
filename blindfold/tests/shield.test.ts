@@ -1,0 +1,234 @@
+import { describe, expect, test } from "claude-code/testing";
+import { buildKnownSet, DEFAULT_LIMITS } from "../hooks/detect.ts";
+import {
+	type ArgsVerdict,
+	clockFor,
+	guardArgs,
+	guardText,
+	guardValue,
+	type Verdict,
+} from "../hooks/shield.ts";
+import { fakes } from "./fakes.ts";
+
+const fake = fakes(11);
+const NAME = "FAKE_SHIELD_KEY";
+const known = fake.secret(24);
+const vendorToken = fake.githubClassic;
+const privateKey = fake.privateKey();
+const contextValue = fake.secret(24);
+const { set } = buildKnownSet([{ name: NAME, value: known }]);
+const never = { now: () => 0, deadline: Number.POSITIVE_INFINITY };
+
+/** Every verdict the tests see, for the R15 check. */
+const seen: (Verdict<unknown> | ArgsVerdict)[] = [];
+const keep = <V extends Verdict<unknown> | ArgsVerdict>(verdict: V): V => {
+	seen.push(verdict);
+	return verdict;
+};
+const text = (value: string) => keep(guardText(value, set, never));
+const value = (input: unknown) => keep(guardValue(input, set, never));
+const args = (input: unknown) => keep(guardArgs(input, set, never));
+
+function cycle(): Record<string, unknown> {
+	const node: Record<string, unknown> = { note: known };
+	node.self = node;
+	return node;
+}
+
+describe("R1 plain copy", () => {
+	test("R1: a cycle is stop with unsupported", () => {
+		expect(value(cycle())).toEqual({ kind: "stop", reason: "unsupported" });
+	});
+
+	test("R1: a BigInt is stop with unsupported", () => {
+		expect(value({ n: BigInt(1), note: known })).toEqual({
+			kind: "stop",
+			reason: "unsupported",
+		});
+	});
+
+	test("R1: a throwing toJSON is stop with unsupported", () => {
+		const input = {
+			toJSON() {
+				throw new Error(`${NAME}=${known}`);
+			},
+		};
+		expect(value(input)).toEqual({ kind: "stop", reason: "unsupported" });
+	});
+
+	test("R1: an object JSON would empty, such as a Map, is stop with unsupported", () => {
+		expect(value({ env: new Map([[NAME, known]]) })).toEqual({
+			kind: "stop",
+			reason: "unsupported",
+		});
+		expect(value([new Uint8Array(4)])).toEqual({
+			kind: "stop",
+			reason: "unsupported",
+		});
+	});
+
+	test("R1: a symbol key is stop with unsupported", () => {
+		expect(value({ [Symbol("k")]: known })).toEqual({
+			kind: "stop",
+			reason: "unsupported",
+		});
+	});
+
+	test("R1: a rewrite returns the scanned copy, not the original", () => {
+		const original = { note: `key ${known}`, list: [known, "plain"] };
+		const verdict = value(original);
+		if (verdict.kind !== "rewrite") throw new Error(verdict.kind);
+		expect(verdict.value).not.toBe(original);
+		expect(original.note).toBe(`key ${known}`);
+		original.note = "changed";
+		original.list.push("more");
+		expect(verdict.value).toEqual({
+			note: `key [secret: ${NAME}]`,
+			list: [`[secret: ${NAME}]`, "plain"],
+		});
+		expect(verdict.count).toBe(2);
+	});
+
+	test("R1: a clean value is pass with no value", () => {
+		expect(value({ note: "nothing here", n: 3, list: [true, null] })).toEqual({
+			kind: "pass",
+		});
+	});
+
+	test("R1: undefined is pass", () => {
+		expect(value(undefined)).toEqual({ kind: "pass" });
+	});
+
+	test("R1: guardText rewrites a hit, passes clean text, and stops on too-large", () => {
+		expect(text(`a ${known} b ${vendorToken}`)).toEqual({
+			kind: "rewrite",
+			value: `a [secret: ${NAME}] b [secret hidden]`,
+			count: 2,
+		});
+		expect(text("nothing to hide here")).toEqual({ kind: "pass" });
+		expect(text("x".repeat(DEFAULT_LIMITS.maxChars + 1))).toEqual({
+			kind: "stop",
+			reason: "too-large",
+		});
+	});
+});
+
+describe("R2 time", () => {
+	const at = (start: number) => {
+		let t = start;
+		return { now: () => t, set: (next: number) => (t = next) };
+	};
+	const deadline = { kind: "stop", reason: "deadline" };
+
+	test("R2: remainingMs 0 is already past the deadline", () => {
+		const fakeNow = at(50_000);
+		const clock = clockFor(0, fakeNow.now);
+		expect(clock.deadline).toBe(49_000);
+		expect(keep(guardText("long enough text", set, clock))).toEqual(deadline);
+		expect(keep(guardText("", set, clock))).toEqual(deadline);
+		expect(keep(guardValue({ a: 1 }, set, clock))).toEqual(deadline);
+		expect(keep(guardArgs({ a: 1 }, set, clock))).toEqual(deadline);
+	});
+
+	test("R2: remainingMs 1000 leaves no time to scan", () => {
+		const fakeNow = at(50_000);
+		const clock = clockFor(1000, fakeNow.now);
+		expect(clock.deadline).toBe(50_000);
+		expect(keep(guardText("long enough text", set, clock))).toEqual(deadline);
+	});
+
+	test("R2: remainingMs 5000 scans until 1000 ms before the end", () => {
+		const fakeNow = at(50_000);
+		const clock = clockFor(5000, fakeNow.now);
+		expect(clock.deadline).toBe(54_000);
+		expect(keep(guardText("long enough text", set, clock))).toEqual({
+			kind: "pass",
+		});
+		fakeNow.set(53_999);
+		expect(keep(guardValue({ a: "text" }, set, clock))).toEqual({
+			kind: "pass",
+		});
+		fakeNow.set(54_000);
+		expect(keep(guardText("long enough text", set, clock))).toEqual(deadline);
+	});
+
+	test("R2: an unmetered budget never stops, and NaN stops at once", () => {
+		const unmetered = clockFor(Number.POSITIVE_INFINITY, () => 0);
+		expect(keep(guardText("long enough text", set, unmetered))).toEqual({
+			kind: "pass",
+		});
+		const broken = clockFor(Number.NaN, () => 0);
+		expect(keep(guardText("long enough text", set, broken))).toEqual(deadline);
+	});
+
+	test("R2: 2 Mi characters of pwd=& end or stop inside a 9,000 ms budget", () => {
+		const input = "pwd=&".repeat(Math.floor(DEFAULT_LIMITS.maxChars / 5));
+		const clock = clockFor(10_000, () => performance.now());
+		const start = performance.now();
+		const verdict = keep(guardText(input, set, clock));
+		const ms = performance.now() - start;
+		(globalThis as { console?: { log: (s: string) => void } }).console?.log(
+			`R2 speed: ${ms.toFixed(0)} ms for ${input.length} characters`,
+		);
+		expect(input.length).toBeGreaterThan(DEFAULT_LIMITS.maxChars - 5);
+		const ended =
+			verdict.kind !== "stop" ||
+			(verdict as { reason: string }).reason === "deadline";
+		expect(ended).toBe(true);
+		expect(ms).toBeLessThan(9000);
+	});
+});
+
+describe("Q30 argument filter", () => {
+	test("Q30: a known value in a nested object and array refuses", () => {
+		expect(
+			args({ command: "run", options: { lines: ["echo", `x ${known} y`] } }),
+		).toEqual({ kind: "refuse" });
+	});
+
+	test("Q30: a private key block refuses", () => {
+		expect(args({ file_path: "/tmp/k", content: privateKey })).toEqual({
+			kind: "refuse",
+		});
+	});
+
+	test("Q30: a vendor token in an array of objects refuses", () => {
+		expect(args({ headers: [{ name: "x", value: vendorToken }] })).toEqual({
+			kind: "refuse",
+		});
+	});
+
+	test("Q30: a context rule hit alone in a nested field passes", () => {
+		const input = {
+			edits: [{ old_string: "a", new_string: `password = "${contextValue}"` }],
+		};
+		expect(value(input).kind).toBe("rewrite");
+		expect(args(input)).toEqual({ kind: "pass" });
+	});
+
+	test("Q30: a context hit beside a vendor token still refuses", () => {
+		expect(
+			args({ a: `password = "${contextValue}"`, b: [vendorToken] }),
+		).toEqual({ kind: "refuse" });
+	});
+
+	test("Q30: clean arguments pass, and an unscannable copy is stop", () => {
+		expect(args({ command: "ls -la", flags: [1, true] })).toEqual({
+			kind: "pass",
+		});
+		expect(args(cycle())).toEqual({ kind: "stop", reason: "unsupported" });
+	});
+});
+
+describe("R15 no leak", () => {
+	test("R15: no verdict but a rewrite copy holds a fake value or an env name", () => {
+		expect(seen.length).toBeGreaterThan(20);
+		const secrets = [NAME, known, vendorToken, privateKey, contextValue];
+		for (const verdict of seen) {
+			const json = JSON.stringify(
+				verdict.kind === "rewrite" ? { ...verdict, value: null } : verdict,
+			);
+			for (const secret of secrets) expect(json.includes(secret)).toBe(false);
+		}
+	});
+});
