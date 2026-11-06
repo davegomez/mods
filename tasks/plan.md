@@ -25,10 +25,10 @@ Tasks with full criteria: `tasks/todo.md`.
 
 ### Phase 2: `detect`
 
-- [ ] T3. Markers and the known-value set.
-- [ ] T4. Text scan with overlap rules, private keys, and vendor prefixes.
-- [ ] T5. Context rules.
-- [ ] T6. Value scan, limits, and the speed test.
+- [x] T3. Markers and the known-value set.
+- [x] T4. Text scan with overlap rules, private keys, and vendor prefixes.
+- [x] T5. Context rules.
+- [x] T6. Value scan, limits, and the speed test.
 
 ### Checkpoint B: `detect` done
 
