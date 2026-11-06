@@ -139,15 +139,15 @@ The first try showed that `claude plugin test` cannot import `dotenv`. Keep `pac
 `SPEC-enroll.md` R2 (symlink and root checks through `$.fs.stat`), R3, R7 (`session.start`, `classic.SessionStart`, `session.end` only), R8, R9.
 
 - Acceptance:
-  - [ ] Stub tests for each `stale` and `refused` reason that needs `$`, and for a load that ends after `drop`.
-  - [ ] `plugin.json` has the `envFiles` field, and `register.ts` wires the 3 lifecycle events to 1 module-level `Enrollment`.
-  - [ ] `addFile` returns `added`, `refused`, and `denied` in stub tests.
+  - [x] Stub tests for each `stale` and `refused` reason that needs `$`, and for a load that ends after `drop`.
+  - [x] `plugin.json` has the `envFiles` field, and `register.ts` wires the 3 lifecycle events to 1 module-level `Enrollment`.
+  - [x] `addFile` returns `added`, `refused`, and `denied` in stub tests.
 - Verify: the 3 commands pass. Tests name R2, R3, R7, R8, R9.
 - Files: `blindfold/hooks/enroll.ts`, `blindfold/tests/enroll.test.ts`, `blindfold/hooks/register.ts`, `blindfold/tests/smoke.test.ts`, `blindfold/.claude-plugin/plugin.json`.
 - Depends on: T9. Size: M.
 
 ## Checkpoint D
 
-- [ ] The 3 commands pass.
+- [x] The 3 commands pass.
 - [ ] Pi reviews `enroll.ts` in a herdr pane, and the findings are fixed.
 - [ ] The owner approves step 2. Next: `SPEC-shield.md`.

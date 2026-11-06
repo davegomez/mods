@@ -58,7 +58,7 @@ None.
 Spec: `docs/specs/blindfold/SPEC-enroll.md`. Tasks with full criteria: `tasks/todo.md`, T9 and T10. 1 `worker-high` per task, in sequence. T9 builds the pure part, so T10 only adds the `$` calls and the wiring.
 
 - [x] T9. Pure part: list, path spelling, feed rules, learned-value union, shield state, name check.
-- [ ] T10. Reads through `$`, generations, `addFile`, the `envFiles` field, and the lifecycle wiring.
+- [x] T10. Reads through `$`, generations, `addFile`, the `envFiles` field, and the lifecycle wiring.
 
 ### Checkpoint D: `enroll` done
 

@@ -22,15 +22,16 @@ export type NameState = { name: string; hidden: boolean; why?: "too-short" | "no
 export type Status = { files: { path: string; state: FileState }[]; shield: "active" | "degraded" };
 
 export function createEnrollment(): Enrollment; // 1 per module instance
-// Enrollment:
-load($, list: string): Promise<Status>;       // read every listed file again
-refreshIfNamed($, input: unknown): Promise<void>; // load again if input names a listed file
+// Functions, because the host refuses `$` passed to a method:
+load($, enrollment, list: string): Promise<Status>;       // read every listed file again
+refreshIfNamed($, enrollment, input: unknown): Promise<void>; // load again if input names a listed file
+addFile($, enrollment, path: string): Promise<"added" | "refused" | "denied">; // Q9 file choice
+// Enrollment (no `$`):
 learn(path: string, name: string, value: string): void; // a value blindfold wrote to `path` (from `write`)
 forget(path: string): void;                   // drop the values of 1 file
 drop(): void;                                 // drop every value (session end)
 knownSet(): KnownSet;                         // for `shield`
 status(): Status;                             // for `ui` and `request`
-addFile($, path: string): Promise<"added" | "refused" | "denied">; // Q9 file choice
 ```
 
 ### Requirements
@@ -74,7 +75,7 @@ R7. Lifecycle (wired in `register.ts`):
 
 R8. Overlap. Each `load` takes a new generation number. It builds a new set and replaces the old one in 1 step, only if its generation is still the newest. `drop` also takes a new generation, so a load that is still running cannot add values after the session ended.
 
-R9. Persist a file choice (Q9). `addFile` applies R2 to the path (a missing file is accepted, because `write` creates it), adds it to `envFiles` with `$.config.set({ key: "blindfold.envFiles", value })`, and returns `denied` if the set call returns `{ deny }`. UNVERIFIED: the exact key format, `<plugin>.<field>` per the type declarations.
+R9. Persist a file choice (Q9). `addFile` applies R2 to the path (a missing file is accepted, because `write` creates it), adds it to `envFiles` with `$.config.set({ key: "blindfold.envFiles", value })`, and returns `denied` if the set call returns `{ deny }`. The key format `<plugin>.<field>` is confirmed by the type declarations of `ConfigSetInput.key`.
 
 R10. No leak. Values live only in the `Enrollment` closure. No `Status`, error, log, `$.state`, `$.store`, or render prop holds a value. An error from `$.fs` is reduced to the reasons in `FileState`.
 
