@@ -8,6 +8,8 @@ export type Parsed = {
 };
 
 export const MAX_FILE_CHARS = 1_048_576;
+/** F20: in Bun, real dotenv drops a quoted entry above about 434,000 characters and every entry after it. */
+export const MAX_VALUE_CHARS = 65_536;
 
 /**
  * dotenv 16.6.1's `LINE` pattern, with capture groups added for spans
@@ -162,13 +164,15 @@ const fail = (
 });
 
 export function isValidName(name: string): boolean {
-	return /^[A-Za-z_][A-Za-z0-9_]{0,63}$/.test(name);
+	// F21: dotenv.parse cannot set __proto__.
+	return name !== "__proto__" && /^[A-Za-z_][A-Za-z0-9_]{0,63}$/.test(name);
 }
 
 /** R5: the one form that holds the value, or undefined. */
 function serialize(name: string, value: string): string | undefined {
+	if (value === "" || value.length > MAX_VALUE_CHARS) return undefined;
 	// Any control character (Unicode Cc) except tab and newline.
-	if (value === "" || /[^\P{Cc}\t\n]/u.test(value)) return undefined;
+	if (/[^\P{Cc}\t\n]/u.test(value)) return undefined;
 	if (!/['\n]/.test(value)) return `${name}='${value}'`;
 	if (!/["\\$`]/.test(value)) {
 		return `${name}="${value.replaceAll("\n", "\\n")}"`;
@@ -183,6 +187,9 @@ export function setValue(text: string, name: string, value: string): SetResult {
 	if (entry === undefined) return fail("unsafe-value");
 	const { parsed, nameStarts } = scan(text);
 	if (parsed.duplicates.includes(name)) return fail("duplicate-name");
+	if (parsed.entries.some((e) => e.value.length > MAX_VALUE_CHARS)) {
+		return fail("unsafe-value");
+	}
 
 	const at = parsed.entries.findIndex((e) => e.name === name);
 	const expected = parsed.entries.map((e) => [
@@ -196,7 +203,7 @@ export function setValue(text: string, name: string, value: string): SetResult {
 			entry +
 			text.slice(parsed.entries[at].end);
 	} else {
-		const eol = /\r\n|\n|\r/.exec(text)?.[0] === "\r\n" ? "\r\n" : "\n";
+		const eol = text.includes("\r\n") ? "\r\n" : "\n";
 		const gap = text === "" || /[\r\n]$/.test(text) ? "" : eol;
 		next = text + gap + entry + eol;
 		expected.push([name, value]);

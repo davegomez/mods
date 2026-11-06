@@ -3,6 +3,7 @@ import type { Entry, Parsed } from "../hooks/dotenv.ts";
 import {
 	isValidName,
 	MAX_FILE_CHARS,
+	MAX_VALUE_CHARS,
 	parse,
 	setValue,
 } from "../hooks/dotenv.ts";
@@ -125,6 +126,14 @@ describe("isValidName", () => {
 			expect(isValidName(name)).toBe(false);
 		}
 	});
+
+	test("F21: refuses __proto__, which dotenv.parse cannot set", () => {
+		expect(isValidName("__proto__")).toBe(false);
+		expect(setValue("", "__proto__", "x")).toEqual({
+			ok: false,
+			reason: "bad-name",
+		});
+	});
 });
 
 describe("setValue", () => {
@@ -222,6 +231,44 @@ describe("setValue", () => {
 		expect(written("A=1\r\nNAME='a\r\nb'\r\nB=2\r\n", "NAME", "x")).toBe(
 			"A=1\r\nNAME='x'\r\nB=2\r\n",
 		);
+	});
+
+	test("F22: append uses CRLF when the text has any CRLF", () => {
+		expect(written("A=1\nB=2\r\n", "NAME", "v")).toBe(
+			"A=1\nB=2\r\nNAME='v'\r\n",
+		);
+		expect(written("A=1\nB=2\r\nC=3", "NAME", "v")).toBe(
+			"A=1\nB=2\r\nC=3\r\nNAME='v'\r\n",
+		);
+		expect(written("A=1\rB=2\n", "NAME", "v")).toBe("A=1\rB=2\nNAME='v'\n");
+	});
+
+	test("F20: a value longer than MAX_VALUE_CHARS is unsafe-value", () => {
+		expect(MAX_VALUE_CHARS).toBe(65_536);
+		const unsafe = { ok: false, reason: "unsafe-value" };
+		expect(setValue("A=1\n", "NAME", "x".repeat(MAX_VALUE_CHARS + 1))).toEqual(
+			unsafe,
+		);
+		expect(
+			setValue("A=1\n", "NAME", `${"x".repeat(MAX_VALUE_CHARS)}\n`),
+		).toEqual(unsafe);
+		const max = "x".repeat(MAX_VALUE_CHARS);
+		expect(written("A=1\n", "NAME", max)).toBe(`A=1\nNAME='${max}'\n`);
+	});
+
+	test("F20: a base file with an entry value longer than MAX_VALUE_CHARS is unsafe-value", () => {
+		const long = "x".repeat(MAX_VALUE_CHARS + 1);
+		const unsafe = { ok: false, reason: "unsafe-value" };
+		for (const base of [
+			`BEFORE=keep\nA=${long}\nAFTER=keep\n`,
+			`BEFORE=keep\nA='${long}'\nINJECT=fake\n`,
+			`A="${long}"\n`,
+		]) {
+			expect(setValue(base, "A", "new")).toEqual(unsafe);
+			expect(setValue(base, "NAME", "new")).toEqual(unsafe);
+		}
+		const max = "x".repeat(MAX_VALUE_CHARS);
+		expect(written(`A='${max}'\n`, "NAME", "v")).toBe(`A='${max}'\nNAME='v'\n`);
 	});
 
 	test("R6: the byte order mark stays", () => {
