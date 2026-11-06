@@ -25,7 +25,7 @@ export function createEnrollment(): Enrollment; // 1 per module instance
 // Enrollment:
 load($, list: string): Promise<Status>;       // read every listed file again
 refreshIfNamed($, input: unknown): Promise<void>; // load again if input names a listed file
-learn(name: string, value: string): void;     // a value blindfold wrote (from `write`)
+learn(path: string, name: string, value: string): void; // a value blindfold wrote to `path` (from `write`)
 forget(path: string): void;                   // drop the values of 1 file
 drop(): void;                                 // drop every value (session end)
 knownSet(): KnownSet;                         // for `shield`
@@ -53,7 +53,7 @@ R4. Which values feed the known-value set. An entry feeds the set if:
 - its name holds `KEY`, `TOKEN`, `SECRET`, `PASSWORD`, `PASSWD`, `PWD`, `DSN`, `AUTH`, `CREDENTIAL`, or `PRIVATE` (any case), or
 - `detect.scanText` finds a hit in its value (for example a `DATABASE_URL` with a password, or a vendor key under any name).
 
-Every value from `learn` feeds the set. A fed value under 8 characters is `hidden: false` with `why: "too-short"` (Q14). An entry that does not feed the set is `hidden: false` with `why: "not-secret"`.
+Every value from `learn` feeds the set, under the file it was written to, so `forget` on that file drops it too. A fed value under 8 characters is `hidden: false` with `why: "too-short"` (Q14). An entry that does not feed the set is `hidden: false` with `why: "not-secret"`.
 
 R5. Values learned stay learned. The known-value set is the union of every value learned in this session, minus the values of files the user forgot. A value removed from a file stays in the set until `drop` or `forget`, because it can still show in later tool output.
 

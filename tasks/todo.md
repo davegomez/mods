@@ -127,9 +127,9 @@ The first try showed that `claude plugin test` cannot import `dotenv`. Keep `pac
 `SPEC-enroll.md` R1, R2 (spelling checks only), R4, R5, R6, R10, and the `refreshIfNamed` name check.
 
 - Acceptance:
-  - [ ] The list rules (trim, empty, repeats, more than 10) and each spelling refusal (`absolute`, `bad-path`, `parent`) have tests.
-  - [ ] Feed rules: each name word, a detector hit under a plain name (Q22), the 8-character minimum, `not-secret`.
-  - [ ] Learned values stay after a load that no longer has them (Q23), and go after `forget` and `drop`.
+  - [x] The list rules (trim, empty, repeats, more than 10) and each spelling refusal (`absolute`, `bad-path`, `parent`) have tests.
+  - [x] Feed rules: each name word, a detector hit under a plain name (Q22), the 8-character minimum, `not-secret`.
+  - [x] Learned values stay after a load that no longer has them (Q23), and go after `forget` and `drop`.
 - Verify: the 3 commands pass. Tests name R1, R2, R4, R5, R6, R10.
 - Files: `blindfold/hooks/enroll.ts`, `blindfold/tests/enroll.test.ts`.
 - Depends on: Checkpoint C. Size: M.
