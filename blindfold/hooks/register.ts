@@ -1,5 +1,6 @@
 import type { Register } from "claude-code";
 import { createEnrollment, load } from "./enroll.ts";
+import { onToolCall, onToolCallCatch } from "./shield.ts";
 
 /** The session's env files and known values, shared by every hook of this module instance. */
 export const enrollment = createEnrollment();
@@ -32,4 +33,9 @@ export const register: Register = (on, options) => {
 		enrollment.drop();
 		return next(e);
 	});
+
+	// R4: no matcher, so every tool and every MCP tool is guarded.
+	on("tool.call", ($, e, next) => onToolCall($, enrollment, e, next)).catch(
+		onToolCallCatch,
+	);
 };

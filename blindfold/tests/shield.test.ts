@@ -1,14 +1,18 @@
 import { describe, expect, test } from "claude-code/testing";
 import { buildKnownSet, DEFAULT_LIMITS } from "../hooks/detect.ts";
+import { createEnrollment, load } from "../hooks/enroll.ts";
 import {
 	type ArgsVerdict,
 	clockFor,
 	guardArgs,
 	guardText,
 	guardValue,
+	onToolCall,
+	onToolCallCatch,
+	REFUSED_ARGS,
 	type Verdict,
 } from "../hooks/shield.ts";
-import { fakes } from "./fakes.ts";
+import { fakeApi, fakes } from "./fakes.ts";
 
 const fake = fakes(11);
 const NAME = "FAKE_SHIELD_KEY";
@@ -220,7 +224,310 @@ describe("Q30 argument filter", () => {
 	});
 });
 
+/** The handler tests use their own env file, so its name and values are fake too. */
+const ENV_NAME = "FAKE_TOOL_KEY";
+const envValue = fake.secret(24);
+const freshValue = fake.secret(24);
+const envFile = (secret: string) => ({ text: `${ENV_NAME}=${secret}\n` });
+
+type ToolNext = Parameters<typeof onToolCall>[3];
+type CatchNext = Parameters<typeof onToolCallCatch>[2];
+
+/** Every result the handlers return, for the R15 check. */
+const answers: unknown[] = [];
+
+/** A fresh enrollment over a fake `.env`, loaded the way `session.start` does. */
+async function setup(secret = envValue) {
+	const files = { ".env": envFile(secret) };
+	const { api } = fakeApi(files);
+	const enrollment = createEnrollment();
+	await load(api, enrollment, ".env");
+	return { api, enrollment, files };
+}
+
+/** A `next` that runs `atNext`, records what it got, and answers `answer`. `remaining` gives `budget.remainingMs` on each read. */
+function nextOf(
+	answer: unknown,
+	atNext: () => void = () => {},
+	remaining: () => number = () => 10_000,
+) {
+	const passed: unknown[] = [];
+	const next = Object.assign(
+		async (given: unknown) => {
+			passed.push(given);
+			atNext();
+			return answer;
+		},
+		{
+			budget: {
+				ms: 10_000,
+				get remainingMs() {
+					return remaining();
+				},
+			},
+		},
+	) as unknown as ToolNext;
+	return { next, passed };
+}
+
+async function call(
+	e: Record<string, unknown>,
+	answer: unknown = { ref: 1, result: { stdout: "ok" }, text: "ok" },
+	options: {
+		atNext?: (files: Record<string, { text: string }>) => void;
+		remaining?: () => number;
+	} = {},
+) {
+	const { api, enrollment, files } = await setup();
+	const { next, passed } = nextOf(
+		answer,
+		() => options.atNext?.(files),
+		options.remaining,
+	);
+	const result = await onToolCall(
+		api,
+		enrollment,
+		e as Parameters<typeof onToolCall>[2],
+		next,
+	);
+	answers.push(result);
+	return { result: result as Record<string, unknown>, passed, answer };
+}
+
+const isDeny = (result: Record<string, unknown>) =>
+	Object.keys(result).length === 1 && typeof result.deny === "string";
+
+describe("R4 tool.call before next", () => {
+	const secrets = {
+		"a known value": () => envValue,
+		"a private key block": () => privateKey,
+		"a vendor token": () => vendorToken,
+	};
+	const shapes = {
+		"a flat field": (s: string) => ({
+			tool: "Bash",
+			tool_use_id: "t1",
+			command: `echo ${s}`,
+		}),
+		"a nested object": (s: string) => ({
+			tool: "MultiEdit",
+			tool_use_id: "t2",
+			edits: [{ old_string: "a", new_string: { note: [s] } }],
+		}),
+		"an MCP argument": (s: string) => ({
+			tool: "mcp__fake__send",
+			tool_use_id: "t3",
+			agentId: "a1",
+			body: { headers: { token: s } },
+		}),
+	};
+	for (const [secret, make] of Object.entries(secrets)) {
+		for (const [shape, build] of Object.entries(shapes)) {
+			test(`R4 (P2): ${secret} in ${shape} is a deny, and next never runs`, async () => {
+				const { result, passed } = await call(build(make()));
+				expect(isDeny(result)).toBe(true);
+				expect(result.deny).toBe(REFUSED_ARGS);
+				expect(passed).toEqual([]);
+			});
+		}
+	}
+
+	test("R4 (Q30, P2): a context rule hit alone passes, and next gets the same e", async () => {
+		const e = {
+			tool: "Edit",
+			tool_use_id: "t4",
+			new_string: `password = "${contextValue}"`,
+		};
+		const { result, passed, answer } = await call(e);
+		expect(passed.length).toBe(1);
+		expect(passed[0]).toBe(e);
+		expect(result).toBe(answer);
+	});
+
+	test("R4: the arguments are scanned without tool, tool_use_id, and agentId", async () => {
+		const e = { tool: "Read", tool_use_id: envValue, agentId: vendorToken };
+		const { passed } = await call(e);
+		expect(passed[0]).toBe(e);
+	});
+
+	test("R4 (R2): arguments too large to scan are a deny with the reason, and next never runs", async () => {
+		const e = {
+			tool: "Bash",
+			command: "x".repeat(DEFAULT_LIMITS.maxChars + 1),
+		};
+		const { result, passed } = await call(e);
+		expect(isDeny(result)).toBe(true);
+		expect(result.deny).toContain("too-large");
+		expect(passed).toEqual([]);
+	});
+
+	test("R4 (R2): no time left before next is a deny with deadline", async () => {
+		const { result, passed } = await call(
+			{ tool: "Bash", command: "ls" },
+			undefined,
+			{ remaining: () => 0 },
+		);
+		expect(result.deny).toContain("deadline");
+		expect(passed).toEqual([]);
+	});
+
+	test("R4 (enroll R7): refreshIfNamed runs before the scan, so a new value in a listed file refuses the same call", async () => {
+		const { api, enrollment, files } = await setup();
+		files[".env"] = envFile(freshValue);
+		const { next, passed } = nextOf({ result: "ok" });
+		const result = await onToolCall(
+			api,
+			enrollment,
+			{
+				tool: "Bash",
+				command: `grep ${freshValue} .env`,
+			} as Parameters<typeof onToolCall>[2],
+			next,
+		);
+		answers.push(result);
+		expect(result).toEqual({ deny: REFUSED_ARGS });
+		expect(passed).toEqual([]);
+	});
+});
+
+describe("R5 tool.call after next", () => {
+	const e = { tool: "Bash", tool_use_id: "t5", command: "cat notes.txt" };
+
+	test("R5: a clean result is the same object next returned", async () => {
+		const answer = {
+			ref: 7,
+			result: { stdout: "clean" },
+			text: "clean",
+			isReadOnly: true,
+		};
+		const { result, passed } = await call(e, answer);
+		expect(passed[0]).toBe(e);
+		expect(result).toBe(answer);
+	});
+
+	test("R5 (Q26): a hit in result and context is a new object with no ref and no text, and keeps isError and isReadOnly", async () => {
+		const answer = {
+			ref: 8,
+			result: { stdout: `out ${envValue}` },
+			text: `out ${envValue}`,
+			context: [`ctx ${vendorToken}`],
+			isError: true,
+			isReadOnly: true,
+		};
+		const { result } = await call(e, answer);
+		expect(result).toEqual({
+			result: { stdout: `out [secret: ${ENV_NAME}]` },
+			context: ["ctx [secret hidden]"],
+			isError: true,
+			isReadOnly: true,
+		});
+		expect("ref" in result).toBe(false);
+		expect("text" in result).toBe(false);
+	});
+
+	test("R5 (Q26): a rewrite of a success adds no isError, isReadOnly, or context", async () => {
+		const answer = { ref: 9, result: `out ${envValue}`, text: "x" };
+		const { result } = await call(e, answer);
+		expect(result).toEqual({ result: `out [secret: ${ENV_NAME}]` });
+	});
+
+	test("R5: a deny from below with a hit is masked, and a clean deny is the same object", async () => {
+		const masked = await call(e, { deny: `no: ${envValue}` });
+		expect(masked.result).toEqual({ deny: `no: [secret: ${ENV_NAME}]` });
+		const clean = { deny: "not allowed" };
+		const kept = await call(e, clean);
+		expect(kept.result).toBe(clean);
+	});
+
+	test("R5 (R2): a result too large to scan is withheld with the reason", async () => {
+		const answer = {
+			ref: 10,
+			result: "x".repeat(DEFAULT_LIMITS.maxChars + 1),
+			text: "x",
+		};
+		const { result } = await call(e, answer);
+		expect(result).toEqual({
+			deny: "blindfold withheld this result (too-large). Narrow the call.",
+		});
+	});
+
+	test("R5 (R2): the clock is read again after next, so no time left withholds", async () => {
+		let left = 10_000;
+		const { result } = await call(
+			e,
+			{ ref: 11, result: "ok", text: "ok" },
+			{ atNext: () => (left = 0), remaining: () => left },
+		);
+		expect(result).toEqual({
+			deny: "blindfold withheld this result (deadline). Narrow the call.",
+		});
+	});
+
+	test("R5 (enroll R7): refreshIfNamed runs after next, so a value the call wrote to a listed file is masked", async () => {
+		const answer = { ref: 12, result: `wrote ${freshValue}`, text: "x" };
+		const { result, passed } = await call(
+			{ tool: "Bash", command: "./rotate.sh .env" },
+			answer,
+			{ atNext: (files) => (files[".env"] = envFile(freshValue)) },
+		);
+		expect(passed.length).toBe(1);
+		expect(result).toEqual({ result: `wrote [secret: ${ENV_NAME}]` });
+	});
+});
+
+describe("R5 tool.call .catch", () => {
+	const caught = (called: boolean) => {
+		const passed: unknown[] = [];
+		const next = Object.assign(async (given: unknown) => passed.push(given), {
+			called,
+			error: { kind: "throw" },
+		}) as unknown as CatchNext;
+		return { next, passed };
+	};
+
+	for (const called of [false, true]) {
+		test(`R5 (P5): the .catch ${called ? "withholds after" : "refuses before"} next, and runs nothing`, async () => {
+			const { api } = fakeApi({});
+			const { next, passed } = caught(called);
+			const result = await onToolCallCatch(
+				api,
+				{ tool: "Bash", command: "ls" } as Parameters<typeof onToolCall>[2],
+				next,
+			);
+			answers.push(result);
+			expect(result).toEqual({
+				deny: called
+					? "blindfold withheld this result."
+					: "blindfold refused this call.",
+			});
+			expect(passed).toEqual([]);
+		});
+	}
+});
+
 describe("R15 no leak", () => {
+	test("R15: no deny text holds a fake value or an env name", () => {
+		const denies = answers.filter(
+			(a) => typeof (a as { deny?: unknown }).deny === "string",
+		);
+		expect(denies.length).toBeGreaterThan(15);
+		const secrets = [
+			ENV_NAME,
+			NAME,
+			envValue,
+			freshValue,
+			known,
+			vendorToken,
+			privateKey,
+			contextValue,
+		];
+		for (const deny of denies) {
+			// P1: a marker in a masked deny from below may hold a name, and nothing else may.
+			const json = JSON.stringify(deny).replace(/\[secret: \w+\]/g, "");
+			for (const secret of secrets) expect(json.includes(secret)).toBe(false);
+		}
+	});
+
 	test("R15: no verdict but a rewrite copy holds a fake value or an env name", () => {
 		expect(seen.length).toBeGreaterThan(20);
 		const secrets = [NAME, known, vendorToken, privateKey, contextValue];

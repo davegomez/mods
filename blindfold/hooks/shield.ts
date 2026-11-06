@@ -1,5 +1,7 @@
+import type { CatchHandler, Hook, ToolCallResult } from "claude-code";
 import type { Clock, Hit, KnownSet, Scan, Unscannable } from "./detect.ts";
 import { DEFAULT_LIMITS, scanText, scanValue } from "./detect.ts";
+import { type Enrollment, refreshIfNamed } from "./enroll.ts";
 
 export type Verdict<T> =
 	| { kind: "pass" }
@@ -102,3 +104,85 @@ export function clockFor(remainingMs: number, now: () => number): Clock {
 	// NaN would never expire, so it fails closed.
 	return { now, deadline: Number.isNaN(deadline) ? -Infinity : deadline };
 }
+
+/** R4, P3: tells Claude what to do instead. It holds no value and no name (R15). */
+export const REFUSED_ARGS =
+	"blindfold refused this call because its arguments hold a secret value. Refer to the secret by its env variable name, for example $NAME in a shell command, and never write the value itself.";
+
+const unscannedArgs = (reason: string) =>
+	`blindfold refused this call (${reason}): it could not scan the arguments. Shorten or split the call.`;
+const withheld = (reason: string) => ({
+	deny: `blindfold withheld this result (${reason}). Narrow the call.`,
+});
+
+type ToolCall = Parameters<Hook<"tool.call">>;
+
+/** R2: `performance.now` is monotonic, so a wall-clock change cannot move the deadline. */
+const clockOf = (next: ToolCall[2]) =>
+	clockFor(next.budget.remainingMs, () => performance.now());
+
+/** R4: the tool's own arguments, without the keys the engine reserves. */
+function argsOf(e: ToolCall[1]): Record<string, unknown> {
+	const { tool, tool_use_id, agentId, ...args } = e as Record<string, unknown>;
+	return args;
+}
+
+/** R5 (Q26): a copy without `ref` and `text`, so core maps the scanned `result` again. */
+function rewritten(
+	from: { isError?: true; isReadOnly?: true },
+	scanned: { result?: unknown; context?: string[] },
+): ToolCallResult {
+	return {
+		result: scanned.result,
+		...(scanned.context === undefined ? {} : { context: scanned.context }),
+		...(from.isError ? { isError: true } : {}),
+		...(from.isReadOnly ? { isReadOnly: true } : {}),
+	} as ToolCallResult;
+}
+
+/** R5: scan what `next` returned with the set as it is now. */
+function guardResult(out: ToolCallResult, set: KnownSet, clock: Clock) {
+	if (out.deny !== undefined) {
+		const verdict = guardText(out.deny, set, clock);
+		if (verdict.kind === "stop") return withheld(verdict.reason);
+		return verdict.kind === "rewrite" ? { deny: verdict.value } : out;
+	}
+	const verdict = guardValue(
+		{ result: out.result, context: out.context },
+		set,
+		clock,
+	);
+	if (verdict.kind === "stop") return withheld(verdict.reason);
+	// pass keeps the same object, so core keeps `ref`.
+	return verdict.kind === "rewrite"
+		? rewritten(out, verdict.value as { result?: unknown; context?: string[] })
+		: out;
+}
+
+/** R4, R5: every tool, MCP tools too. `enrollment` is a parameter, because `register.ts` owns it and imports this module. */
+export async function onToolCall(
+	$: ToolCall[0],
+	enrollment: Enrollment,
+	e: ToolCall[1],
+	next: ToolCall[2],
+): Promise<ToolCallResult> {
+	await refreshIfNamed($, enrollment, e);
+	const before = guardArgs(argsOf(e), enrollment.knownSet(), clockOf(next));
+	if (before.kind === "refuse") return { deny: REFUSED_ARGS };
+	if (before.kind === "stop") return { deny: unscannedArgs(before.reason) };
+	// P2: the arguments go on unchanged.
+	const out = await next(e);
+	// The call may have written a listed file.
+	await refreshIfNamed($, enrollment, e);
+	return guardResult(out, enrollment.knownSet(), clockOf(next));
+}
+
+/** R5, P5: the handler has 1 s, so it does not scan. */
+export const onToolCallCatch: CatchHandler<Hook<"tool.call">> = (
+	_$,
+	_e,
+	next,
+) =>
+	next.called
+		? { deny: "blindfold withheld this result." }
+		: { deny: "blindfold refused this call." };

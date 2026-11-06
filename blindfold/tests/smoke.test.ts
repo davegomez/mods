@@ -19,6 +19,7 @@ const hooksOf = (options: PluginOptions) => {
 	const hooks = new Map<string, Hook>();
 	const on = ((event: string, ...rest: unknown[]) => {
 		hooks.set(event, rest.at(-1) as Hook);
+		if (rest.length > 1) hooks.set(`${event}.matcher`, rest[0] as Hook);
 		return {
 			catch: (handler: Hook) => hooks.set(`${event}.catch`, handler),
 		};
@@ -61,13 +62,38 @@ const secretFile = (value: string): FakeFile => ({
 });
 
 describe("R7 lifecycle wiring", () => {
-	test("R7: register hooks session.start, classic.SessionStart, and session.end only", () => {
+	test("R7, R4: register hooks the lifecycle events and tool.call with a .catch, and no matcher", () => {
 		expect([...hooksOf({ envFiles: ".env" }).keys()]).toEqual([
 			"session.start",
 			"classic.SessionStart",
 			"classic.SessionStart.catch",
 			"session.end",
+			"tool.call",
+			"tool.call.catch",
 		]);
+	});
+
+	test("R4: the registered tool.call hook refuses a value of the module's enrollment", async () => {
+		enrollment.drop();
+		const value = fake.secret(24);
+		const { api } = fakeApi({ ".env": secretFile(value) });
+		const hooks = hooksOf({ envFiles: ".env" });
+		await run(hooks.get("session.start"), api, {});
+		let ran = false;
+		const next = Object.assign(
+			async () => {
+				ran = true;
+				return {};
+			},
+			{ budget: { ms: 10_000, remainingMs: 10_000 } },
+		);
+		const result = await hooks.get("tool.call")?.(
+			api,
+			{ tool: "Bash", command: `echo ${value}` },
+			next,
+		);
+		expect(Object.keys(result as object)).toEqual(["deny"]);
+		expect(ran).toBe(false);
 	});
 
 	test("R7 (F24): a classic.SessionStart hook that fails still calls next", async () => {
