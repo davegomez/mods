@@ -120,4 +120,4 @@ The first try showed that `claude plugin test` cannot import `dotenv`. Keep `pac
 
 - [x] The 3 commands pass.
 - [x] The main session reviews the diff.
-- [ ] The owner approves step 1. Next: `SPEC-enroll.md`.
+- [x] The owner approves step 1. Next: `SPEC-enroll.md`.
