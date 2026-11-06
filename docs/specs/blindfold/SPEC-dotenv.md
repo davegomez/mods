@@ -61,6 +61,7 @@ R6. Replace and append.
 - `bad-name` if `isValidName(name)` is false.
 - `duplicate-name` if the name shows more than once. blindfold does not guess which line the app uses.
 - `unsafe-value` if any entry in the file is longer than 65,536 characters, because a loader can read such a file differently from our parser (F20).
+- `too-large` if the file is longer than 131,072 characters. An unclosed quote followed by a long run of text also breaks the real `dotenv` in Bun, without any long entry. With this limit, the file after a write stays far below that point (F23).
 - If the name shows once, replace the full span of that entry (all lines of a quoted value). Keep the `export ` prefix if it was there.
 - If the name is not there, append the entry. Add a line break before it if the text does not end with one.
 - Keep all other characters unchanged: comments, blank lines, other entries, a byte order mark, and the line endings. If the text has any CRLF, the new entry ends with CRLF (F22).
