@@ -102,8 +102,8 @@ Same as `SPEC-detect.md`, plus `cd blindfold && bunx tsc -p .` (Q24). Files: `bl
 
 ## Decisions
 
-- Q26. A `tool.call` result is rewritten by returning a new object with the scanned `result` and no `ref` or `text`, so core maps it again. The types say core uses `ref` when the hook returns the object it got, but they do not say that core maps `result` when `text` is missing. Proposed: accept, and confirm in the live check. Fallback: put the masked text in `{ deny }`.
-- Q27. `prompt.mention` refuses env files by path only. Other files are not read in the hook, because R8 scans their text. The design said "refuse any readable file with a recognised secret". Proposed: accept.
-- Q28. `session.receive` rewrites a message from another session instead of refusing it, because `{ consumed }` drops the whole message without a word to the model. The design said "refuse". Proposed: accept.
-- Q29. A prompt with a pinned slash command and a hit in its text is dropped, because the host does not apply a text rewrite then. Proposed: accept.
-- Q30. A context rule hit alone in tool arguments does not refuse the call. Code such as `password = "…"` in an `Edit` call is common, and the context rules are the least precise detectors (design 1a). Known values, private keys, and vendor prefixes still refuse. Proposed: accept.
+- Q26. A `tool.call` result is rewritten by returning a new object with the scanned `result` and no `ref` or `text`, so core maps it again. The types say core uses `ref` when the hook returns the object it got, but they do not say that core maps `result` when `text` is missing. Accepted. Confirm in the live check. Fallback: put the masked text in `{ deny }`.
+- Q27. `prompt.mention` refuses env files by path only. Other files are not read in the hook, because R8 scans their text. The design said "refuse any readable file with a recognised secret". Accepted.
+- Q28. `session.receive` rewrites a message from another session instead of refusing it, because `{ consumed }` drops the whole message without a word to the model. The design said "refuse". Accepted.
+- Q29. A prompt with a pinned slash command and a hit in its text is dropped, because the host does not apply a text rewrite then. Accepted.
+- Q30. A context rule hit alone in tool arguments does not refuse the call. Code such as `password = "…"` in an `Edit` call is common, and the context rules are the least precise detectors (design 1a). Known values, private keys, and vendor prefixes still refuse. Accepted.

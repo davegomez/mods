@@ -67,3 +67,22 @@ Spec: `docs/specs/blindfold/SPEC-enroll.md`. Tasks with full criteria: `tasks/to
 ### Checkpoint D: `enroll` done
 
 Independent review by Pi in a herdr pane (owner request), then owner approval.
+
+# Step 3: `shield`
+
+Spec: `docs/specs/blindfold/SPEC-shield.md` (Q26 to Q30 accepted). Tasks with full criteria: `tasks/todo.md`, T12 to T15. 1 `worker-high` per task, in sequence, because T13 to T15 all change `shield.ts` and `register.ts`. T12 builds the pure part. T13 does `tool.call` first, because Q26 is the riskiest fact.
+
+- [ ] T12. Pure part: plain copy, verdicts, argument filter, clock.
+- [ ] T13. `tool.call` before and after `next`, with `refreshIfNamed`.
+- [ ] T14. Prompt paths: `prompt.submit`, `prompt.context`, `prompt.section`, `prompt.attachment`, `skill.prompt`, `prompt.mention`.
+- [ ] T15. Agent and session paths: `agent.spawn`, `session.send`, `session.receive`, `session.append`, and `config.set`.
+
+### Checkpoint E: `shield` done (milestone 3)
+
+Independent review by Pi in a herdr pane. Then the live check in `SPEC-shield.md` "Success criteria", only after the owner approves the live session. Then owner approval.
+
+| Risk | Impact | Mitigation |
+|---|---|---|
+| Q26: core does not map a new `result` when `text` is missing | High: the model reads the unmasked text | The live check tests it. Fallback in the spec: masked text in `{ deny }`. |
+| The `claude-code/testing` kit cannot fire some of the 11 events | Medium: a path without a handler test | The worker calls the handler function directly with `fakeApi` and a fake `next`, as `smoke.test.ts` does. |
+| A scan on every `session.append` and `prompt.attachment` slows the session | Low | T12 measures 2 Mi characters. The known-value set is cached in `enroll`. |

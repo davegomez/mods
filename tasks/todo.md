@@ -160,3 +160,62 @@ The first try showed that `claude plugin test` cannot import `dotenv`. Keep `pac
   - Acceptance: `AGENTS.md` lists the `tsc` command for `blindfold` and says how to get the types.
   - Verify: the 3 commands and `tsc` pass.
 - Files: `blindfold/hooks/*.ts`, `blindfold/tests/*.ts`, `AGENTS.md`.
+
+# Step 3: `shield`
+
+Spec: `docs/specs/blindfold/SPEC-shield.md`. Commands, run for every task: the 3 above, plus `cd blindfold && bunx tsc -p .` (Q24).
+
+## T12. `shield` pure part
+
+`SPEC-shield.md` R1, R2, R15, Q30.
+
+- Acceptance:
+  - [ ] `guardText`, `guardValue`, `guardArgs`, and `clockFor` match the module shape. `rewrite` returns the scanned copy. A cycle or a `BigInt` is `stop` with `unsupported`.
+  - [ ] `guardArgs` refuses known values, private keys, and vendor prefixes, and passes a context rule hit alone (Q30).
+  - [ ] A speed test: `"pwd=&".repeat(…)` at 2 Mi characters ends or stops inside the deadline.
+- Verify: the 4 commands pass. Tests name R1, R2, Q30.
+- Files: `blindfold/hooks/shield.ts`, `blindfold/tests/shield.test.ts`.
+- Depends on: none. Size: S.
+
+## T13. `tool.call`
+
+`SPEC-shield.md` R4, R5, R15, Q26.
+
+- Acceptance:
+  - [ ] Before `next`: a hit is `{ deny }`, and `next` is never called with changed arguments (P2). `refreshIfNamed` runs before the scan and again after `next`.
+  - [ ] After `next`: `pass` returns the same object. `rewrite` returns a new object without `ref` and `text`. `stop` returns the withhold `{ deny }`. A deny text with a hit is masked.
+  - [ ] The `.catch` refuses before `next` and withholds after it. `register.ts` wires the hook with no matcher.
+- Verify: the 4 commands pass, and validate lists a `.catch` for `tool.call`. Tests name R4, R5, R15.
+- Files: `blindfold/hooks/shield.ts`, `blindfold/hooks/register.ts`, `blindfold/tests/shield.test.ts`, `blindfold/tests/smoke.test.ts`.
+- Depends on: T12. Size: M.
+
+## T14. Prompt paths
+
+`SPEC-shield.md` R3, R6 to R10, R15, Q27, Q29.
+
+- Acceptance:
+  - [ ] Each of the 6 events has 4 tests: a hit, a clean item, a `stop`, and the `.catch`.
+  - [ ] `prompt.submit` shows a toast with a count only, and drops a hit when `e.command` is set (Q29).
+  - [ ] `prompt.mention` refuses listed env files and `.env` or `.env.*` base names, and passes other files (Q27).
+- Verify: the 4 commands pass, and validate lists a `.catch` for each of the 6 events. Tests name R3, R6 to R10.
+- Files: `blindfold/hooks/shield.ts`, `blindfold/hooks/register.ts`, `blindfold/tests/shield.test.ts`.
+- Depends on: T13. Size: M.
+
+## T15. Agent and session paths
+
+`SPEC-shield.md` R11 to R15, Q28.
+
+- Acceptance:
+  - [ ] `agent.spawn` and `session.send` refuse a hit. `session.receive` rewrites a hit (Q28).
+  - [ ] `session.append` rewrites text blocks and `tool_result` content, leaves media blocks, and shows the rotate toast.
+  - [ ] `config.set` for `blindfold.envFiles` loads the new list after `next` returns `{ value }`.
+- Verify: the 4 commands pass, and validate lists a `.catch` for each guard event. Tests name R11 to R15.
+- Files: `blindfold/hooks/shield.ts`, `blindfold/hooks/register.ts`, `blindfold/tests/shield.test.ts`.
+- Depends on: T14. Size: M.
+
+## Checkpoint E
+
+- [ ] The 4 commands pass.
+- [ ] Pi reviews `shield.ts` in a herdr pane, and the findings are fixed.
+- [ ] The owner approves the live session, and the live check confirms Q26 and R13.
+- [ ] The owner approves step 3. Next: `SPEC-request.md`, `SPEC-entry.md`, `SPEC-write.md`.
