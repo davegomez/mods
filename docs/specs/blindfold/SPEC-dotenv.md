@@ -45,7 +45,7 @@ R2. Duplicates. When a name shows more than once, `entries` holds every occurren
 
 R3. Size. Text longer than `MAX_FILE_CHARS` returns `{ tooLarge: true }`. `enroll` then marks the file Stale.
 
-R4. Names for writing. `isValidName` accepts `^[A-Za-z_][A-Za-z0-9_]{0,63}$`, the same rule as `request_secret`.
+R4. Names for writing. `isValidName` accepts `^[A-Za-z_][A-Za-z0-9_]{0,63}$`, the same rule as `request_secret`. It refuses `__proto__`, because the real `dotenv` cannot set it (F21).
 
 R5. Serialize. `setValue` writes 1 of 2 forms, and refuses all other values with `unsafe-value`:
 
@@ -54,15 +54,16 @@ R5. Serialize. `setValue` writes 1 of 2 forms, and refuses all other values with
 | no `'`, no newline, no carriage return | `NAME='value'` |
 | holds `'` or a newline, and no `"`, `\`, `$`, backtick, or carriage return (for example a PEM key, or `it'sMyPass9`) | `NAME="value"`, each newline written as `\n` (Q21) |
 
-A value with a control character other than tab and newline, or an empty value, also returns `unsafe-value`. The pane tells the user to add such a value in their editor.
+A value with a control character other than tab and newline, or an empty value, also returns `unsafe-value`. A value longer than 65,536 characters also returns `unsafe-value`. In Bun, the real `dotenv` drops a quoted entry above about 434,000 characters and every entry after it (F20). The pane tells the user to add such a value in their editor.
 
 R6. Replace and append.
 
 - `bad-name` if `isValidName(name)` is false.
 - `duplicate-name` if the name shows more than once. blindfold does not guess which line the app uses.
+- `unsafe-value` if any entry in the file is longer than 65,536 characters, because a loader can read such a file differently from our parser (F20).
 - If the name shows once, replace the full span of that entry (all lines of a quoted value). Keep the `export ` prefix if it was there.
 - If the name is not there, append the entry. Add a line break before it if the text does not end with one.
-- Keep all other characters unchanged: comments, blank lines, other entries, a byte order mark, and the line endings. If the text uses CRLF, the new entry ends with CRLF.
+- Keep all other characters unchanged: comments, blank lines, other entries, a byte order mark, and the line endings. If the text has any CRLF, the new entry ends with CRLF (F22).
 
 R7. Round trip. `setValue` parses its own output before it returns. If the new value or any other value differs, it returns `unsafe-value`. This is the pure part of step 6 in design section 1f.
 
