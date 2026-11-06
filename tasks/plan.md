@@ -75,7 +75,7 @@ Spec: `docs/specs/blindfold/SPEC-shield.md` (Q26 to Q30 accepted). Tasks with fu
 - [x] T12. Pure part: plain copy, verdicts, argument filter, clock.
 - [x] T13. `tool.call` before and after `next`, with `refreshIfNamed`.
 - [x] T14. Prompt paths: `prompt.submit`, `prompt.context`, `prompt.section`, `prompt.attachment`, `skill.prompt`, `prompt.mention`.
-- [ ] T15. Agent and session paths: `agent.spawn`, `session.send`, `session.receive`, `session.append`, and `config.set`.
+- [x] T15. Agent and session paths: `agent.spawn`, `session.send`, `session.receive`, `session.append`, and `config.set`.
 
 ### Checkpoint E: `shield` done (milestone 3)
 

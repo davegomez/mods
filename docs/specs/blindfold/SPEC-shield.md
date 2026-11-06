@@ -98,7 +98,7 @@ Same as `SPEC-detect.md`, plus `cd blindfold && bunx tsc -p .` (Q24). Files: `bl
 
 ## Success criteria
 
-- The 4 commands pass with no warnings, and validate lists a `.catch` for every guard hook in R3 to R13.
+- The 4 commands pass with no warnings. Every guard hook in R3 to R13 has a `.catch`, checked by the smoke wiring test, and validate lists it for each event that can refuse. Validate lists a `.catch` only for events that can refuse, so it does not list `prompt.context`, `prompt.section`, `prompt.attachment`, or `skill.prompt`.
 - Every requirement R1 to R15 has a test that names it.
 - Live check (milestone 3, a shield-only build): with the owner's approval, load `claude --plugin-dir ./blindfold` with a fake `.env`, and confirm the INFERRED facts:
   - the model sees the marker, not the value, after `Bash` runs `cat` on a file that holds the value (R5, Q26),

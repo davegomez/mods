@@ -206,16 +206,16 @@ Spec: `docs/specs/blindfold/SPEC-shield.md`. Commands, run for every task: the 3
 `SPEC-shield.md` R11 to R15, Q28.
 
 - Acceptance:
-  - [ ] `agent.spawn` and `session.send` refuse a hit. `session.receive` rewrites a hit (Q28).
-  - [ ] `session.append` rewrites text blocks and `tool_result` content, leaves media blocks, and shows the rotate toast.
-  - [ ] `config.set` for `blindfold.envFiles` loads the new list after `next` returns `{ value }`.
+  - [x] `agent.spawn` and `session.send` refuse a hit. `session.receive` rewrites a hit (Q28).
+  - [x] `session.append` rewrites text blocks and `tool_result` content, leaves media blocks, and shows the rotate toast.
+  - [x] `config.set` for `blindfold.envFiles` loads the new list after `next` returns `{ value }`.
 - Verify: the 4 commands pass, and validate lists a `.catch` for each guard event. Tests name R11 to R15.
 - Files: `blindfold/hooks/shield.ts`, `blindfold/hooks/register.ts`, `blindfold/tests/shield.test.ts`.
 - Depends on: T14. Size: M.
 
 ## Checkpoint E
 
-- [ ] The 4 commands pass.
+- [x] The 4 commands pass.
 - [ ] Pi reviews `shield.ts` in a herdr pane, and the findings are fixed.
 - [ ] The owner approves the live session, and the live check confirms Q26 and R13.
 - [ ] The owner approves step 3. Next: `SPEC-request.md`, `SPEC-entry.md`, `SPEC-write.md`.
