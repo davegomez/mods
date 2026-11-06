@@ -194,9 +194,9 @@ Spec: `docs/specs/blindfold/SPEC-shield.md`. Commands, run for every task: the 3
 `SPEC-shield.md` R3, R6 to R10, R15, Q27, Q29.
 
 - Acceptance:
-  - [ ] Each of the 6 events has 4 tests: a hit, a clean item, a `stop`, and the `.catch`.
-  - [ ] `prompt.submit` shows a toast with a count only, and drops a hit when `e.command` is set (Q29).
-  - [ ] `prompt.mention` refuses listed env files and `.env` or `.env.*` base names, and passes other files (Q27).
+  - [x] Each of the 6 events has 4 tests: a hit, a clean item, a `stop`, and the `.catch`.
+  - [x] `prompt.submit` shows a toast with a count only, and drops a hit when `e.command` is set (Q29).
+  - [x] `prompt.mention` refuses listed env files and `.env` or `.env.*` base names, and passes other files (Q27).
 - Verify: the 4 commands pass, and validate lists a `.catch` for each of the 6 events. Tests name R3, R6 to R10.
 - Files: `blindfold/hooks/shield.ts`, `blindfold/hooks/register.ts`, `blindfold/tests/shield.test.ts`.
 - Depends on: T13. Size: M.
