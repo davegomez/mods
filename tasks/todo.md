@@ -149,6 +149,14 @@ The first try showed that `claude plugin test` cannot import `dotenv`. Keep `pac
 ## Checkpoint D
 
 - [x] The 3 commands pass.
-- [ ] Pi reviews `enroll.ts` in a herdr pane, and the findings are fixed.
-- [x] The Pi findings F24 to F32 (`docs/specs/blindfold/reviews/enroll-pi.md`) are fixed, each with a test that names it. Q25 waits for the owner.
-- [ ] The owner approves step 2. Next: `SPEC-shield.md`.
+- [x] Pi reviews `enroll.ts` in a herdr pane, and the findings are fixed.
+- [x] The Pi findings F24 to F32 (`docs/specs/blindfold/reviews/enroll-pi.md`) are fixed, each with a test that names it. Q25 is accepted.
+- [x] The owner approves step 2. Next: `SPEC-shield.md`.
+
+## T11. `tsc` as the 4th check (Q24)
+
+- [ ] `cd blindfold && bunx tsc -p .` reports 0 errors. The generated types come from a `claude --plugin-dir ./blindfold` load and are not committed.
+  - Acceptance: no `any`, no `@ts-ignore`, no `@ts-expect-error`, no weaker test. The out-of-date test name `R6: text or output above MAX_FILE_CHARS is too-large` matches what it checks.
+  - Acceptance: `AGENTS.md` lists the `tsc` command for `blindfold` and says how to get the types.
+  - Verify: the 3 commands and `tsc` pass.
+- Files: `blindfold/hooks/*.ts`, `blindfold/tests/*.ts`, `AGENTS.md`.

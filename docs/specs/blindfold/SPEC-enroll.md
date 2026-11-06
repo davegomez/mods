@@ -112,4 +112,4 @@ Same as `SPEC-detect.md`. Files: `blindfold/hooks/enroll.ts` and `blindfold/test
 
 - Q22. R4 also feeds a value that a detector flags, whatever its name. Some config values with high entropy can be hidden by mistake. Accepted.
 - Q23. R5 keeps a value hidden after it is deleted from the file, until the session ends or the user forgets the file. Accepted.
-- Q25. stat, read, stat again narrows the swap race but cannot close it, because $.fs has no no-follow read. Proposed: accept.
+- Q25. stat, read, stat again narrows the swap race but cannot close it, because $.fs has no no-follow read. Accepted.

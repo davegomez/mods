@@ -53,6 +53,10 @@ Tasks with full criteria: `tasks/todo.md`.
 
 None.
 
+## Decisions
+
+- Q24. `tsc` becomes a 4th required check: `cd blindfold && bunx tsc -p .`. It needs the generated types, which a `claude --plugin-dir ./blindfold` load writes. Accepted.
+
 # Step 2: `enroll`
 
 Spec: `docs/specs/blindfold/SPEC-enroll.md`. Tasks with full criteria: `tasks/todo.md`, T9 and T10. 1 `worker-high` per task, in sequence. T9 builds the pure part, so T10 only adds the `$` calls and the wiring.
