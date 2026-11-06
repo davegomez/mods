@@ -45,7 +45,7 @@ R2. Known values. `buildKnownSet` precomputes these forms of each value, and dro
 
 A value with fewer than 8 characters is not added. `buildKnownSet` returns it in `skipped`, so the pane can say "too short to hide" (Q14). When 2 names have the same value, the marker uses the first name in sort order.
 
-R3. Match order. Collect all spans from all forms and rules. Spans that overlap merge into 1 span that covers all of them, so no part of any match stays visible. The merged span gets the marker of its longest member (a known value before a rule for equal lengths). Replace from right to left.
+R3. Match order. Collect all spans from all forms and rules. Spans that overlap merge into 1 span that covers all of them, so no part of any match stays visible. The merged span gets the marker of its member with the highest type: a known value, then a private key or vendor rule, then a context rule. Between members of the same type, the longest wins (Q31). Replace from right to left.
 
 R4. Private keys. `-----BEGIN [A-Z0-9 ]*PRIVATE KEY-----` up to and including the matching `-----END … PRIVATE KEY-----`. With no END line, mark to the end of the text. Rule id `private-key`.
 
@@ -151,3 +151,4 @@ export function marker(hit: Hit): string {
 - Q18. Slack: `xoxb-`, `xoxp-`, `xoxe-1-`, `xapp-`. The 4 prefixes that Slack does not document are left out (review finding F9 closed by this decision).
 - Q19. The AWS and npm lengths are marked as assumptions.
 - Q20. The `assign` value can hold `&`, and the extra hiding is accepted.
+- Q31. A merged span takes its marker from its member with the highest type, not its longest member, so a vendor token or known value inside a longer `context:assign` span keeps its label and `guardArgs` refuses it (F36). The masked text does not change. Accepted.
