@@ -1,0 +1,6 @@
+{
+	"name": "blindfold",
+	"version": "0.1.0",
+	"description": "Keeps secret values out of the conversation with Claude.",
+	"author": { "name": "David" }
+}
