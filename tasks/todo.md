@@ -121,3 +121,33 @@ The first try showed that `claude plugin test` cannot import `dotenv`. Keep `pac
 - [x] The 3 commands pass.
 - [x] The main session reviews the diff.
 - [x] The owner approves step 1. Next: `SPEC-enroll.md`.
+
+## T9. `enroll` pure part
+
+`SPEC-enroll.md` R1, R2 (spelling checks only), R4, R5, R6, R10, and the `refreshIfNamed` name check.
+
+- Acceptance:
+  - [ ] The list rules (trim, empty, repeats, more than 10) and each spelling refusal (`absolute`, `bad-path`, `parent`) have tests.
+  - [ ] Feed rules: each name word, a detector hit under a plain name (Q22), the 8-character minimum, `not-secret`.
+  - [ ] Learned values stay after a load that no longer has them (Q23), and go after `forget` and `drop`.
+- Verify: the 3 commands pass. Tests name R1, R2, R4, R5, R6, R10.
+- Files: `blindfold/hooks/enroll.ts`, `blindfold/tests/enroll.test.ts`.
+- Depends on: Checkpoint C. Size: M.
+
+## T10. `enroll` reads and wiring
+
+`SPEC-enroll.md` R2 (symlink and root checks through `$.fs.stat`), R3, R7 (`session.start`, `classic.SessionStart`, `session.end` only), R8, R9.
+
+- Acceptance:
+  - [ ] Stub tests for each `stale` and `refused` reason that needs `$`, and for a load that ends after `drop`.
+  - [ ] `plugin.json` has the `envFiles` field, and `register.ts` wires the 3 lifecycle events to 1 module-level `Enrollment`.
+  - [ ] `addFile` returns `added`, `refused`, and `denied` in stub tests.
+- Verify: the 3 commands pass. Tests name R2, R3, R7, R8, R9.
+- Files: `blindfold/hooks/enroll.ts`, `blindfold/tests/enroll.test.ts`, `blindfold/hooks/register.ts`, `blindfold/tests/smoke.test.ts`, `blindfold/.claude-plugin/plugin.json`.
+- Depends on: T9. Size: M.
+
+## Checkpoint D
+
+- [ ] The 3 commands pass.
+- [ ] Pi reviews `enroll.ts` in a herdr pane, and the findings are fixed.
+- [ ] The owner approves step 2. Next: `SPEC-shield.md`.
