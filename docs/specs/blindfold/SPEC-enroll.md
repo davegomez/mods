@@ -43,9 +43,11 @@ R2. Path rules, before any read. An entry is `refused` if it:
 - is absolute, starts with `~`, has a drive letter, starts with `\\` or `//`, or holds a NUL (`absolute` or `bad-path`),
 - has a `..` segment (`parent`),
 - is a symbolic link itself (`$.fs.stat(path, { resolve: true }).isLink`, `symlink`),
-- has a `realPath` outside the real session root (`outside-root`). The root is resolved the same way, and the check is `realPath.startsWith(realRoot + SEP)`.
+- has a `realPath` outside the real session root (`outside-root`). The root is resolved the same way, and the check is `realPath.startsWith(realRoot + SEP)`. Only `SEP` is trimmed from the end of the real root, so a POSIX folder name that ends in `\` stays intact.
 
 A missing file is `missing`, not an error. A path that is not a regular file is `stale` with `not-a-file`.
+
+After the read, `load` runs the same checks on the path again. If the path is now a link, its `realPath` changed, it is not a regular file, or it left the root, the text is dropped and the file is `stale` with `read-failed`. Known limit (Q25): a swap between that second `stat` and the read it guards can still go unseen, because `$.fs` has no read that refuses to follow a link.
 
 R3. Reads. Read each accepted file with `$.fs.read` after a `stat` shows it is 1 MiB or smaller. Larger: `stale` with `too-large`. A read that rejects: `stale` with `read-failed`. Parse with `dotenv.parse`. A `tooLarge` result is `stale` with `too-large`.
 
@@ -65,7 +67,7 @@ R7. Lifecycle (wired in `register.ts`):
 | Event | Call |
 |---|---|
 | `session.start` | `load` |
-| `classic.SessionStart` with `source` `clear`, `resume`, or `fork` | `drop`, then `load` |
+| `classic.SessionStart` with `source` `clear`, `resume`, or `fork` | `drop`, then `load` with the list in use before the drop (the one `session.end` dropped), not the list from `options` |
 | `session.end` | `drop` |
 | `tool.call` (via `shield`), before and after `next(e)` | `refreshIfNamed` with the tool input |
 | `config.set` for `blindfold.envFiles`, after `next(e)` returns `{ value }` | `load` with the new value |
@@ -73,11 +75,11 @@ R7. Lifecycle (wired in `register.ts`):
 
 `refreshIfNamed` loads again when the JSON text of the input holds a listed path or its base name. A load after the call matters most: it learns a value that the tool call itself wrote, before `shield` scans the result.
 
-R8. Overlap. Each `load` takes a new generation number. It builds a new set and replaces the old one in 1 step, only if its generation is still the newest. `drop` also takes a new generation, so a load that is still running cannot add values after the session ended.
+R8. Overlap. Each `load` takes a new generation number. It builds a new set and replaces the old one in 1 step, only if its generation is still the newest. `drop` and `forget` also take a new generation, so a load that is still running cannot add values after the session ended, or bring back a file the user forgot. `drop` also clears the list, so a `refreshIfNamed` after it reads nothing.
 
-R9. Persist a file choice (Q9). `addFile` applies R2 to the path (a missing file is accepted, because `write` creates it), adds it to `envFiles` with `$.config.set({ key: "blindfold.envFiles", value })`, and returns `denied` if the set call returns `{ deny }`. The key format `<plugin>.<field>` is confirmed by the type declarations of `ConfigSetInput.key`.
+R9. Persist a file choice (Q9). `addFile` applies R2 to the path. A missing file is accepted, because `write` creates it, only when the nearest folder above it that exists is a folder whose `realPath` is the real root or under it. `addFile` calls run 1 at a time, and each reads the current list after its checks, so a concurrent add or load is not lost. It adds the path to `envFiles` with `$.config.set({ key: "blindfold.envFiles", value })`, and returns `denied` if the set call returns `{ deny }`. The key format `<plugin>.<field>` is confirmed by the type declarations of `ConfigSetInput.key`.
 
-R10. No leak. Values live only in the `Enrollment` closure. No `Status`, error, log, `$.state`, `$.store`, or render prop holds a value. An error from `$.fs` is reduced to the reasons in `FileState`.
+R10. No leak. Values live only in the `Enrollment` closure. No `Status`, error, log, `$.state`, `$.store`, or render prop holds a value. An error from `$.fs` is reduced to the reasons in `FileState`. A `Status` path or name in which the known-value set finds a value (for example a name that reuses a kept value) is shown as `[hidden path]` or `[hidden name]`; the name keeps its `hidden` flag.
 
 ### Not in scope
 
@@ -110,3 +112,4 @@ Same as `SPEC-detect.md`. Files: `blindfold/hooks/enroll.ts` and `blindfold/test
 
 - Q22. R4 also feeds a value that a detector flags, whatever its name. Some config values with high entropy can be hidden by mistake. Accepted.
 - Q23. R5 keeps a value hidden after it is deleted from the file, until the session ends or the user forgets the file. Accepted.
+- Q25. stat, read, stat again narrows the swap race but cannot close it, because $.fs has no no-follow read. Proposed: accept.

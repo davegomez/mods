@@ -150,4 +150,5 @@ The first try showed that `claude plugin test` cannot import `dotenv`. Keep `pac
 
 - [x] The 3 commands pass.
 - [ ] Pi reviews `enroll.ts` in a herdr pane, and the findings are fixed.
+- [x] The Pi findings F24 to F32 (`docs/specs/blindfold/reviews/enroll-pi.md`) are fixed, each with a test that names it. Q25 waits for the owner.
 - [ ] The owner approves step 2. Next: `SPEC-shield.md`.
