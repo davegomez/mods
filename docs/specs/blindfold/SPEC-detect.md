@@ -33,7 +33,7 @@ export const DEFAULT_LIMITS: Limits;
 
 ### Requirements
 
-R1. Markers. A known value becomes `[secret: NAME]`. A rule hit becomes `[secret hidden]`. A scan of an output of `scanText` or `scanValue` returns `clean` (markers do not match any rule).
+R1. Markers. A known value becomes `[secret: NAME]`. A rule hit becomes `[secret hidden]`. A scan of an output of `scanText` or `scanValue` returns `clean`. Only an exact marker counts as a marker: `[secret hidden]`, or `[secret: NAME]` where NAME is a name in the known set. A context span that overlaps a marker is dropped. Other text in the shape of a marker is scanned as normal text.
 
 R2. Known values. `buildKnownSet` precomputes these forms of each value, and drops a form equal to another:
 
@@ -45,39 +45,39 @@ R2. Known values. `buildKnownSet` precomputes these forms of each value, and dro
 
 A value with fewer than 8 characters is not added. `buildKnownSet` returns it in `skipped`, so the pane can say "too short to hide" (Q14). When 2 names have the same value, the marker uses the first name in sort order.
 
-R3. Match order. Collect all spans from all forms and rules. Where spans overlap, keep the longest, then the earliest. Known values come before rules for spans of equal length. Replace from right to left.
+R3. Match order. Collect all spans from all forms and rules. Spans that overlap merge into 1 span that covers all of them, so no part of any match stays visible. The merged span gets the marker of its longest member (a known value before a rule for equal lengths). Replace from right to left.
 
 R4. Private keys. `-----BEGIN [A-Z0-9 ]*PRIVATE KEY-----` up to and including the matching `-----END … PRIVATE KEY-----`. With no END line, mark to the end of the text. Rule id `private-key`.
 
-R5. Vendor prefixes. Initial list, rule id `vendor:<id>`. Each entry is written for this mod and has fixtures. The exact lengths are UNVERIFIED and the implementer confirms each one against the vendor documentation before release.
+R5. Vendor prefixes. Initial list, rule id `vendor:<id>`. Each entry is written for this mod and has fixtures. Each shape was checked against the vendor documentation on 2026-11-05. The sources are in the T4 report. A length marked "assumption" is not stated by the vendor (Q19).
 
 | id | Shape |
 |---|---|
-| `github` | `gh[pousr]_` and 36 or more of `[A-Za-z0-9]`, or `github_pat_` and 22 or more of `[A-Za-z0-9_]` |
+| `github` | `gh[pour]_` and 36 or more of `[A-Za-z0-9]`, or `ghs_` and 36 or more of `[A-Za-z0-9._-]` (GitHub's own rule, it covers the app token with a JWT inside, Q17), or `github_pat_` and 22 or more of `[A-Za-z0-9_]` (assumption) |
 | `stripe` | `(sk\|rk)_(live\|test)_` and 16 or more of `[A-Za-z0-9]` |
 | `anthropic` | `sk-ant-` and 20 or more of `[A-Za-z0-9_-]` |
 | `openai` | `sk-(proj-)?` and 20 or more of `[A-Za-z0-9_-]`, not `sk-ant-` |
-| `slack` | `xox[abposr]-` and 10 or more of `[A-Za-z0-9-]` |
-| `aws` | `(AKIA\|ASIA)[0-9A-Z]{16}` |
+| `slack` | `xox[bp]-`, `xoxe-1-`, or `xapp-`, and 10 or more of `[A-Za-z0-9-]` (Q18). `xoxa`, `xoxo`, `xoxs`, `xoxr` are left out: Slack does not document them now. |
+| `aws` | `(AKIA\|ASIA)[0-9A-Z]{16}` (assumption: AWS documents 16 to 128 characters for a key ID, all current keys have 20) |
 | `google` | `AIza[0-9A-Za-z_-]{35}` |
-| `npm` | `npm_[A-Za-z0-9]{36}` |
+| `npm` | `npm_[A-Za-z0-9]{36}` (assumption: the length comes from the GitHub token format that npm follows) |
 | `jwt` | `eyJ[A-Za-z0-9_-]{10,}\.eyJ[A-Za-z0-9_-]{10,}\.[A-Za-z0-9_-]{10,}` |
 
-Each pattern has a word boundary on the left, so `task-ant-x` does not match.
+Each pattern has a word boundary on the left, so `task-ant-x` does not match. The boundary also holds directly after a JSON or C escape `\n`, `\r`, `\t`, so a token in escaped text (`"line\nghp_…"`) is found. The same applies to the R6 rules.
 
 R6. Context rules, rule id `context:<id>`. The rule marks the value only, not the label.
 
-- `assign`: a name that holds `api_key`, `apikey`, `secret`, `token`, `password`, `passwd`, `pwd`, `private_key`, `client_secret`, `access_key`, `auth` (any case, `_` or `-` or none), then `:` or `=`, optional quotes, then a value of 12 to 512 characters without whitespace, quotes, or `,;`.
+- `assign`: a name that holds `api_key`, `apikey`, `secret`, `token`, `password`, `passwd`, `pwd`, `private_key`, `client_secret`, `access_key`, `auth` (any case, `_` or `-` or none), then `:` or `=`, optional quotes, then a value of 12 to 512 characters without whitespace, quotes, or `,;`. A value can hold `&`, so `token=abc…&x=1` also hides `&x=1`. This hides too much, never too little (Q20).
 - `auth-header`: `Authorization:` then `Bearer`, `Basic`, or `Token`, then a value of 8 to 4096 characters without whitespace.
-- `url-userinfo`: `scheme://user:password@host`. Mark the password.
+- `url-userinfo`: `scheme://user:password@host`. Mark the password. The password ends at the last `@` before the host, so a password with a raw `@` is hidden in full.
 
 A context value is a hit only if its Shannon entropy is 3.0 bits per character or more, and it is not a placeholder: `<…>`, `${…}`, `{{…}}`, `process.env.…`, `os.environ…`, a marker, `x` or `*` repeated, or text that contains `your`, `example`, `changeme`, `placeholder`, `dummy`, `redacted` (any case).
 
-R7. Values. `scanValue` walks plain objects, arrays, and strings. It scans object keys as well as values. A key with a hit becomes the marker text. If 2 keys become the same text, add ` #2`, ` #3`. Numbers, booleans, `null`, and `undefined` pass unchanged. Any other type (class instance, `Map`, `Set`, typed array, function, symbol, bigint) returns `unsupported`. A cycle returns `cycle`.
+R7. Values. `scanValue` walks plain objects, arrays, and strings. It scans object keys as well as values. A key with a hit becomes the marker text. If 2 keys become the same text, add ` #2`, ` #3`. Numbers, booleans, `null`, and `undefined` pass unchanged. Any other type (class instance, `Map`, `Set`, typed array, function, symbol, bigint) returns `unsupported`. A cycle returns `cycle`. Only own data properties are read, for array elements as well as object keys. A getter, a proxy that throws, or any other error inside the walk returns `unsupported`, and no error leaves `scanValue`. An array with `length` above `maxNodes` returns `too-many-nodes` before the walk.
 
 R8. Limits. `maxChars` counts the UTF-16 length of all strings and keys. `maxNodes` counts objects, arrays, and strings. A scan checks `clock.now() >= clock.deadline` at least every 64 KiB of text and every 1024 nodes, and returns `deadline`. `DEFAULT_LIMITS` is `{ maxChars: 2_097_152, maxDepth: 64, maxNodes: 50_000 }` (Q15).
 
-R9. Speed. All regular expressions are linear: no nested quantifiers, and every repeat has an upper bound. Test: 2 MiB of adversarial text (long runs of `a`, `=`, `-`, `eyJ`, base64 characters) with 100 known values finishes in less than 1 s on the development machine. The test reports the time.
+R9. Speed. All regular expressions are linear: no nested quantifiers, and every repeat has an upper bound. A scan reads each character a bounded number of times: after a rejected context value, the scan goes on after that value, or at a `&` or `?` inside it. Test: 2 MiB of adversarial text (long runs of `a`, `=`, `-`, `eyJ`, base64 characters) with 100 known values finishes in less than 1 s on the development machine. The test reports the time.
 
 R10. No leak. No error message, `hits` entry, `skipped` entry, or thrown error holds a value. A thrown error inside a scan is a bug, and `shield` withholds when it happens.
 
@@ -147,3 +147,7 @@ export function marker(hit: Hit): string {
 
 - Q14. A known value with fewer than 8 characters is not hidden, because it matches normal text (for example `admin` in `/admin/users`). The pane says that the value is too short to hide.
 - Q15. `shield` withholds a result above 2 Mi characters in full, and tells Claude to read it in parts. The R9 test can change this number.
+- Q17. `ghs_` follows GitHub's own wider rule.
+- Q18. Slack: `xoxb-`, `xoxp-`, `xoxe-1-`, `xapp-`. The 4 prefixes that Slack does not document are left out (review finding F9 closed by this decision).
+- Q19. The AWS and npm lengths are marked as assumptions.
+- Q20. The `assign` value can hold `&`, and the extra hiding is accepted.

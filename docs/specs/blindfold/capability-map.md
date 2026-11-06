@@ -22,3 +22,8 @@ Build order:
 5. ui. Milestone: Slice 1 complete, gates G1 to G4 run.
 
 Each module gets its own spec, `docs/specs/blindfold/SPEC-<module-id>.md`, written in this order after the map is approved.
+
+## Notes for later module specs
+
+- shield: pass on only data that was scanned. A `clean` result holds no copy, so `shield` first makes a plain copy (for example a JSON round trip), scans that copy, and passes on that copy or the `found` copy. A proxy or getter can give different data on a later read (review findings F17, F18).
+- shield: chains such as `"pwd=&".repeat(…)` that fill 2 MiB scan in about 800 ms, close to the 1 s budget. The deadline returns `deadline`, so `shield` withholds. Measure this again with the real hook budget.
