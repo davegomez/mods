@@ -371,7 +371,7 @@ export async function refreshIfNamed(
 	if (mentionsPath(input, paths)) await load($, enrollment, list);
 }
 
-const ENV_FILES_KEY = "blindfold.envFiles";
+export const ENV_FILES_KEY = "blindfold.envFiles";
 
 type Added = "added" | "refused" | "denied";
 

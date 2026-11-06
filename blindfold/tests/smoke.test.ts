@@ -62,7 +62,7 @@ const secretFile = (value: string): FakeFile => ({
 });
 
 describe("R7 lifecycle wiring", () => {
-	test("R7, R4, R3, R6 to R10: register hooks the lifecycle events and each guard event with a .catch, and no matcher", () => {
+	test("R7, R3 to R14: register hooks the lifecycle events and each guard event with a .catch, and no matcher", () => {
 		expect([...hooksOf({ envFiles: ".env" }).keys()]).toEqual([
 			"session.start",
 			"classic.SessionStart",
@@ -82,6 +82,15 @@ describe("R7 lifecycle wiring", () => {
 			"skill.prompt.catch",
 			"prompt.mention",
 			"prompt.mention.catch",
+			"agent.spawn",
+			"agent.spawn.catch",
+			"session.send",
+			"session.send.catch",
+			"session.receive",
+			"session.receive.catch",
+			"session.append",
+			"session.append.catch",
+			"config.set",
 		]);
 	});
 

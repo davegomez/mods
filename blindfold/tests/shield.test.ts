@@ -8,6 +8,9 @@ import {
 	guardArgs,
 	guardText,
 	guardValue,
+	onAgentSpawn,
+	onAgentSpawnCatch,
+	onConfigSet,
 	onPromptAttachment,
 	onPromptAttachmentCatch,
 	onPromptContext,
@@ -18,6 +21,12 @@ import {
 	onPromptSectionCatch,
 	onPromptSubmit,
 	onPromptSubmitCatch,
+	onSessionAppend,
+	onSessionAppendCatch,
+	onSessionReceive,
+	onSessionReceiveCatch,
+	onSessionSend,
+	onSessionSendCatch,
 	onSkillPrompt,
 	onSkillPromptCatch,
 	onToolCall,
@@ -25,7 +34,12 @@ import {
 	PINNED_PROMPT,
 	REFUSED_ARGS,
 	REFUSED_MENTION,
+	REFUSED_SEND,
+	REFUSED_SPAWN,
+	ROTATE_TOAST,
 	type Verdict,
+	WITHHELD_CONTENT,
+	WITHHELD_DELIVERY,
 } from "../hooks/shield.ts";
 import { fakeApi, fakes } from "./fakes.ts";
 
@@ -262,7 +276,7 @@ const answers: unknown[] = [];
 
 /** A fresh enrollment over a fake `.env`, loaded the way `session.start` does. */
 async function setup(secret = envValue) {
-	const files = { ".env": envFile(secret) };
+	const files: Record<string, { text: string }> = { ".env": envFile(secret) };
 	const { api } = fakeApi(files);
 	const enrollment = createEnrollment();
 	await load(api, enrollment, ".env");
@@ -550,6 +564,16 @@ const promptApi = () =>
 		ui: { toast: (text: string) => void toasts.push(text) },
 	}) as unknown as EngineInterface;
 
+/** A `$` whose `ui.toast` throws, for F38. */
+const throwingApi = () =>
+	({
+		ui: {
+			toast: () => {
+				throw new Error("toast failed");
+			},
+		},
+	}) as unknown as EngineInterface;
+
 const HIDDEN = `[secret: ${ENV_NAME}]`;
 const tooLarge = () => "x".repeat(DEFAULT_LIMITS.maxChars + 1);
 
@@ -655,6 +679,19 @@ describe("R3 prompt.submit", () => {
 		expect((passed[0] as { context: string[] }).context).toEqual([
 			`ctx ${HIDDEN}`,
 		]);
+	});
+
+	test("R3 (F38): a toast that throws still returns the masked result, and next is called once", async () => {
+		const { enrollment } = await setup();
+		const { next, passed } = nextOf<SubmitNext>(entered);
+		const result = await onPromptSubmit(
+			throwingApi(),
+			enrollment,
+			{ text: envValue, wait: false } as unknown as SubmitE,
+			next,
+		);
+		expect(result).toBe(entered);
+		expect(passed).toEqual([{ text: HIDDEN, wait: false }]);
 	});
 
 	test("Q29 (isMeta): a hit in the text of a meta prompt is a drop, because a rewrite may not apply", async () => {
@@ -899,6 +936,405 @@ describe("R10 prompt.mention", () => {
 	}
 });
 
+type SpawnE = Parameters<typeof onAgentSpawn>[2];
+type SpawnNext = Parameters<typeof onAgentSpawn>[3];
+type SpawnCatchNext = Parameters<typeof onAgentSpawnCatch>[2];
+
+describe("R11 agent.spawn", () => {
+	const started = { model: "haiku", agentId: "a1" };
+	const spawnE = (fields: Record<string, unknown>) =>
+		({
+			tool_use_id: "t1",
+			subagentType: "Explore",
+			prompt: "find the config loader",
+			description: "find loader",
+			...fields,
+		}) as unknown as SpawnE;
+	const spawn = async (e: SpawnE) => {
+		const { enrollment } = await setup();
+		const { next, passed } = nextOf<SpawnNext>(started);
+		const result = await onAgentSpawn(promptApi(), enrollment, e, next);
+		answers.push(result);
+		return { result, passed };
+	};
+
+	for (const field of ["prompt", "description"]) {
+		test(`R11: a hit in ${field} is a deny, and next never runs`, async () => {
+			const { result, passed } = await spawn(
+				spawnE({ [field]: `use ${envValue}` }),
+			);
+			expect(result).toEqual(REFUSED_SPAWN);
+			expect(passed).toEqual([]);
+		});
+	}
+
+	test("R11: a clean spawn calls next with the same e and returns its answer", async () => {
+		const e = spawnE({});
+		const { result, passed } = await spawn(e);
+		expect(passed[0]).toBe(e);
+		expect(result).toBe(started);
+	});
+
+	test("R11 (R2): a task it cannot scan is a deny with the reason, and next never runs", async () => {
+		const { result, passed } = await spawn(spawnE({ prompt: tooLarge() }));
+		expect(Object.keys(result)).toEqual(["deny"]);
+		expect(result.deny).toContain("too-large");
+		expect(passed).toEqual([]);
+	});
+
+	for (const called of [false, true]) {
+		test(`R11 (P5): the .catch ${called ? "keeps what next gave" : "denies before next"}`, async () => {
+			const { next, passed } = caught<SpawnCatchNext>(called, started);
+			const e = spawnE({});
+			const result = await onAgentSpawnCatch(promptApi(), e, next);
+			answers.push(result);
+			if (called) {
+				expect(result).toBe(started);
+				expect(passed).toEqual([e]);
+			} else {
+				expect(Object.keys(result as object)).toEqual(["deny"]);
+				expect(passed).toEqual([]);
+			}
+		});
+	}
+});
+
+type SendE = Parameters<typeof onSessionSend>[2];
+type SendNext = Parameters<typeof onSessionSend>[3];
+type SendCatchNext = Parameters<typeof onSessionSendCatch>[2];
+
+describe("R12 session.send", () => {
+	const delivered = { isDelivered: true };
+	const sendE = (text: string) =>
+		({ to: "peer", text, origin: { kind: "model" } }) as unknown as SendE;
+	const send = async (e: SendE) => {
+		const { enrollment } = await setup();
+		const { next, passed } = nextOf<SendNext>(delivered);
+		const result = await onSessionSend(promptApi(), enrollment, e, next);
+		answers.push(result);
+		return { result, passed };
+	};
+
+	test("R12: a hit is isDelivered false with a reason, and next never runs", async () => {
+		const { result, passed } = await send(sendE(`key ${envValue}`));
+		expect(result).toEqual(REFUSED_SEND);
+		expect(passed).toEqual([]);
+	});
+
+	test("R12: a clean message calls next with the same e and returns its answer", async () => {
+		const e = sendE("hello");
+		const { result, passed } = await send(e);
+		expect(passed[0]).toBe(e);
+		expect(result).toBe(delivered);
+	});
+
+	test("R12 (R2): a message it cannot scan is refused with the reason, and next never runs", async () => {
+		const { result, passed } = await send(sendE(tooLarge()));
+		expect(result.isDelivered).toBe(false);
+		expect(result.reason).toContain("too-large");
+		expect(passed).toEqual([]);
+	});
+
+	for (const called of [false, true]) {
+		test(`R12 (P5): the session.send .catch ${called ? "keeps what next gave" : "refuses before next"}`, async () => {
+			const { next, passed } = caught<SendCatchNext>(called, delivered);
+			const e = sendE("x");
+			const result = await onSessionSendCatch(promptApi(), e, next);
+			answers.push(result);
+			if (called) {
+				expect(result).toBe(delivered);
+				expect(passed).toEqual([e]);
+			} else {
+				expect(result).toEqual({
+					isDelivered: false,
+					reason: expect.any(String),
+				});
+				expect(passed).toEqual([]);
+			}
+		});
+	}
+});
+
+type ReceiveE = Parameters<typeof onSessionReceive>[2];
+type ReceiveNext = Parameters<typeof onSessionReceive>[3];
+type ReceiveCatchNext = Parameters<typeof onSessionReceiveCatch>[2];
+
+describe("R12 session.receive", () => {
+	const queued = { text: "queued" };
+	const receiveE = (text: string) =>
+		({ origin: { kind: "peer" }, text }) as unknown as ReceiveE;
+	const receive = async (e: ReceiveE) => {
+		const { enrollment } = await setup();
+		const { next, passed } = nextOf<ReceiveNext>(queued);
+		const result = await onSessionReceive(promptApi(), enrollment, e, next);
+		answers.push(result);
+		return { result, passed };
+	};
+
+	test("Q28: a hit is rewritten, and next gets the masked copy", async () => {
+		const { result, passed } = await receive(receiveE(`key ${envValue}`));
+		expect(passed).toEqual([
+			{ origin: { kind: "peer" }, text: `key ${HIDDEN}` },
+		]);
+		expect(result).toBe(queued);
+	});
+
+	test("R12: a clean message calls next with the same e", async () => {
+		const e = receiveE("hello");
+		const { result, passed } = await receive(e);
+		expect(passed[0]).toBe(e);
+		expect(result).toBe(queued);
+	});
+
+	test("R12 (R2): a message it cannot scan is consumed, and next never runs", async () => {
+		const { result, passed } = await receive(receiveE(tooLarge()));
+		expect(result).toEqual(WITHHELD_DELIVERY);
+		expect(passed).toEqual([]);
+	});
+
+	for (const called of [false, true]) {
+		test(`R12 (P5): the session.receive .catch ${called ? "keeps what next gave" : "consumes before next"}`, async () => {
+			const { next, passed } = caught<ReceiveCatchNext>(called, queued);
+			const e = receiveE("x");
+			const result = await onSessionReceiveCatch(promptApi(), e, next);
+			answers.push(result);
+			if (called) {
+				expect(result).toBe(queued);
+				expect(passed).toEqual([e]);
+			} else {
+				expect(result).toEqual(WITHHELD_DELIVERY);
+				expect(passed).toEqual([]);
+			}
+		});
+	}
+});
+
+type AppendE = Parameters<typeof onSessionAppend>[2];
+type AppendNext = Parameters<typeof onSessionAppend>[3];
+type AppendCatchNext = Parameters<typeof onSessionAppendCatch>[2];
+type Block = { type: string; [field: string]: unknown };
+
+describe("R13 session.append", () => {
+	const stored = { message: { type: "user", content: [] }, uuid: "u1" };
+	const image = {
+		type: "image",
+		source: { type: "base64", media_type: "image/png", data: "iVBORw0K" },
+	};
+	const thinking = { type: "thinking", thinking: `saw ${envValue}` };
+	const rowE = (content: Block[]) =>
+		({
+			message: { type: "user", role: "user", content },
+			door: "tool-result",
+			origin: { kind: "tool", tool: "Bash" },
+			uuid: "u1",
+		}) as unknown as AppendE;
+	const append = async (e: AppendE, $ = promptApi()) => {
+		const { enrollment } = await setup();
+		const { next, passed } = nextOf<AppendNext>(stored);
+		const before = toasts.length;
+		const result = await onSessionAppend($, enrollment, e, next);
+		answers.push(result);
+		const sent = passed[0] as { message: { content: Block[] } } | undefined;
+		return {
+			result,
+			passed,
+			content: sent?.message.content,
+			shown: toasts.slice(before),
+		};
+	};
+
+	test("R13: a hit in a text block is rewritten, the rest of e is kept, and a toast says rotate", async () => {
+		const e = rowE([{ type: "text", text: `a ${envValue} b` }]);
+		const { result, passed, content, shown } = await append(e);
+		expect(passed).toEqual([
+			{
+				...e,
+				message: {
+					...e.message,
+					content: [{ type: "text", text: `a ${HIDDEN} b` }],
+				},
+			},
+		]);
+		expect(content).not.toBe(e.message.content);
+		expect(result).toBe(stored);
+		expect(shown).toEqual([ROTATE_TOAST]);
+	});
+
+	test("R13: a string tool_result content is rewritten, and tool_use_id and is_error are kept", async () => {
+		const { content } = await append(
+			rowE([
+				{
+					type: "tool_result",
+					tool_use_id: "t1",
+					is_error: true,
+					content: `out ${envValue}`,
+				},
+			]),
+		);
+		expect(content).toEqual([
+			{
+				type: "tool_result",
+				tool_use_id: "t1",
+				is_error: true,
+				content: `out ${HIDDEN}`,
+			},
+		]);
+	});
+
+	test("R13: an array tool_result content has its text blocks rewritten, and its media block left in place", async () => {
+		const { content } = await append(
+			rowE([
+				{
+					type: "tool_result",
+					tool_use_id: "t1",
+					content: [{ type: "text", text: vendorToken }, image],
+				},
+			]),
+		);
+		const inner = content?.[0]?.content as Block[];
+		expect(inner[0]).toEqual({ type: "text", text: "[secret hidden]" });
+		expect(inner[1]).toBe(image);
+	});
+
+	test("R13: a media block and a thinking block are left as the same objects", async () => {
+		const { content } = await append(
+			rowE([image, thinking, { type: "text", text: envValue }]),
+		);
+		expect(content?.[0]).toBe(image);
+		expect(content?.[1]).toBe(thinking);
+		expect(content?.[2]).toEqual({ type: "text", text: HIDDEN });
+	});
+
+	test("R13: a clean row calls next with the same e, and shows no toast", async () => {
+		const e = rowE([
+			{ type: "text", text: "plain" },
+			{ type: "tool_result", tool_use_id: "t1", content: "ok" },
+			thinking,
+		]);
+		const { result, passed, shown } = await append(e);
+		expect(passed[0]).toBe(e);
+		expect(result).toBe(stored);
+		expect(shown).toEqual([]);
+	});
+
+	test("R13 (R2): a row it cannot scan has each text block and tool_result content withheld, and media and thinking kept", async () => {
+		const { content, passed, shown } = await append(
+			rowE([
+				{ type: "text", text: tooLarge() },
+				{
+					type: "tool_result",
+					tool_use_id: "t1",
+					content: [{ type: "text", text: "fine" }, image],
+				},
+				image,
+				thinking,
+			]),
+		);
+		expect(passed.length).toBe(1);
+		expect(content).toEqual([
+			{ type: "text", text: WITHHELD_CONTENT },
+			{ type: "tool_result", tool_use_id: "t1", content: WITHHELD_CONTENT },
+			image,
+			thinking,
+		]);
+		expect(content?.[2]).toBe(image);
+		expect(shown).toEqual([]);
+	});
+
+	test("R13 (F38): a toast that throws still returns the result, and next is called once", async () => {
+		const { result, passed, content } = await append(
+			rowE([{ type: "text", text: envValue }]),
+			throwingApi(),
+		);
+		expect(result).toBe(stored);
+		expect(passed.length).toBe(1);
+		expect(content).toEqual([{ type: "text", text: HIDDEN }]);
+	});
+
+	for (const called of [false, true]) {
+		test(`R13 (P5): the .catch ${called ? "returns the result unchanged after" : "withholds the content before"} next`, async () => {
+			const { next, passed } = caught<AppendCatchNext>(called, stored);
+			const e = rowE([
+				{ type: "text", text: envValue },
+				{ type: "tool_result", tool_use_id: "t1", content: envValue },
+				image,
+			]);
+			const result = await onSessionAppendCatch(promptApi(), e, next);
+			answers.push(result);
+			expect(result).toBe(stored);
+			expect(passed).toEqual([
+				called
+					? e
+					: {
+							...e,
+							message: {
+								...e.message,
+								content: [
+									{ type: "text", text: WITHHELD_CONTENT },
+									{
+										type: "tool_result",
+										tool_use_id: "t1",
+										content: WITHHELD_CONTENT,
+									},
+									image,
+								],
+							},
+						},
+			]);
+		});
+	}
+});
+
+type ConfigE = Parameters<typeof onConfigSet>[2];
+type ConfigNext = Parameters<typeof onConfigSet>[3];
+
+describe("R14 config.set", () => {
+	const newValue = fake.secret(24);
+	const configSet = async (key: string, answer: unknown) => {
+		const { api, enrollment, files } = await setup();
+		files["other.env"] = envFile(newValue);
+		const { next, passed } = nextOf<ConfigNext>(answer);
+		const e = {
+			key,
+			value: "other.env",
+			previous: ".env",
+		} as unknown as ConfigE;
+		const result = await onConfigSet(api, enrollment, e, next);
+		const hidden = guardText(newValue, enrollment.knownSet(), never);
+		return { result, passed, e, enrollment, hidden };
+	};
+
+	test("R14 (enroll R7): blindfold.envFiles loads the value next wrote, after next", async () => {
+		const answer = { value: "other.env" };
+		const { result, passed, e, enrollment, hidden } = await configSet(
+			"blindfold.envFiles",
+			answer,
+		);
+		expect(passed[0]).toBe(e);
+		expect(result).toBe(answer);
+		expect(enrollment.listed()).toBe("other.env");
+		expect(hidden.kind).toBe("rewrite");
+	});
+
+	test("R14: another key loads nothing", async () => {
+		const answer = { value: "other.env" };
+		const { result, enrollment, hidden } = await configSet("theme", answer);
+		expect(result).toBe(answer);
+		expect(enrollment.listed()).toBe(".env");
+		expect(hidden.kind).toBe("pass");
+	});
+
+	test("R14: a deny from below loads nothing", async () => {
+		const answer = { deny: "no" };
+		const { result, enrollment } = await configSet(
+			"blindfold.envFiles",
+			answer,
+		);
+		expect(result).toBe(answer);
+		expect(enrollment.listed()).toBe(".env");
+	});
+});
+
 describe("R15 no leak", () => {
 	test("R15: no deny text holds a fake value or an env name", () => {
 		const denies = answers.filter(
@@ -922,21 +1358,31 @@ describe("R15 no leak", () => {
 		}
 	});
 
-	test("R15: no toast or drop holds a fake value or an env name, and a toast holds a count only", () => {
-		const drops = answers.filter(
-			(a) => typeof (a as { drop?: unknown }).drop === "string",
-		);
+	test("R15: no toast, drop, reason, or consumed text holds a fake value or an env name, and a toast holds a count only", () => {
+		const texts = (key: string) =>
+			answers.filter(
+				(a) => typeof (a as Record<string, unknown>)[key] === "string",
+			);
+		const drops = texts("drop");
 		expect(drops.length).toBeGreaterThan(3);
+		expect(texts("reason").length).toBeGreaterThan(2);
+		expect(texts("consumed").length).toBeGreaterThan(1);
 		expect(toasts.length).toBeGreaterThan(1);
 		const secrets = [ENV_NAME, envValue, vendorToken];
-		for (const item of [...drops, ...toasts]) {
+		for (const item of [
+			...drops,
+			...texts("reason"),
+			...texts("consumed"),
+			...toasts,
+		]) {
 			const json = JSON.stringify(item);
 			for (const secret of secrets) expect(json.includes(secret)).toBe(false);
 		}
 		for (const toast of toasts) {
-			expect(/^blindfold hid \d+ secrets? in your prompt$/.test(toast)).toBe(
-				true,
-			);
+			expect(
+				toast === ROTATE_TOAST ||
+					/^blindfold hid \d+ secrets? in your prompt$/.test(toast),
+			).toBe(true);
 		}
 	});
 

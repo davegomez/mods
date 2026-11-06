@@ -1,17 +1,28 @@
 import type {
+	AgentSpawnResult,
 	CatchHandler,
+	ConfigSetResult,
+	EngineInterface,
 	Hook,
 	PromptAttachmentResult,
 	PromptContextResult,
 	PromptMentionResult,
 	PromptSectionResult,
 	PromptSubmitResult,
+	SessionReceiveResult,
+	SessionSendResult,
 	SkillPromptResult,
 	ToolCallResult,
 } from "claude-code";
 import type { Clock, Hit, KnownSet, Scan, Unscannable } from "./detect.ts";
 import { DEFAULT_LIMITS, scanText, scanValue } from "./detect.ts";
-import { type Enrollment, parseList, refreshIfNamed } from "./enroll.ts";
+import {
+	ENV_FILES_KEY,
+	type Enrollment,
+	load,
+	parseList,
+	refreshIfNamed,
+} from "./enroll.ts";
 
 export type Verdict<T> =
 	| { kind: "pass" }
@@ -205,8 +216,22 @@ type Args<
 		| "prompt.section"
 		| "prompt.attachment"
 		| "skill.prompt"
-		| "prompt.mention",
+		| "prompt.mention"
+		| "agent.spawn"
+		| "session.send"
+		| "session.receive"
+		| "session.append"
+		| "config.set",
 > = Parameters<Hook<E>>;
+
+/** F38: a toast is shown after `next`, so a throw from it must not reach the `.catch`, which would call `next` again with the unmasked `e`. */
+function toast($: EngineInterface, text: string): void {
+	try {
+		$.ui.toast(text);
+	} catch {
+		// The masked item already stands.
+	}
+}
 
 /** R3, Q29, P3: the host would not apply a text rewrite, so the prompt cannot go on masked. */
 export const PINNED_PROMPT = {
@@ -239,8 +264,8 @@ export async function onPromptSubmit(
 	// Q29: the host applies no text rewrite to a slash command (d.ts:9744), nor to a meta prompt that starts a turn (isMeta).
 	if ((e.command || e.isMeta) && copy.text !== e.text) return PINNED_PROMPT;
 	const out = await next({ ...e, ...copy });
-	// After next, so the toast tells of a prompt that entered. A toast that throws leaves the masked prompt standing (.catch).
-	if (out.drop === undefined) $.ui.toast(hidToast(verdict.count));
+	// After next, so the toast tells of a prompt that entered.
+	if (out.drop === undefined) toast($, hidToast(verdict.count));
 	return out;
 }
 
@@ -393,3 +418,203 @@ export async function onPromptMention(
 /** R10, P5: a deny after next still holds, since the host forgets a read already made (d.ts:9427). */
 export const onPromptMentionCatch: CatchHandler<Hook<"prompt.mention">> = () =>
 	REFUSED_MENTION;
+
+/** R11, P3, R15: holds no value and no name. */
+export const REFUSED_SPAWN = {
+	deny: "blindfold refused this agent because its task holds a secret value. Refer to the secret by its env variable name, and never write the value itself.",
+};
+
+/** R11: the task is scanned before the agent starts; it has no masked form, so a hit refuses. */
+export async function onAgentSpawn(
+	_$: Args<"agent.spawn">[0],
+	enrollment: Enrollment,
+	e: Args<"agent.spawn">[1],
+	next: Args<"agent.spawn">[2],
+): Promise<AgentSpawnResult> {
+	const verdict = guardValue(
+		{ prompt: e.prompt, description: e.description },
+		enrollment.knownSet(),
+		clockOf(next),
+	);
+	if (verdict.kind === "pass") return next(e);
+	return verdict.kind === "rewrite"
+		? REFUSED_SPAWN
+		: {
+				deny: `blindfold refused this agent (${verdict.reason}): it could not scan its task. Shorten it.`,
+			};
+}
+
+/** R11, P5: a deny after next would fail the hook (d.ts:447), so the agent that started stands. */
+export const onAgentSpawnCatch: CatchHandler<Hook<"agent.spawn">> = (
+	_$,
+	e,
+	next,
+) =>
+	next.called
+		? next(e)
+		: { deny: "blindfold refused this agent because its check failed." };
+
+/** R12, P3, R15: the model reads `reason` as the tool's result. */
+export const REFUSED_SEND = {
+	isDelivered: false,
+	reason:
+		"blindfold refused this message because it holds a secret value. Refer to the secret by its env variable name, and never write the value itself.",
+} as const;
+
+/** R12: a refusal is valid only without next (d.ts:12559). */
+export async function onSessionSend(
+	_$: Args<"session.send">[0],
+	enrollment: Enrollment,
+	e: Args<"session.send">[1],
+	next: Args<"session.send">[2],
+): Promise<SessionSendResult> {
+	const verdict = guardText(e.text, enrollment.knownSet(), clockOf(next));
+	if (verdict.kind === "pass") return next(e);
+	return verdict.kind === "rewrite"
+		? REFUSED_SEND
+		: {
+				isDelivered: false,
+				reason: `blindfold refused this message (${verdict.reason}): it could not scan it. Shorten it.`,
+			};
+}
+
+/** R12, P5: after next the message is queued, so what next gave stands. */
+export const onSessionSendCatch: CatchHandler<Hook<"session.send">> = (
+	_$,
+	e,
+	next,
+) =>
+	next.called
+		? next(e)
+		: {
+				isDelivered: false,
+				reason: "blindfold refused this message because its check failed.",
+			};
+
+export const WITHHELD_DELIVERY = {
+	consumed: "blindfold withheld a message it could not scan.",
+};
+
+/** R12 (Q28): a hit is masked, not consumed, so the model still reads the message. */
+export async function onSessionReceive(
+	_$: Args<"session.receive">[0],
+	enrollment: Enrollment,
+	e: Args<"session.receive">[1],
+	next: Args<"session.receive">[2],
+): Promise<SessionReceiveResult> {
+	const verdict = guardText(e.text, enrollment.knownSet(), clockOf(next));
+	if (verdict.kind === "pass") return next(e);
+	return verdict.kind === "rewrite"
+		? next({ ...e, text: verdict.value })
+		: WITHHELD_DELIVERY;
+}
+
+/** R12, P5: after next the delivery is queued as next was given it, so that stands. */
+export const onSessionReceiveCatch: CatchHandler<Hook<"session.receive">> = (
+	_$,
+	e,
+	next,
+) => (next.called ? next(e) : WITHHELD_DELIVERY);
+
+export const WITHHELD_CONTENT = "[blindfold withheld this content]";
+
+/** R13, R15: no count, no name. */
+export const ROTATE_TOAST =
+	"blindfold hid a secret that an earlier check missed. Rotate it.";
+
+type Append = Args<"session.append">;
+type Block = Append[1]["message"]["content"][number];
+
+const PASS = { kind: "pass" } as const;
+
+/** R13: media may be dropped or moved, not changed (d.ts:11510). */
+const isMedia = (block: Block) =>
+	block.type === "image" || block.type === "document";
+
+/** Guards each item; the copy keeps every item that passed. A stop in 1 item stops all. */
+function guardEach<B>(
+	items: readonly B[],
+	guard: (item: B) => Verdict<B>,
+): Verdict<B[]> {
+	let count = 0;
+	const value: B[] = [];
+	for (const item of items) {
+		const verdict = guard(item);
+		if (verdict.kind === "stop") return verdict;
+		if (verdict.kind === "rewrite") count += verdict.count;
+		value.push(verdict.kind === "rewrite" ? verdict.value : item);
+	}
+	return count > 0 ? { kind: "rewrite", value, count } : PASS;
+}
+
+/** R13: a text block and a tool_result's content (a string or blocks). The host puts back thinking, tool_use, and unknown kinds, so they are not scanned. */
+function guardBlock(block: Block, set: KnownSet, clock: Clock): Verdict<Block> {
+	if (block.type === "text") {
+		return guardValue(block, set, clock) as Verdict<Block>;
+	}
+	if (block.type !== "tool_result") return PASS;
+	const verdict = Array.isArray(block.content)
+		? guardEach(block.content as Block[], (inner) =>
+				isMedia(inner)
+					? PASS
+					: (guardValue(inner, set, clock) as Verdict<Block>),
+			)
+		: guardValue(block.content, set, clock);
+	return verdict.kind === "rewrite"
+		? { ...verdict, value: { ...block, content: verdict.value } }
+		: verdict;
+}
+
+/** R13, P5: each text block and each tool_result content withheld, without a scan; media and the kinds the host puts back stay. */
+function withheldRow(e: Append[1]): Append[1] {
+	const content = e.message.content.map((block) => {
+		if (block.type === "text") return { type: "text", text: WITHHELD_CONTENT };
+		return block.type === "tool_result"
+			? { ...block, content: WITHHELD_CONTENT }
+			: block;
+	});
+	return { ...e, message: { ...e.message, content } };
+}
+
+/** R13: the 2nd scan before a row is stored. The host skips a hook that answers without next, so every path calls it. */
+export async function onSessionAppend(
+	$: Append[0],
+	enrollment: Enrollment,
+	e: Append[1],
+	next: Append[2],
+) {
+	const set = enrollment.knownSet();
+	const clock = clockOf(next);
+	const verdict = guardEach(e.message.content, (block) =>
+		guardBlock(block, set, clock),
+	);
+	if (verdict.kind === "pass") return next(e);
+	if (verdict.kind === "stop") return next(withheldRow(e));
+	const out = await next({
+		...e,
+		message: { ...e.message, content: verdict.value },
+	});
+	toast($, ROTATE_TOAST);
+	return out;
+}
+
+/** R13, P5: before next the row is withheld; after next the row that was stored stands. */
+export const onSessionAppendCatch: CatchHandler<Hook<"session.append">> = (
+	_$,
+	e,
+	next,
+) => next(next.called ? e : withheldRow(e));
+
+/** R14 (enroll R7): the list next wrote is loaded at once, so a new file is guarded before the plugin reloads. */
+export async function onConfigSet(
+	$: Args<"config.set">[0],
+	enrollment: Enrollment,
+	e: Args<"config.set">[1],
+	next: Args<"config.set">[2],
+): Promise<ConfigSetResult> {
+	const out = await next(e);
+	if (e.key === ENV_FILES_KEY && typeof out.value === "string") {
+		await load($, enrollment, out.value);
+	}
+	return out;
+}

@@ -1,6 +1,9 @@
 import type { Register } from "claude-code";
 import { createEnrollment, load } from "./enroll.ts";
 import {
+	onAgentSpawn,
+	onAgentSpawnCatch,
+	onConfigSet,
 	onPromptAttachment,
 	onPromptAttachmentCatch,
 	onPromptContext,
@@ -11,6 +14,12 @@ import {
 	onPromptSectionCatch,
 	onPromptSubmit,
 	onPromptSubmitCatch,
+	onSessionAppend,
+	onSessionAppendCatch,
+	onSessionReceive,
+	onSessionReceiveCatch,
+	onSessionSend,
+	onSessionSendCatch,
 	onSkillPrompt,
 	onSkillPromptCatch,
 	onToolCall,
@@ -73,4 +82,21 @@ export const register: Register = (on, options) => {
 	on("prompt.mention", ($, e, next) =>
 		onPromptMention($, enrollment, e, next),
 	).catch(onPromptMentionCatch);
+
+	// R11 to R13: no matcher, so every agent, message, and stored row is guarded.
+	on("agent.spawn", ($, e, next) => onAgentSpawn($, enrollment, e, next)).catch(
+		onAgentSpawnCatch,
+	);
+	on("session.send", ($, e, next) =>
+		onSessionSend($, enrollment, e, next),
+	).catch(onSessionSendCatch);
+	on("session.receive", ($, e, next) =>
+		onSessionReceive($, enrollment, e, next),
+	).catch(onSessionReceiveCatch);
+	on("session.append", ($, e, next) =>
+		onSessionAppend($, enrollment, e, next),
+	).catch(onSessionAppendCatch);
+
+	// R14: observes only, and refuses nothing, so it needs no .catch: a failed hook is skipped and the row is written.
+	on("config.set", ($, e, next) => onConfigSet($, enrollment, e, next));
 };
