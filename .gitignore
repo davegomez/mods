@@ -1,6 +1,9 @@
 # macOS Finder metadata, created in every folder you open
 .DS_Store
 
+# Dev dependencies installed from the root package.json
+node_modules/
+
 # Local agent files: skills and the agent guide, kept on this machine only, not shared with the mods
 AGENTS.md
 .agents/
