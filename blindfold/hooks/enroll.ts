@@ -1,4 +1,5 @@
 /** Which env files are listed, which of their values are secret, and the known-value set built from them. Values stay in this module's closures. */
+import type { EngineInterface } from "claude-code";
 import {
 	buildKnownSet,
 	DEFAULT_LIMITS,
@@ -7,8 +8,9 @@ import {
 	MIN_KNOWN_LENGTH,
 	scanText,
 } from "./detect.ts";
-import type { Entry } from "./dotenv.ts";
+import { type Entry, parse } from "./dotenv.ts";
 
+export type StaleReason = "read-failed" | "too-large" | "not-a-file";
 export type RefusedReason =
 	| "absolute"
 	| "parent"
@@ -24,7 +26,7 @@ export type NameState = {
 export type FileState =
 	| { kind: "active"; names: NameState[] }
 	| { kind: "missing" }
-	| { kind: "stale"; reason: "read-failed" | "too-large" | "not-a-file" }
+	| { kind: "stale"; reason: StaleReason }
 	| { kind: "refused"; reason: RefusedReason };
 export type FileStatus = { path: string; state: FileState };
 export type Status = { files: FileStatus[]; shield: "active" | "degraded" };
@@ -33,6 +35,8 @@ export type ApplyFile = FileStatus & { feed: Known[] };
 export type ListEntry = { path: string; refused?: RefusedReason };
 
 export const MAX_FILES = 10;
+/** R3: the largest file `load` reads, by its `stat` size. */
+export const MAX_FILE_BYTES = 1_048_576;
 
 /** R2: the reason a path is refused by its spelling alone, before any read. */
 function spellingRefusal(path: string): RefusedReason | undefined {
@@ -131,43 +135,137 @@ const addTo = (bucket: Bucket, known: readonly Known[]) => {
 	}
 };
 
-/** R5, R6, R10: the per-session state. The `$` calls (`load`, `refreshIfNamed`, `addFile`) wrap it. */
+/** The session root as its real path, and its separator. */
+type Root = { real: string; sep: string };
+
+const stale = (reason: StaleReason): FileState => ({ kind: "stale", reason });
+const refuse = (reason: RefusedReason): FileState => ({
+	kind: "refused",
+	reason,
+});
+
+/** R2: the session root resolved the way a file is, or undefined when it does not resolve. */
+async function rootOf($: EngineInterface): Promise<Root | undefined> {
+	try {
+		const { realPath } = await $.fs.stat(await $.session.root(), {
+			resolve: true,
+		});
+		if (realPath === undefined) return undefined;
+		// `$` has no separator of its own: a POSIX root starts with `/`, a Windows drive or share does not.
+		const sep = realPath.startsWith("/") ? "/" : "\\";
+		return { real: realPath.replace(/[\\/]+$/, ""), sep };
+	} catch {
+		return undefined;
+	}
+}
+
+/** R2, R10: where an accepted path lands when it is a regular file under the root, else the state that stops its read. An `$.fs` error becomes a reason. */
+async function locate(
+	$: EngineInterface,
+	root: Root,
+	path: string,
+): Promise<{ state: FileState } | { realPath: string; size: number }> {
+	const full = `${root.real}${root.sep}${path}`;
+	let stat: Awaited<ReturnType<EngineInterface["fs"]["stat"]>>;
+	try {
+		stat = await $.fs.stat(full, { resolve: true });
+	} catch {
+		// A stat rejects for a missing path and for any other failure alike.
+		const exists = await $.fs.exists(full).catch(() => true);
+		return { state: exists ? stale("read-failed") : { kind: "missing" } };
+	}
+	if (stat.isLink) return { state: refuse("symlink") };
+	const { realPath } = stat;
+	if (realPath === undefined || !realPath.startsWith(root.real + root.sep)) {
+		return { state: refuse("outside-root") };
+	}
+	if (stat.kind !== "file") return { state: stale("not-a-file") };
+	return { realPath, size: stat.size };
+}
+
+/** R2, R3: 1 listed entry's state and the values it feeds. Only an active file feeds; a stale one keeps its old values (R6). */
+async function readEntry(
+	$: EngineInterface,
+	root: Root | undefined,
+	{ path, refused }: ListEntry,
+): Promise<ApplyFile> {
+	const without = (state: FileState): ApplyFile => ({ path, state, feed: [] });
+	if (refused) return without(refuse(refused));
+	if (!root) return without(stale("read-failed"));
+	const place = await locate($, root, path);
+	if ("state" in place) return without(place.state);
+	if (place.size > MAX_FILE_BYTES) return without(stale("too-large"));
+	let text: string;
+	try {
+		text = await $.fs.read(place.realPath);
+	} catch {
+		return without(stale("read-failed"));
+	}
+	const parsed = parse(text);
+	if ("tooLarge" in parsed) return without(stale("too-large"));
+	const { names, feed } = classify(parsed.entries);
+	return { path, state: { kind: "active", names }, feed };
+}
+
+/** R5, R6, R8, R10: the per-session state. The host refuses `$` passed to a method, so `load`, `refreshIfNamed`, and `addFile` are functions that take it. */
 export function createEnrollment() {
 	const byFile = new Map<string, Bucket>();
-	const written: Bucket = new Map();
 	let files: FileStatus[] = [];
 	let set: KnownSet | undefined;
+	let generation = 0;
+	let list = "";
+
+	const feed = (path: string, known: readonly Known[]) => {
+		const bucket = byFile.get(path) ?? new Map();
+		addTo(bucket, known);
+		byFile.set(path, bucket);
+		set = undefined;
+	};
+
+	/** Replace the listed files' states in 1 step, and add their values to the values learned so far (R5). */
+	const apply = (results: readonly ApplyFile[]): void => {
+		for (const { path, feed: known } of results) feed(path, known);
+		files = statusOf(results).files;
+	};
 
 	return {
-		/** Replace the listed files' states in 1 step, and add their values to the values learned so far (R5). */
-		apply(results: readonly ApplyFile[]): void {
-			for (const { path, feed } of results) {
-				const bucket = byFile.get(path) ?? new Map();
-				addTo(bucket, feed);
-				byFile.set(path, bucket);
-			}
-			files = statusOf(results).files;
-			set = undefined;
+		apply,
+		/** R8: take a new generation for a load of `listed`, and keep the list for `refreshIfNamed` and `addFile`. */
+		begin(listed: string): number {
+			list = listed;
+			return ++generation;
 		},
-		learn(name: string, value: string): void {
-			addTo(written, [{ name, value }]);
-			set = undefined;
+		/** R8: apply only when no newer load or drop took a generation meanwhile. */
+		finish(mine: number, results: readonly ApplyFile[]): void {
+			if (mine === generation) apply(results);
+		},
+		/** The list of the last load, or of the last `addFile`. */
+		listed(): string {
+			return list;
+		},
+		relist(listed: string): void {
+			list = listed;
+		},
+		/** R4: a value blindfold wrote to `path`; `forget(path)` drops it with the file's own. */
+		learn(path: string, name: string, value: string): void {
+			feed(path, [{ name, value }]);
 		},
 		forget(path: string): void {
 			byFile.delete(path);
 			files = files.filter((f) => f.path !== path);
 			set = undefined;
 		},
+		/** R8: takes a generation too, so a load still running adds nothing. */
 		drop(): void {
+			generation++;
 			byFile.clear();
-			written.clear();
 			files = [];
 			set = undefined;
 		},
 		knownSet(): KnownSet {
 			if (!set) {
 				const known: Known[] = [];
-				for (const bucket of [written, ...byFile.values()]) {
+				for (const bucket of byFile.values()) {
 					for (const [value, name] of bucket) known.push({ name, value });
 				}
 				set = buildKnownSet(known).set;
@@ -181,3 +279,60 @@ export function createEnrollment() {
 }
 
 export type Enrollment = ReturnType<typeof createEnrollment>;
+
+/** R1, R8: read every listed file again. The result applies only if no newer load or drop came meanwhile. */
+export async function load(
+	$: EngineInterface,
+	enrollment: Enrollment,
+	list: string,
+): Promise<Status> {
+	const mine = enrollment.begin(list);
+	const root = await rootOf($);
+	const results = await Promise.all(
+		parseList(list).map((entry) => readEntry($, root, entry)),
+	);
+	enrollment.finish(mine, results);
+	return enrollment.status();
+}
+
+/** R7: load again when the input names a listed file. */
+export async function refreshIfNamed(
+	$: EngineInterface,
+	enrollment: Enrollment,
+	input: unknown,
+): Promise<void> {
+	const list = enrollment.listed();
+	const paths = parseList(list).map((entry) => entry.path);
+	if (mentionsPath(input, paths)) await load($, enrollment, list);
+}
+
+const ENV_FILES_KEY = "blindfold.envFiles";
+
+/** R9 (Q9): list 1 more file in `envFiles`, after the R2 checks. A missing file is accepted, because `write` creates it. */
+export async function addFile(
+	$: EngineInterface,
+	enrollment: Enrollment,
+	path: string,
+): Promise<"added" | "refused" | "denied"> {
+	const wanted = path.trim();
+	// A comma would split the path into 2 entries of the list.
+	if (wanted.includes(",")) return "refused";
+	const current = parseList(enrollment.listed()).map((entry) => entry.path);
+	const entry = parseList([...current, wanted].join(",")).find(
+		(e) => e.path === wanted,
+	);
+	if (!entry || entry.refused) return "refused";
+	const root = await rootOf($);
+	if (!root) return "refused";
+	const place = await locate($, root, wanted);
+	if ("state" in place && place.state.kind !== "missing") return "refused";
+	if (current.includes(wanted)) return "added";
+	const value = [...current, wanted].join(",");
+	const result = await $.config
+		.set({ key: ENV_FILES_KEY, value })
+		.catch(() => ({ deny: "failed" }));
+	if (result.deny !== undefined) return "denied";
+	// The plugin reloads on a config change, maybe later: keep the new list so a 2nd add keeps the 1st.
+	enrollment.relist(value);
+	return "added";
+}

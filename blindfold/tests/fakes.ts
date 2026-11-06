@@ -1,3 +1,5 @@
+import type { EngineInterface, On } from "claude-code";
+
 /** Fake secrets for tests. Each token is joined at run time, so no file holds a full token shape. */
 
 /** A seeded generator (mulberry32), so every run sees the same values. */
@@ -82,4 +84,114 @@ export function fakes(seed = 1) {
 		hex: (n: number) => body(n, "0123456789abcdef"),
 		base64: (n: number) => body(n, BASE64),
 	};
+}
+
+/** The session root the fake `$` answers, and where it resolves to. */
+export const ROOT = "/repo";
+export const REAL_ROOT = "/private/repo";
+
+/** 1 path under the fake root, as the fake `$.fs` answers for it. */
+export type FakeFile = {
+	text?: string;
+	kind?: "file" | "dir" | "other";
+	size?: number;
+	isLink?: boolean;
+	/** Where the path lands; `null` when it leads nowhere. Default: under `REAL_ROOT`. */
+	realPath?: string | null;
+	statFails?: boolean;
+	readFails?: boolean;
+	/** The read answers only once this settles. */
+	gate?: Promise<void>;
+};
+
+export type FakeSet = { key: string; value: unknown };
+
+/**
+ * A hand-made `$` over `files`, keyed by their path under the root. The test's own `$` cannot make these calls:
+ * the host allows a `$` call only to the module whose source spells it.
+ */
+export function fakeApi(
+	files: Record<string, FakeFile>,
+	options: { realRoot?: string | null; setAnswer?: { deny: string } } = {},
+) {
+	const realRoot =
+		options.realRoot === undefined ? REAL_ROOT : options.realRoot;
+	const reads: string[] = [];
+	const sets: FakeSet[] = [];
+	const under = (path: string) =>
+		path.startsWith(`${REAL_ROOT}/`) ? path.slice(REAL_ROOT.length + 1) : "";
+	const real = (rel: string, file: FakeFile) =>
+		file.realPath === undefined ? `${REAL_ROOT}/${rel}` : file.realPath;
+	const stat = async (path: string, opts?: { resolve: boolean }) => {
+		const found =
+			path === ROOT
+				? { kind: "dir" as const, isLink: false, size: 0, realPath: realRoot }
+				: undefined;
+		const rel = under(path);
+		const file = files[rel];
+		if (!found && !file) throw new Error(`ENOENT: stat '${path}'`);
+		if (file?.statFails) throw new Error(`EACCES: stat '${path}'`);
+		const realPath = found ? found.realPath : real(rel, file as FakeFile);
+		return {
+			kind: found?.kind ?? file?.kind ?? "file",
+			size:
+				found?.size ??
+				file?.size ??
+				new TextEncoder().encode(file?.text ?? "").length,
+			mtimeMs: 0,
+			isLink: found?.isLink ?? file?.isLink ?? false,
+			...(realPath === null || !opts?.resolve ? {} : { realPath }),
+		};
+	};
+	const api = {
+		session: { root: async () => ROOT },
+		fs: {
+			stat,
+			exists: async (path: string) => under(path) in files,
+			read: async (path: string) => {
+				reads.push(path);
+				const file = Object.entries(files).find(
+					([rel, f]) => real(rel, f) === path,
+				)?.[1];
+				await file?.gate;
+				if (!file || file.readFails || file.text === undefined) {
+					throw new Error(`EIO: read '${path}'`);
+				}
+				return file.text;
+			},
+		},
+		config: {
+			set: async ({ key, value }: FakeSet) => {
+				sets.push({ key, value });
+				return options.setAnswer ?? { value };
+			},
+		},
+	} as unknown as EngineInterface;
+	return { api, reads, sets };
+}
+
+/** Answers the mod's own `$.session.root` and `$.fs` calls with kit stubs over a fake `$`, for tests that fire the mod's hooks. */
+export function stubFs(on: On, api: EngineInterface): void {
+	const answer = <T>(
+		call: () => Promise<T>,
+	): Promise<{ value: T } | { deny: string }> =>
+		call().then(
+			(value) => ({ value }),
+			(error: Error) => ({ deny: error.message }),
+		);
+	on("session.root", () => answer(() => api.session.root()));
+	on("fs.stat", (_$, e) =>
+		answer(() => api.fs.stat(e.path, { resolve: e.resolve })),
+	);
+	on("fs.exists", (_$, e) => answer(() => api.fs.exists(e.path)));
+	on("fs.read", (_$, e) => answer(() => api.fs.read(e.path)));
+}
+
+/** A promise and the function that settles it. */
+export function gate(): { wait: Promise<void>; open: () => void } {
+	let open = () => {};
+	const wait = new Promise<void>((resolve) => {
+		open = resolve;
+	});
+	return { wait, open };
 }
