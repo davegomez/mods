@@ -52,7 +52,7 @@ R5. Serialize. `setValue` writes 1 of 2 forms, and refuses all other values with
 | Value | Form |
 |---|---|
 | no `'`, no newline, no carriage return | `NAME='value'` |
-| holds a newline, and no `"`, `\`, `$`, backtick, or carriage return (for example a PEM key) | `NAME="line1\nline2"` |
+| holds `'` or a newline, and no `"`, `\`, `$`, backtick, or carriage return (for example a PEM key, or `it'sMyPass9`) | `NAME="value"`, each newline written as `\n` (Q21) |
 
 A value with a control character other than tab and newline, or an empty value, also returns `unsafe-value`. The pane tells the user to add such a value in their editor.
 
@@ -79,7 +79,7 @@ Same as `SPEC-detect.md`. Files: `blindfold/hooks/dotenv.ts` and `blindfold/test
 - A round-trip table for R5 to R7: for each value below, set it in each base file, then parse and compare all entries.
   - Values: plain, with `$`, with `#`, with `"`, with a backslash, with `=`, with spaces at both ends, with a tab, unicode, a PEM-like multiline value, 4096 characters.
   - Base files: empty, no final line break, CRLF, a byte order mark, comments, `export` entries, a multiline entry with the same name, the name present once.
-- Refusal tests: a `'` without a newline (R5 has no form for it), a carriage return, a NUL, an empty value, a duplicate name, a bad name, text above `MAX_FILE_CHARS`.
+- Refusal tests: a `'` together with `"`, `\`, `$`, or a backtick, a carriage return, a NUL, an empty value, a duplicate name, a bad name, text above `MAX_FILE_CHARS`.
 - A test that no `reason` and no `badLines` entry holds the fake value.
 
 ## Boundaries
@@ -102,3 +102,4 @@ Same as `SPEC-detect.md`. Files: `blindfold/hooks/dotenv.ts` and `blindfold/test
   - The script `scripts/dotenv-expected.ts` imports the cases and `blindfold/hooks/dotenv.ts` by relative path. It runs the real `dotenv.parse` on each parse input and on each `setValue` output. It writes `blindfold/tests/dotenv-expected.ts`, a generated file that passes Biome and starts with a "do not edit" line.
   - `blindfold/tests/dotenv.test.ts` checks that our `parse` and `setValue` give the saved results.
   - Run `bun install` and `bun scripts/dotenv-expected.ts` after any change to the cases or to `setValue`, and commit the new file.
+- Q21. A value with `'` and no newline uses the double-quoted form when it has no `"`, `\`, `$`, or backtick.

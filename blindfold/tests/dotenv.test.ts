@@ -144,10 +144,18 @@ describe("setValue", () => {
 		expect(written("", "NAME", "it's\nok")).toBe('NAME="it\'s\\nok"\n');
 	});
 
+	test("Q21: a value with ' and no newline is written in double quotes", () => {
+		expect(written("", "NAME", "it'sMyPass9")).toBe('NAME="it\'sMyPass9"\n');
+		expect(written("A=1\n", "NAME", "a'b'c d")).toBe("A=1\nNAME=\"a'b'c d\"\n");
+	});
+
 	test("R5: every other value is unsafe-value", () => {
 		for (const value of [
 			"",
-			"it's",
+			"it's\"",
+			"it's\\",
+			"it's$",
+			"it's`",
 			"a\rb",
 			"a\r\nb",
 			"a\0b",
@@ -259,7 +267,7 @@ describe("setValue", () => {
 		const results = [
 			setValue("A=1\n", "NAME", `${secret}\r`),
 			setValue("A=1\n", "NAME", `${secret}\0`),
-			setValue("A=1\n", "NAME", `${secret}'`),
+			setValue("A=1\n", "NAME", `${secret}'"`),
 			setValue("A=1\n", "NAME", `${secret}\n"`),
 			setValue(`NAME=${secret}\nNAME=${secret}\n`, "NAME", secret),
 			setValue(`X='${secret}\n`, "NAME", `# ${secret}`),

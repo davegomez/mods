@@ -170,7 +170,7 @@ function serialize(name: string, value: string): string | undefined {
 	// Any control character (Unicode Cc) except tab and newline.
 	if (value === "" || /[^\P{Cc}\t\n]/u.test(value)) return undefined;
 	if (!/['\n]/.test(value)) return `${name}='${value}'`;
-	if (value.includes("\n") && !/["\\$`]/.test(value)) {
+	if (!/["\\$`]/.test(value)) {
 		return `${name}="${value.replaceAll("\n", "\\n")}"`;
 	}
 	return undefined;

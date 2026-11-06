@@ -133,6 +133,8 @@ const values: string[] = [
 	"a=b==",
 	"  padded  ",
 	"a\tb",
+	"it'sMyPass9",
+	"a'b'c d",
 	"héllo ✓ 日本 🙂",
 	"-----BEGIN EXAMPLE BLOCK-----\nline one\nline two\n-----END EXAMPLE BLOCK-----\n",
 	"abc123-".repeat(586).slice(0, 4096),
