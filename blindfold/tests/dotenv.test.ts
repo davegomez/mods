@@ -4,6 +4,7 @@ import {
 	isValidName,
 	MAX_FILE_CHARS,
 	MAX_VALUE_CHARS,
+	MAX_WRITE_CHARS,
 	parse,
 	setValue,
 } from "../hooks/dotenv.ts";
@@ -203,6 +204,17 @@ describe("setValue", () => {
 			ok: false,
 			reason: "too-large",
 		});
+	});
+
+	test("F23: a base text longer than MAX_WRITE_CHARS is too-large", () => {
+		const tooLarge = { ok: false, reason: "too-large" };
+		expect(MAX_WRITE_CHARS).toBe(131_072);
+		const unclosed = `BEFORE=keep\nA='open\n${"F=1\n".repeat(120_000)}AFTER=keep\n`;
+		expect(setValue(unclosed, "NAME", "v")).toEqual(tooLarge);
+		expect(setValue("#".repeat(MAX_WRITE_CHARS + 1), "NAME", "v")).toEqual(
+			tooLarge,
+		);
+		expect(setValue("#".repeat(MAX_WRITE_CHARS), "NAME", "v").ok).toBe(true);
 	});
 
 	test("R6: replace keeps the export prefix, the comment, and the other lines", () => {

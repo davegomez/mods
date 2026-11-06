@@ -10,6 +10,8 @@ export type Parsed = {
 export const MAX_FILE_CHARS = 1_048_576;
 /** F20: in Bun, real dotenv drops a quoted entry above about 434,000 characters and every entry after it. */
 export const MAX_VALUE_CHARS = 65_536;
+/** F23: in Bun, real dotenv drops every entry after an unclosed quote followed by about 434,000 characters. */
+export const MAX_WRITE_CHARS = 131_072;
 
 /**
  * dotenv 16.6.1's `LINE` pattern, with capture groups added for spans
@@ -181,7 +183,7 @@ function serialize(name: string, value: string): string | undefined {
 }
 
 export function setValue(text: string, name: string, value: string): SetResult {
-	if (text.length > MAX_FILE_CHARS) return fail("too-large");
+	if (text.length > MAX_WRITE_CHARS) return fail("too-large");
 	if (!isValidName(name)) return fail("bad-name");
 	const entry = serialize(name, value);
 	if (entry === undefined) return fail("unsafe-value");
