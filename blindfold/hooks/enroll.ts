@@ -94,13 +94,37 @@ export function classify(entries: readonly Entry[]): {
 	return { names: [...states.values()], feed };
 }
 
-/** R6: degraded when any listed file is stale or refused. Copies only path and state, so no value can ride along. */
-export function statusOf(files: readonly FileStatus[]): Status {
+/** R10: `text`, or `placeholder` when `known` finds a kept value in it or cannot scan it. */
+function shown(text: string, known: KnownSet, placeholder: string): string {
+	const scan = scanText(text, known, DEFAULT_LIMITS, NO_DEADLINE);
+	const hit =
+		scan.status === "unscannable" ||
+		(scan.status === "found" && scan.hits.some((h) => h.kind === "known"));
+	return hit ? placeholder : text;
+}
+
+/** R6: degraded when any listed file is stale or refused. R10: copies only path and state, and hides a path or a name that holds a value of `known`. */
+export function statusOf(
+	files: readonly FileStatus[],
+	known: KnownSet = NO_KNOWN,
+): Status {
 	const degraded = files.some(
 		(f) => f.state.kind === "stale" || f.state.kind === "refused",
 	);
 	return {
-		files: files.map(({ path, state }) => ({ path, state })),
+		files: files.map(({ path, state }) => ({
+			path: shown(path, known, "[hidden path]"),
+			state:
+				state.kind === "active"
+					? {
+							kind: "active",
+							names: state.names.map((n) => ({
+								...n,
+								name: shown(n.name, known, "[hidden name]"),
+							})),
+						}
+					: state,
+		})),
 		shield: degraded ? "degraded" : "active",
 	};
 }
@@ -153,7 +177,8 @@ async function rootOf($: EngineInterface): Promise<Root | undefined> {
 		if (realPath === undefined) return undefined;
 		// `$` has no separator of its own: a POSIX root starts with `/`, a Windows drive or share does not.
 		const sep = realPath.startsWith("/") ? "/" : "\\";
-		return { real: realPath.replace(/[\\/]+$/, ""), sep };
+		// On POSIX a trailing `\` is part of the folder name, not a separator.
+		return { real: realPath.replace(sep === "/" ? /\/+$/ : /\\+$/, ""), sep };
 	} catch {
 		return undefined;
 	}
@@ -183,6 +208,29 @@ async function locate(
 	return { realPath, size: stat.size };
 }
 
+/** R9: the nearest folder that exists above a missing `path` is a folder, and is the root or under it. */
+async function parentInside(
+	$: EngineInterface,
+	root: Root,
+	path: string,
+): Promise<boolean> {
+	const parts = path.split(root.sep === "/" ? "/" : /[/\\]/);
+	for (let n = parts.length - 1; n > 0; n--) {
+		const dir = `${root.real}${root.sep}${parts.slice(0, n).join(root.sep)}`;
+		try {
+			const { kind, realPath } = await $.fs.stat(dir, { resolve: true });
+			return (
+				kind === "dir" &&
+				realPath !== undefined &&
+				(realPath === root.real || realPath.startsWith(root.real + root.sep))
+			);
+		} catch {
+			if (await $.fs.exists(dir).catch(() => true)) return false;
+		}
+	}
+	return true;
+}
+
 /** R2, R3: 1 listed entry's state and the values it feeds. Only an active file feeds; a stale one keeps its old values (R6). */
 async function readEntry(
 	$: EngineInterface,
@@ -201,6 +249,11 @@ async function readEntry(
 	} catch {
 		return without(stale("read-failed"));
 	}
+	// shortcut: stat again narrows a swap during the read but cannot close it (Q25); a no-follow read in $.fs would.
+	const again = await locate($, root, path);
+	if ("state" in again || again.realPath !== place.realPath) {
+		return without(stale("read-failed"));
+	}
 	const parsed = parse(text);
 	if ("tooLarge" in parsed) return without(stale("too-large"));
 	const { names, feed } = classify(parsed.entries);
@@ -214,6 +267,7 @@ export function createEnrollment() {
 	let set: KnownSet | undefined;
 	let generation = 0;
 	let list = "";
+	let adding: Promise<unknown> = Promise.resolve();
 
 	const feed = (path: string, known: readonly Known[]) => {
 		const bucket = byFile.get(path) ?? new Map();
@@ -225,7 +279,18 @@ export function createEnrollment() {
 	/** Replace the listed files' states in 1 step, and add their values to the values learned so far (R5). */
 	const apply = (results: readonly ApplyFile[]): void => {
 		for (const { path, feed: known } of results) feed(path, known);
-		files = statusOf(results).files;
+		files = results.map(({ path, state }) => ({ path, state }));
+	};
+
+	const knownSet = (): KnownSet => {
+		if (!set) {
+			const known: Known[] = [];
+			for (const bucket of byFile.values()) {
+				for (const [value, name] of bucket) known.push({ name, value });
+			}
+			set = buildKnownSet(known).set;
+		}
+		return set;
 	};
 
 	return {
@@ -246,34 +311,34 @@ export function createEnrollment() {
 		relist(listed: string): void {
 			list = listed;
 		},
+		/** R9: run `task` after every earlier one, so 2 adds never build on the same list. */
+		serial<T>(task: () => Promise<T>): Promise<T> {
+			const run = adding.then(task);
+			adding = run.catch(() => {});
+			return run;
+		},
 		/** R4: a value blindfold wrote to `path`; `forget(path)` drops it with the file's own. */
 		learn(path: string, name: string, value: string): void {
 			feed(path, [{ name, value }]);
 		},
+		/** R8: takes a generation, so a load still running cannot bring the file back. */
 		forget(path: string): void {
+			generation++;
 			byFile.delete(path);
 			files = files.filter((f) => f.path !== path);
 			set = undefined;
 		},
-		/** R8: takes a generation too, so a load still running adds nothing. */
+		/** R8: takes a generation too, so a load still running adds nothing. Clears the list, so a late refresh reads nothing. */
 		drop(): void {
 			generation++;
+			list = "";
 			byFile.clear();
 			files = [];
 			set = undefined;
 		},
-		knownSet(): KnownSet {
-			if (!set) {
-				const known: Known[] = [];
-				for (const bucket of byFile.values()) {
-					for (const [value, name] of bucket) known.push({ name, value });
-				}
-				set = buildKnownSet(known).set;
-			}
-			return set;
-		},
+		knownSet,
 		status(): Status {
-			return statusOf(files);
+			return statusOf(files, knownSet());
 		},
 	};
 }
@@ -308,26 +373,39 @@ export async function refreshIfNamed(
 
 const ENV_FILES_KEY = "blindfold.envFiles";
 
-/** R9 (Q9): list 1 more file in `envFiles`, after the R2 checks. A missing file is accepted, because `write` creates it. */
-export async function addFile(
+type Added = "added" | "refused" | "denied";
+
+/** R9 (Q9): list 1 more file in `envFiles`, after the R2 checks. A missing file is accepted, because `write` creates it. Adds run 1 at a time. */
+export function addFile(
 	$: EngineInterface,
 	enrollment: Enrollment,
 	path: string,
-): Promise<"added" | "refused" | "denied"> {
+): Promise<Added> {
+	return enrollment.serial(() => addOne($, enrollment, path));
+}
+
+async function addOne(
+	$: EngineInterface,
+	enrollment: Enrollment,
+	path: string,
+): Promise<Added> {
 	const wanted = path.trim();
 	// A comma would split the path into 2 entries of the list.
 	if (wanted.includes(",")) return "refused";
-	const current = parseList(enrollment.listed()).map((entry) => entry.path);
-	const entry = parseList([...current, wanted].join(",")).find(
-		(e) => e.path === wanted,
-	);
-	if (!entry || entry.refused) return "refused";
+	const [spelled] = parseList(wanted);
+	if (!spelled || spelled.refused) return "refused";
 	const root = await rootOf($);
 	if (!root) return "refused";
 	const place = await locate($, root, wanted);
-	if ("state" in place && place.state.kind !== "missing") return "refused";
+	if ("state" in place) {
+		if (place.state.kind !== "missing") return "refused";
+		if (!(await parentInside($, root, wanted))) return "refused";
+	}
+	// Read the list after the awaits, so a load that came meanwhile is kept.
+	const current = parseList(enrollment.listed()).map((entry) => entry.path);
 	if (current.includes(wanted)) return "added";
 	const value = [...current, wanted].join(",");
+	if (parseList(value).at(-1)?.refused) return "refused";
 	const result = await $.config
 		.set({ key: ENV_FILES_KEY, value })
 		.catch(() => ({ deny: "failed" }));

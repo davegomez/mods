@@ -438,6 +438,34 @@ describe("R10 no leak", () => {
 	});
 });
 
+describe("R10 (F28) names and paths", () => {
+	test("R10 (F28): a name or a path that holds a kept value is hidden in the status", async () => {
+		const value = remember(`madeup_${fake.secret(20)}`);
+		const { e, api } = setup({
+			".env": { text: `API_KEY=${value}\n${value}=plain\n` },
+		});
+		const status = await load(api, e, `.env,${value}.env`);
+		expect(status).toEqual({
+			files: [
+				{
+					path: ".env",
+					state: {
+						kind: "active",
+						names: [
+							{ name: "API_KEY", hidden: true },
+							{ name: "[hidden name]", hidden: false, why: "not-secret" },
+						],
+					},
+				},
+				{ path: "[hidden path]", state: { kind: "missing" } },
+			],
+			shield: "active",
+		});
+		expectNoValue(status);
+		expectNoValue(e.status());
+	});
+});
+
 /** A fresh enrollment, and a fake `$` over `files` to load them with. */
 const setup = (
 	files: Record<string, FakeFile>,
@@ -539,6 +567,53 @@ describe("R2 path checks through $.fs.stat", () => {
 			{ kind: "refused", reason: "parent" },
 		]);
 		expect(reads).toEqual([]);
+	});
+
+	test("R2 (F25): a POSIX root whose name ends in a backslash keeps it", async () => {
+		const value = fake.secret(24);
+		const root = `${REAL_ROOT}\\`;
+		const { e, api, reads } = setup(
+			{ ".env": { text: envText(value) } },
+			{ realRoot: root },
+		);
+		const status = await load(api, e, ".env");
+		expect(stateOf(status)).toEqual([
+			{ kind: "active", names: [{ name: "API_KEY", hidden: true }] },
+		]);
+		expect(reads).toEqual([`${root}/.env`]);
+		expect(hides(e, value)).toBe(true);
+	});
+
+	test("R2 (F26): a file swapped for a link outside the root during the read is discarded", async () => {
+		const inside = fake.secret(24);
+		const outside = remember(fake.secret(24));
+		const file: FakeFile = { text: envText(inside) };
+		const { e, api } = setup({ ".env": file });
+		const read = api.fs.read;
+		api.fs.read = async (path: string) => {
+			await read(path);
+			file.isLink = true;
+			file.realPath = "/etc/out.env";
+			return envText(outside);
+		};
+		const status = await load(api, e, ".env");
+		expect(stateOf(status)).toEqual([{ kind: "stale", reason: "read-failed" }]);
+		expect(hides(e, outside)).toBe(false);
+		expect(hides(e, inside)).toBe(false);
+		expectNoValue(status);
+	});
+
+	test("R2 (F26): a file whose real path moves during the read is discarded", async () => {
+		const file: FakeFile = secretFile();
+		const { e, api } = setup({ ".env": file });
+		const read = api.fs.read;
+		api.fs.read = async (path: string) => {
+			const text = await read(path);
+			file.realPath = `${REAL_ROOT}/other/.env`;
+			return text;
+		};
+		const status = await load(api, e, ".env");
+		expect(stateOf(status)).toEqual([{ kind: "stale", reason: "read-failed" }]);
 	});
 
 	test("R2: the files keep the list order, refused entries included", async () => {
@@ -667,6 +742,37 @@ describe("R8 overlap", () => {
 		expect(hides(e, fresh)).toBe(true);
 		expect(hides(e, old)).toBe(false);
 	});
+
+	test("R8 (F29): a load that ends after forget does not bring the file back", async () => {
+		const value = fake.secret(24);
+		const file: FakeFile = { text: envText(value) };
+		const { e, api } = setup({ ".env": file });
+		await load(api, e, ".env");
+		const slow = gate();
+		file.gate = slow.wait;
+		const pending = load(api, e, ".env");
+		e.forget(".env");
+		slow.open();
+		await pending;
+		expect(hides(e, value)).toBe(false);
+		expect(e.status().files).toEqual([]);
+	});
+
+	test("R8 (F30): a refresh after drop reads nothing and adds nothing", async () => {
+		const slow = gate();
+		const value = fake.secret(24);
+		const { e, api } = setup({
+			".env": { text: envText(value), gate: slow.wait },
+		});
+		const pending = load(api, e, ".env");
+		e.drop();
+		const refresh = refreshIfNamed(api, e, { command: "cat .env" });
+		slow.open();
+		await Promise.all([pending, refresh]);
+		expect(e.listed()).toBe("");
+		expect(hides(e, value)).toBe(false);
+		expect(e.status()).toEqual({ files: [], shield: "active" });
+	});
 });
 
 describe("R9 addFile", () => {
@@ -729,6 +835,26 @@ describe("R9 addFile", () => {
 		],
 		["a folder", "dir", { dir: { kind: "dir" } }],
 		["a path whose stat fails", "x.env", { "x.env": { statFails: true } }],
+		[
+			"(F27) a missing file under a folder link that leaves the root",
+			"linked/new.env",
+			{ linked: { kind: "dir", realPath: "/elsewhere" } },
+		],
+		[
+			"(F27) a missing file 2 levels under a folder link that leaves the root",
+			"linked/sub/new.env",
+			{ linked: { kind: "dir", realPath: "/elsewhere" } },
+		],
+		[
+			"(F27) a missing file under a file",
+			"a.env/x.env",
+			{ "a.env": { text: "" } },
+		],
+		[
+			"(F27) a missing file under a folder whose stat fails",
+			"locked/x.env",
+			{ locked: { kind: "dir", statFails: true } },
+		],
 	];
 
 	for (const [name, path, files] of refused) {
@@ -752,5 +878,49 @@ describe("R9 addFile", () => {
 		await load(api, e, list.join(","));
 		expect(await addFile(api, e, "more.env")).toBe("refused");
 		expect(sets).toEqual([]);
+	});
+
+	test("R9 (F27): a missing file under a folder in the root, or under missing folders, is added", async () => {
+		const { e, api, sets } = setup({
+			config: { kind: "dir" },
+			linked: { kind: "dir", realPath: `${REAL_ROOT}/real` },
+		});
+		await load(api, e, ".env");
+		expect(await addFile(api, e, "config/new.env")).toBe("added");
+		expect(await addFile(api, e, "linked/new.env")).toBe("added");
+		expect(await addFile(api, e, "new/deep.env")).toBe("added");
+		expect(sets.at(-1)?.value).toBe(
+			".env,config/new.env,linked/new.env,new/deep.env",
+		);
+	});
+
+	test("R9 (F31): 2 adds at once keep both", async () => {
+		const { e, api, sets } = setup({});
+		await load(api, e, ".env");
+		expect(
+			await Promise.all([addFile(api, e, "a.env"), addFile(api, e, "b.env")]),
+		).toEqual(["added", "added"]);
+		expect(sets.map((s) => s.value)).toEqual([
+			".env,a.env",
+			".env,a.env,b.env",
+		]);
+		expect(e.listed()).toBe(".env,a.env,b.env");
+	});
+
+	test("R9 (F31): an add that a load overtakes adds to the newer list", async () => {
+		const { e, api, sets } = setup({});
+		await load(api, e, ".env");
+		const slow = gate();
+		const stat = api.fs.stat;
+		api.fs.stat = async (path: string, options?: { resolve: boolean }) => {
+			if (path.endsWith("/a.env")) await slow.wait;
+			return stat(path, options);
+		};
+		const pending = addFile(api, e, "a.env");
+		await load(api, e, "replacement.env");
+		slow.open();
+		expect(await pending).toBe("added");
+		expect(sets.map((s) => s.value)).toEqual(["replacement.env,a.env"]);
+		expect(e.listed()).toBe("replacement.env,a.env");
 	});
 });

@@ -1,6 +1,7 @@
 import type { EngineInterface, On, PluginOptions } from "claude-code";
 import { describe, expect, test } from "claude-code/testing";
 import { DEFAULT_LIMITS, scanText } from "../hooks/detect.ts";
+import { addFile } from "../hooks/enroll.ts";
 import { enrollment, register } from "../hooks/register.ts";
 import { type FakeFile, fakeApi, fakes, REAL_ROOT, stubFs } from "./fakes.ts";
 
@@ -18,17 +19,25 @@ const hooksOf = (options: PluginOptions) => {
 	const hooks = new Map<string, Hook>();
 	const on = ((event: string, ...rest: unknown[]) => {
 		hooks.set(event, rest.at(-1) as Hook);
-		return { catch: () => {} };
+		return {
+			catch: (handler: Hook) => hooks.set(`${event}.catch`, handler),
+		};
 	}) as unknown as On;
 	register(on, options);
 	return hooks;
 };
 
-/** Runs 1 hook with a `next` that answers `answer`, and returns what the hook returned and what `next` got. */
-const run = async (hook: Hook | undefined, $: EngineInterface, e: unknown) => {
+/** Runs 1 hook with a `next` that calls `atNext`, then answers `answer`. Returns what the hook returned and what `next` got. */
+const run = async (
+	hook: Hook | undefined,
+	$: EngineInterface,
+	e: unknown,
+	atNext = () => {},
+) => {
 	const answer = { from: "next" };
 	const passed: unknown[] = [];
 	const result = await hook?.($, e, async (given) => {
+		atNext();
 		passed.push(given);
 		return answer;
 	});
@@ -56,17 +65,54 @@ describe("R7 lifecycle wiring", () => {
 		expect([...hooksOf({ envFiles: ".env" }).keys()]).toEqual([
 			"session.start",
 			"classic.SessionStart",
+			"classic.SessionStart.catch",
 			"session.end",
 		]);
 	});
 
-	test("R7: session.start loads the envFiles list, then returns next(e) unchanged", async () => {
+	test("R7 (F24): a classic.SessionStart hook that fails still calls next", async () => {
+		const handler = hooksOf({ envFiles: ".env" }).get(
+			"classic.SessionStart.catch",
+		);
+		const { api } = fakeApi({});
+		const e = { source: "clear" };
+		const { result, answer, passed } = await run(handler, api, e);
+		expect(result).toBe(answer);
+		expect(passed[0]).toBe(e);
+	});
+
+	for (const ended of [true, false]) {
+		test(`R7 (F24): ${ended ? "session.end, then " : ""}classic.SessionStart from clear loads the list that addFile changed`, async () => {
+			enrollment.drop();
+			const added = fake.secret(24);
+			const { api } = fakeApi({
+				".env": secretFile(fake.secret(24)),
+				"a.env": secretFile(added),
+			});
+			const hooks = hooksOf({ envFiles: ".env" });
+			await run(hooks.get("session.start"), api, {});
+			expect(await addFile(api, enrollment, "a.env")).toBe("added");
+			if (ended) await run(hooks.get("session.end"), api, { reason: "clear" });
+			await run(hooks.get("classic.SessionStart"), api, { source: "clear" });
+			expect(enrollment.status().files.map((f) => f.path)).toEqual([
+				".env",
+				"a.env",
+			]);
+			expect(hides(added)).toBe(true);
+		});
+	}
+
+	test("R7 (F32): session.start loads the envFiles list before next, then returns next(e) unchanged", async () => {
 		enrollment.drop();
 		const value = fake.secret(24);
 		const { api } = fakeApi({ ".env": secretFile(value) });
 		const e = { cwd: "/repo" };
 		const hook = hooksOf({ envFiles: ".env,b.env" }).get("session.start");
-		const { result, answer, passed } = await run(hook, api, e);
+		let hiddenAtNext = false;
+		const { result, answer, passed } = await run(hook, api, e, () => {
+			hiddenAtNext = hides(value);
+		});
+		expect(hiddenAtNext).toBe(true);
 		expect(result).toBe(answer);
 		expect(passed).toEqual([e]);
 		expect(passed[0]).toBe(e);

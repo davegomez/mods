@@ -118,10 +118,11 @@ export function fakeApi(
 		options.realRoot === undefined ? REAL_ROOT : options.realRoot;
 	const reads: string[] = [];
 	const sets: FakeSet[] = [];
+	const base = realRoot ?? REAL_ROOT;
 	const under = (path: string) =>
-		path.startsWith(`${REAL_ROOT}/`) ? path.slice(REAL_ROOT.length + 1) : "";
+		path.startsWith(`${base}/`) ? path.slice(base.length + 1) : "";
 	const real = (rel: string, file: FakeFile) =>
-		file.realPath === undefined ? `${REAL_ROOT}/${rel}` : file.realPath;
+		file.realPath === undefined ? `${base}/${rel}` : file.realPath;
 	const stat = async (path: string, opts?: { resolve: boolean }) => {
 		const found =
 			path === ROOT
