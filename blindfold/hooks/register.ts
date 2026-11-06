@@ -1,6 +1,21 @@
 import type { Register } from "claude-code";
 import { createEnrollment, load } from "./enroll.ts";
-import { onToolCall, onToolCallCatch } from "./shield.ts";
+import {
+	onPromptAttachment,
+	onPromptAttachmentCatch,
+	onPromptContext,
+	onPromptContextCatch,
+	onPromptMention,
+	onPromptMentionCatch,
+	onPromptSection,
+	onPromptSectionCatch,
+	onPromptSubmit,
+	onPromptSubmitCatch,
+	onSkillPrompt,
+	onSkillPromptCatch,
+	onToolCall,
+	onToolCallCatch,
+} from "./shield.ts";
 
 /** The session's env files and known values, shared by every hook of this module instance. */
 export const enrollment = createEnrollment();
@@ -38,4 +53,24 @@ export const register: Register = (on, options) => {
 	on("tool.call", ($, e, next) => onToolCall($, enrollment, e, next)).catch(
 		onToolCallCatch,
 	);
+
+	// R3, R6 to R10: no matcher, so every prompt, block, section, attachment, skill, and mention is guarded.
+	on("prompt.submit", ($, e, next) =>
+		onPromptSubmit($, enrollment, e, next),
+	).catch(onPromptSubmitCatch);
+	on("prompt.context", ($, e, next) =>
+		onPromptContext($, enrollment, e, next),
+	).catch(onPromptContextCatch);
+	on("prompt.section", ($, e, next) =>
+		onPromptSection($, enrollment, e, next),
+	).catch(onPromptSectionCatch);
+	on("prompt.attachment", ($, e, next) =>
+		onPromptAttachment($, enrollment, e, next),
+	).catch(onPromptAttachmentCatch);
+	on("skill.prompt", ($, e, next) =>
+		onSkillPrompt($, enrollment, e, next),
+	).catch(onSkillPromptCatch);
+	on("prompt.mention", ($, e, next) =>
+		onPromptMention($, enrollment, e, next),
+	).catch(onPromptMentionCatch);
 };

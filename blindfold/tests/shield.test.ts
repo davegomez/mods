@@ -1,3 +1,4 @@
+import type { EngineInterface } from "claude-code";
 import { describe, expect, test } from "claude-code/testing";
 import { buildKnownSet, DEFAULT_LIMITS } from "../hooks/detect.ts";
 import { createEnrollment, load } from "../hooks/enroll.ts";
@@ -7,9 +8,23 @@ import {
 	guardArgs,
 	guardText,
 	guardValue,
+	onPromptAttachment,
+	onPromptAttachmentCatch,
+	onPromptContext,
+	onPromptContextCatch,
+	onPromptMention,
+	onPromptMentionCatch,
+	onPromptSection,
+	onPromptSectionCatch,
+	onPromptSubmit,
+	onPromptSubmitCatch,
+	onSkillPrompt,
+	onSkillPromptCatch,
 	onToolCall,
 	onToolCallCatch,
+	PINNED_PROMPT,
 	REFUSED_ARGS,
+	REFUSED_MENTION,
 	type Verdict,
 } from "../hooks/shield.ts";
 import { fakeApi, fakes } from "./fakes.ts";
@@ -255,7 +270,7 @@ async function setup(secret = envValue) {
 }
 
 /** A `next` that runs `atNext`, records what it got, and answers `answer`. `remaining` gives `budget.remainingMs` on each read. */
-function nextOf(
+function nextOf<N = ToolNext>(
 	answer: unknown,
 	atNext: () => void = () => {},
 	remaining: () => number = () => 10_000,
@@ -275,7 +290,7 @@ function nextOf(
 				},
 			},
 		},
-	) as unknown as ToolNext;
+	) as unknown as N;
 	return { next, passed };
 }
 
@@ -493,16 +508,20 @@ describe("R5 tool.call after next", () => {
 	});
 });
 
-describe("R5 tool.call .catch", () => {
-	const caught = (called: boolean) => {
-		const passed: unknown[] = [];
-		const next = Object.assign(async (given: unknown) => passed.push(given), {
-			called,
-			error: { kind: "throw" },
-		}) as unknown as CatchNext;
-		return { next, passed };
-	};
+/** A `.catch` handler's `next`: `called` says whether the hook had called `next`, and a call answers `answer`. */
+const caught = <N = CatchNext>(called: boolean, answer: unknown = {}) => {
+	const passed: unknown[] = [];
+	const next = Object.assign(
+		async (given: unknown) => {
+			passed.push(given);
+			return answer;
+		},
+		{ called, error: { kind: "throw" } },
+	) as unknown as N;
+	return { next, passed };
+};
 
+describe("R5 tool.call .catch", () => {
 	for (const called of [false, true]) {
 		test(`R5 (P5): the .catch ${called ? "withholds after" : "refuses before"} next, and runs nothing`, async () => {
 			const { api } = fakeApi({});
@@ -518,6 +537,363 @@ describe("R5 tool.call .catch", () => {
 					? "blindfold withheld this result."
 					: "blindfold refused this call.",
 			});
+			expect(passed).toEqual([]);
+		});
+	}
+});
+
+/** Every toast the prompt paths show, for the R15 check. */
+const toasts: string[] = [];
+/** A `$` whose `ui.toast` records into `toasts`. */
+const promptApi = () =>
+	({
+		ui: { toast: (text: string) => void toasts.push(text) },
+	}) as unknown as EngineInterface;
+
+const HIDDEN = `[secret: ${ENV_NAME}]`;
+const tooLarge = () => "x".repeat(DEFAULT_LIMITS.maxChars + 1);
+
+type SubmitE = Parameters<typeof onPromptSubmit>[2];
+type SubmitNext = Parameters<typeof onPromptSubmit>[3];
+type SubmitCatchNext = Parameters<typeof onPromptSubmitCatch>[2];
+
+describe("R3 prompt.submit", () => {
+	const entered = { text: "entered" };
+	const submit = async (
+		e: Record<string, unknown>,
+		answer: unknown = entered,
+	) => {
+		const { enrollment } = await setup();
+		const { next, passed } = nextOf<SubmitNext>(answer);
+		const before = toasts.length;
+		const result = await onPromptSubmit(
+			promptApi(),
+			enrollment,
+			{ wait: false, origin: { kind: "user" }, ...e } as unknown as SubmitE,
+			next,
+		);
+		answers.push(result);
+		return { result, passed, shown: toasts.slice(before) };
+	};
+
+	test("R3: a hit in text and context goes on as the copies, then a toast tells the count", async () => {
+		const { result, passed, shown } = await submit({
+			text: `use ${envValue} now`,
+			context: ["clean block", `ctx ${vendorToken}`],
+		});
+		expect(passed).toEqual([
+			{
+				wait: false,
+				origin: { kind: "user" },
+				text: `use ${HIDDEN} now`,
+				context: ["clean block", "ctx [secret hidden]"],
+			},
+		]);
+		expect(result).toBe(entered);
+		expect(shown).toEqual(["blindfold hid 2 secrets in your prompt"]);
+	});
+
+	test("R3: a hit with no context adds no context, and 1 hit is 1 secret", async () => {
+		const { passed, shown } = await submit({ text: envValue });
+		expect(passed[0]).toEqual({
+			wait: false,
+			origin: { kind: "user" },
+			text: HIDDEN,
+		});
+		expect("context" in (passed[0] as object)).toBe(false);
+		expect(shown).toEqual(["blindfold hid 1 secret in your prompt"]);
+	});
+
+	test("R3: a clean prompt calls next with the same e, and shows no toast", async () => {
+		const { enrollment } = await setup();
+		const { next, passed } = nextOf<SubmitNext>(entered);
+		const e = {
+			text: "nothing here",
+			context: ["plain"],
+			wait: false,
+			origin: { kind: "user" },
+		} as unknown as SubmitE;
+		const before = toasts.length;
+		const result = await onPromptSubmit(promptApi(), enrollment, e, next);
+		expect(passed).toEqual([e]);
+		expect(passed[0]).toBe(e);
+		expect(result).toBe(entered);
+		expect(toasts.length).toBe(before);
+	});
+
+	test("R3 (R2): a prompt it cannot scan is a drop with the reason, and next never runs", async () => {
+		const { result, passed, shown } = await submit({ text: tooLarge() });
+		expect(Object.keys(result)).toEqual(["drop"]);
+		expect(result.drop).toContain("too-large");
+		expect(passed).toEqual([]);
+		expect(shown).toEqual([]);
+	});
+
+	test("R3: a prompt that a hook beneath drops shows no toast", async () => {
+		const { result, shown } = await submit({ text: envValue }, { drop: "no" });
+		expect(result).toEqual({ drop: "no" });
+		expect(shown).toEqual([]);
+	});
+
+	test("Q29: a hit in text with e.command set is a drop, and next never runs", async () => {
+		const { result, passed, shown } = await submit({
+			text: `/deploy ${envValue}`,
+			command: { name: "deploy" },
+		});
+		expect(result).toEqual(PINNED_PROMPT);
+		expect(passed).toEqual([]);
+		expect(shown).toEqual([]);
+	});
+
+	test("Q29: a hit in context alone with e.command set goes on with the masked context", async () => {
+		const { passed } = await submit({
+			text: "/deploy staging",
+			command: { name: "deploy" },
+			context: [`ctx ${envValue}`],
+		});
+		expect((passed[0] as { text: string }).text).toBe("/deploy staging");
+		expect((passed[0] as { context: string[] }).context).toEqual([
+			`ctx ${HIDDEN}`,
+		]);
+	});
+
+	test("Q29 (isMeta): a hit in the text of a meta prompt is a drop, because a rewrite may not apply", async () => {
+		const { result, passed } = await submit({ text: envValue, isMeta: true });
+		expect(result).toEqual(PINNED_PROMPT);
+		expect(passed).toEqual([]);
+	});
+
+	for (const called of [false, true]) {
+		test(`R3 (P5): the .catch ${called ? "keeps what next gave" : "drops before next"}`, async () => {
+			const { next, passed } = caught<SubmitCatchNext>(called, entered);
+			const e = { text: "x", wait: false } as unknown as SubmitE;
+			const result = await onPromptSubmitCatch(promptApi(), e, next);
+			answers.push(result);
+			if (called) {
+				expect(result).toBe(entered);
+				expect(passed).toEqual([e]);
+			} else {
+				expect(Object.keys(result as object)).toEqual(["drop"]);
+				expect(passed).toEqual([]);
+			}
+		});
+	}
+});
+
+type ContextNext = Parameters<typeof onPromptContext>[3];
+type ContextE = Parameters<typeof onPromptContext>[2];
+
+describe("R6 prompt.context", () => {
+	const e = { blocks: [] } as unknown as ContextE;
+	const context = async (answer: unknown) => {
+		const { enrollment } = await setup();
+		const { next, passed } = nextOf<ContextNext>(answer);
+		const result = await onPromptContext(promptApi(), enrollment, e, next);
+		answers.push(result);
+		return { result, passed };
+	};
+
+	test("R6: a block with a hit is rewritten, and the other blocks are the same objects", async () => {
+		const date = { name: "currentDate", text: "today" };
+		const answer = {
+			blocks: [{ name: "claudeMd", text: `key ${envValue}` }, date],
+			instructionFiles: [],
+		};
+		const { result, passed } = await context(answer);
+		expect(passed).toEqual([e]);
+		expect(passed[0]).toBe(e);
+		expect(result).toEqual({
+			blocks: [{ name: "claudeMd", text: `key ${HIDDEN}` }, date],
+		});
+		expect(result.blocks[1]).toBe(date);
+	});
+
+	test("R6: clean blocks are the same object next returned", async () => {
+		const answer = { blocks: [{ name: "claudeMd", text: "plain" }] };
+		const { result } = await context(answer);
+		expect(result).toBe(answer);
+	});
+
+	test("R6 (R2): a block it cannot scan is left out", async () => {
+		const date = { name: "currentDate", text: "today" };
+		const { result } = await context({
+			blocks: [{ name: "claudeMd", text: tooLarge() }, date],
+		});
+		expect(result).toEqual({ blocks: [date] });
+	});
+
+	for (const called of [false, true]) {
+		test(`R6 (P5): the .catch ${called ? "after" : "before"} next sends no block`, async () => {
+			const { next, passed } =
+				caught<Parameters<typeof onPromptContextCatch>[2]>(called);
+			expect(await onPromptContextCatch(promptApi(), e, next)).toEqual({
+				blocks: [],
+			});
+			expect(passed).toEqual([]);
+		});
+	}
+});
+
+/** R7 to R9 share 1 shape: a `{ text }` that `next` answers and the hook masks. */
+const textPaths = [
+	{
+		id: "R7 prompt.section",
+		hook: onPromptSection,
+		onCatch: onPromptSectionCatch,
+		e: { name: "memory", text: "x" },
+		withheld: { text: null },
+		nullable: true,
+	},
+	{
+		id: "R8 prompt.attachment",
+		hook: onPromptAttachment,
+		onCatch: onPromptAttachmentCatch,
+		e: { type: "file", text: "x", origin: { kind: "engine" } },
+		withheld: { text: null },
+		nullable: true,
+	},
+	{
+		id: "R9 skill.prompt",
+		hook: onSkillPrompt,
+		onCatch: onSkillPromptCatch,
+		e: { skill: "fake", text: "x", frontmatter: {} },
+		withheld: { text: "blindfold withheld this skill text." },
+		nullable: false,
+	},
+];
+
+for (const path of textPaths) {
+	const [id, event] = path.id.split(" ");
+	type Run = (
+		$: EngineInterface,
+		enrollment: unknown,
+		e: unknown,
+		next: unknown,
+	) => Promise<{ text: string | null }>;
+	type Catch = ($: EngineInterface, e: unknown, next: unknown) => unknown;
+	const run = async (answer: unknown) => {
+		const { enrollment } = await setup();
+		const { next, passed } = nextOf<unknown>(answer);
+		const result = await (path.hook as unknown as Run)(
+			promptApi(),
+			enrollment,
+			path.e,
+			next,
+		);
+		answers.push(result);
+		return { result, passed };
+	};
+
+	describe(path.id, () => {
+		test(`${id}: a hit in the text next gave is rewritten, after next got the same e`, async () => {
+			const { result, passed } = await run({ text: `a ${envValue} b` });
+			expect(passed[0]).toBe(path.e);
+			expect(result).toEqual({ text: `a ${HIDDEN} b` });
+		});
+
+		test(`${id}: clean text is the same object next returned`, async () => {
+			const answer = { text: "plain text" };
+			expect((await run(answer)).result).toBe(answer);
+			if (path.nullable) {
+				const none = { text: null };
+				expect((await run(none)).result).toBe(none);
+			}
+		});
+
+		test(`${id} (R2): text it cannot scan is withheld`, async () => {
+			expect((await run({ text: tooLarge() })).result).toEqual(path.withheld);
+		});
+
+		for (const called of [false, true]) {
+			test(`${id} (P5): the ${event} .catch ${called ? "after" : "before"} next withholds`, async () => {
+				const { next, passed } = caught(called, { text: envValue });
+				const result = await (path.onCatch as unknown as Catch)(
+					promptApi(),
+					path.e,
+					next,
+				);
+				answers.push(result);
+				expect(result).toEqual(path.withheld);
+				expect(passed).toEqual([]);
+			});
+		}
+	});
+}
+
+type MentionE = Parameters<typeof onPromptMention>[2];
+type MentionNext = Parameters<typeof onPromptMention>[3];
+
+describe("R10 prompt.mention", () => {
+	const read = { type: "file" };
+	const mention = async (path: string) => {
+		const { api } = fakeApi({});
+		const enrollment = createEnrollment();
+		await load(api, enrollment, "./config/app.secrets,sub\\creds.txt");
+		const { next, passed } = nextOf<MentionNext>(read);
+		const e = { mention: "x", path } as MentionE;
+		const result = await onPromptMention(api, enrollment, e, next);
+		answers.push(result);
+		return { result, passed, e };
+	};
+
+	for (const path of [
+		"/repo/.env",
+		"/repo/sub/.env",
+		"C:\\repo\\sub\\.env",
+		"/repo/.env.local",
+		"/repo/.ENV",
+		"/repo/config/app.secrets",
+		"/repo/./config//app.secrets",
+		"C:\\repo\\config\\app.secrets",
+		"/repo/sub/creds.txt",
+	]) {
+		test(`R10 (Q27): ${path} is a listed or .env file, so it is a deny, and next never runs`, async () => {
+			const { result, passed } = await mention(path);
+			expect(result).toEqual(REFUSED_MENTION);
+			expect(passed).toEqual([]);
+		});
+	}
+
+	for (const path of [
+		"/repo/notes.md",
+		"/repo/.envrc",
+		"/repo/my.env",
+		"/repo/env.example",
+		"/repo/xconfig/app.secrets",
+		"/repo/config/app.secrets.bak",
+	]) {
+		test(`R10 (Q27): ${path} is not an env file, so next gets the same e`, async () => {
+			const { result, passed, e } = await mention(path);
+			expect(passed).toEqual([e]);
+			expect(passed[0]).toBe(e);
+			expect(result).toBe(read);
+		});
+	}
+
+	test("R10 (Q27): with no list, a .env base name is still a deny", async () => {
+		const { next, passed } = nextOf<MentionNext>(read);
+		const result = await onPromptMention(
+			promptApi(),
+			createEnrollment(),
+			{ mention: "x", path: "/repo/.env.production" } as MentionE,
+			next,
+		);
+		expect(result).toEqual(REFUSED_MENTION);
+		expect(passed).toEqual([]);
+	});
+
+	for (const called of [false, true]) {
+		test(`R10 (P5): the .catch ${called ? "after" : "before"} next is a deny`, async () => {
+			const { next, passed } = caught<
+				Parameters<typeof onPromptMentionCatch>[2]
+			>(called, read);
+			const result = await onPromptMentionCatch(
+				promptApi(),
+				{ mention: "x", path: "/repo/notes.md" } as MentionE,
+				next,
+			);
+			answers.push(result);
+			expect(result).toEqual(REFUSED_MENTION);
 			expect(passed).toEqual([]);
 		});
 	}
@@ -543,6 +919,24 @@ describe("R15 no leak", () => {
 			// P1: a marker in a masked deny from below may hold a name, and nothing else may.
 			const json = JSON.stringify(deny).replace(/\[secret: \w+\]/g, "");
 			for (const secret of secrets) expect(json.includes(secret)).toBe(false);
+		}
+	});
+
+	test("R15: no toast or drop holds a fake value or an env name, and a toast holds a count only", () => {
+		const drops = answers.filter(
+			(a) => typeof (a as { drop?: unknown }).drop === "string",
+		);
+		expect(drops.length).toBeGreaterThan(3);
+		expect(toasts.length).toBeGreaterThan(1);
+		const secrets = [ENV_NAME, envValue, vendorToken];
+		for (const item of [...drops, ...toasts]) {
+			const json = JSON.stringify(item);
+			for (const secret of secrets) expect(json.includes(secret)).toBe(false);
+		}
+		for (const toast of toasts) {
+			expect(/^blindfold hid \d+ secrets? in your prompt$/.test(toast)).toBe(
+				true,
+			);
 		}
 	});
 

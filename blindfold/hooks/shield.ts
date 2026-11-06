@@ -1,7 +1,17 @@
-import type { CatchHandler, Hook, ToolCallResult } from "claude-code";
+import type {
+	CatchHandler,
+	Hook,
+	PromptAttachmentResult,
+	PromptContextResult,
+	PromptMentionResult,
+	PromptSectionResult,
+	PromptSubmitResult,
+	SkillPromptResult,
+	ToolCallResult,
+} from "claude-code";
 import type { Clock, Hit, KnownSet, Scan, Unscannable } from "./detect.ts";
 import { DEFAULT_LIMITS, scanText, scanValue } from "./detect.ts";
-import { type Enrollment, refreshIfNamed } from "./enroll.ts";
+import { type Enrollment, parseList, refreshIfNamed } from "./enroll.ts";
 
 export type Verdict<T> =
 	| { kind: "pass" }
@@ -118,7 +128,7 @@ const withheld = (reason: string) => ({
 type ToolCall = Parameters<Hook<"tool.call">>;
 
 /** R2: `performance.now` is monotonic, so a wall-clock change cannot move the deadline. */
-const clockOf = (next: ToolCall[2]) =>
+const clockOf = (next: { budget: { remainingMs: number } }) =>
 	clockFor(next.budget.remainingMs, () => performance.now());
 
 /** R4: the tool's own arguments, without the keys the engine reserves. */
@@ -187,3 +197,199 @@ export const onToolCallCatch: CatchHandler<Hook<"tool.call">> = (
 	next.called
 		? { deny: "blindfold withheld this result." }
 		: { deny: "blindfold refused this call." };
+
+type Args<
+	E extends
+		| "prompt.submit"
+		| "prompt.context"
+		| "prompt.section"
+		| "prompt.attachment"
+		| "skill.prompt"
+		| "prompt.mention",
+> = Parameters<Hook<E>>;
+
+/** R3, Q29, P3: the host would not apply a text rewrite, so the prompt cannot go on masked. */
+export const PINNED_PROMPT = {
+	drop: "blindfold dropped this prompt because it holds a secret value, and this kind of prompt cannot be masked. Refer to the secret by its env variable name, and send it again.",
+};
+
+const unscannedPrompt = (reason: string) => ({
+	drop: `blindfold dropped this prompt (${reason}): it could not scan it. Shorten it, and send it again.`,
+});
+
+/** R15: a count only. */
+const hidToast = (count: number) =>
+	`blindfold hid ${count} secret${count === 1 ? "" : "s"} in your prompt`;
+
+/** R3: `text` and `context` are scanned together, so the toast counts both. Media in `attachments` is not scanned. */
+export async function onPromptSubmit(
+	$: Args<"prompt.submit">[0],
+	enrollment: Enrollment,
+	e: Args<"prompt.submit">[1],
+	next: Args<"prompt.submit">[2],
+): Promise<PromptSubmitResult> {
+	const verdict = guardValue(
+		{ text: e.text, context: e.context },
+		enrollment.knownSet(),
+		clockOf(next),
+	);
+	if (verdict.kind === "pass") return next(e);
+	if (verdict.kind === "stop") return unscannedPrompt(verdict.reason);
+	const copy = verdict.value as { text: string; context?: string[] };
+	// Q29: the host applies no text rewrite to a slash command (d.ts:9744), nor to a meta prompt that starts a turn (isMeta).
+	if ((e.command || e.isMeta) && copy.text !== e.text) return PINNED_PROMPT;
+	const out = await next({ ...e, ...copy });
+	// After next, so the toast tells of a prompt that entered. A toast that throws leaves the masked prompt standing (.catch).
+	if (out.drop === undefined) $.ui.toast(hidToast(verdict.count));
+	return out;
+}
+
+/** R3, P5: a drop after next would fail the hook, so the prompt that entered stands. */
+export const onPromptSubmitCatch: CatchHandler<Hook<"prompt.submit">> = (
+	_$,
+	e,
+	next,
+) =>
+	next.called
+		? next(e)
+		: { drop: "blindfold dropped this prompt because its check failed." };
+
+/**
+ * R6: scans the blocks `next` answers, which is what the model reads. A rewritten
+ * `claudeMd` text makes the files behind it unknown to the host, so `instructionFiles` is left out.
+ */
+export async function onPromptContext(
+	_$: Args<"prompt.context">[0],
+	enrollment: Enrollment,
+	e: Args<"prompt.context">[1],
+	next: Args<"prompt.context">[2],
+): Promise<PromptContextResult> {
+	const out = await next(e);
+	const set = enrollment.knownSet();
+	const clock = clockOf(next);
+	let changed = false;
+	const blocks = out.blocks.flatMap((block) => {
+		const verdict = guardText(block.text, set, clock);
+		if (verdict.kind === "pass") return [block];
+		changed = true;
+		return verdict.kind === "rewrite"
+			? [{ ...block, text: verdict.value }]
+			: [];
+	});
+	return changed ? { blocks } : out;
+}
+
+/** R6, P5: no block is sent. */
+export const onPromptContextCatch: CatchHandler<
+	Hook<"prompt.context">
+> = () => ({
+	blocks: [],
+});
+
+/** R7 to R9: the `{ text }` that `next` answers, masked, or `withheld` when it cannot be scanned. */
+function maskAnswer<R extends { text: string | null }>(
+	out: R,
+	set: KnownSet,
+	clock: Clock,
+	withheld: R,
+): R {
+	if (out.text === null) return out;
+	const verdict = guardText(out.text, set, clock);
+	if (verdict.kind === "pass") return out;
+	return verdict.kind === "rewrite"
+		? { ...out, text: verdict.value }
+		: withheld;
+}
+
+/** R7: the section's text is core's own (d.ts:9643), so the answer of `next` is scanned. */
+export async function onPromptSection(
+	_$: Args<"prompt.section">[0],
+	enrollment: Enrollment,
+	e: Args<"prompt.section">[1],
+	next: Args<"prompt.section">[2],
+): Promise<PromptSectionResult> {
+	const out = await next(e);
+	return maskAnswer(out, enrollment.knownSet(), clockOf(next), { text: null });
+}
+
+export const onPromptSectionCatch: CatchHandler<
+	Hook<"prompt.section">
+> = () => ({
+	text: null,
+});
+
+/** R8: only what goes to the model. R13 covers the stored row. */
+export async function onPromptAttachment(
+	_$: Args<"prompt.attachment">[0],
+	enrollment: Enrollment,
+	e: Args<"prompt.attachment">[1],
+	next: Args<"prompt.attachment">[2],
+): Promise<PromptAttachmentResult> {
+	const out = await next(e);
+	return maskAnswer(out, enrollment.knownSet(), clockOf(next), { text: null });
+}
+
+export const onPromptAttachmentCatch: CatchHandler<
+	Hook<"prompt.attachment">
+> = () => ({ text: null });
+
+const WITHHELD_SKILL = { text: "blindfold withheld this skill text." };
+
+/** R9: the result type allows no null, so a text it cannot scan is replaced. */
+export async function onSkillPrompt(
+	_$: Args<"skill.prompt">[0],
+	enrollment: Enrollment,
+	e: Args<"skill.prompt">[1],
+	next: Args<"skill.prompt">[2],
+): Promise<SkillPromptResult> {
+	const out = await next(e);
+	return maskAnswer(out, enrollment.knownSet(), clockOf(next), WITHHELD_SKILL);
+}
+
+export const onSkillPromptCatch: CatchHandler<Hook<"skill.prompt">> = () =>
+	WITHHELD_SKILL;
+
+/** R10, R15: holds no path and no name. */
+export const REFUSED_MENTION = {
+	deny: "blindfold refused this mention because the file is an env file. Ask for its variable names, never its values.",
+};
+
+/** Segments joined by `/`, without empty and `.` segments, in lower case: `./a\b` and `/r/a//b` end the same. Lower case refuses more on a case-sensitive disk, which is the safe side. */
+const segments = (path: string) =>
+	path
+		.replaceAll("\\", "/")
+		.split("/")
+		.filter((s) => s !== "" && s !== ".")
+		.join("/")
+		.toLowerCase();
+
+/**
+ * Q27: a `.env` or `.env.*` base name, or a path that ends with a listed entry at a segment boundary.
+ * `e.path` is absolute and the list is relative to the root, so a suffix match is used; it refuses
+ * the same entry under another folder too, which is the safe side.
+ */
+function isEnvFile(path: string, list: string): boolean {
+	const target = segments(path);
+	const base = target.slice(target.lastIndexOf("/") + 1);
+	if (base === ".env" || base.startsWith(".env.")) return true;
+	return parseList(list).some((entry) => {
+		const listed = segments(entry.path);
+		return (
+			listed !== "" && (target === listed || target.endsWith(`/${listed}`))
+		);
+	});
+}
+
+/** R10 (Q27): other files pass, and R8 scans their text. */
+export async function onPromptMention(
+	_$: Args<"prompt.mention">[0],
+	enrollment: Enrollment,
+	e: Args<"prompt.mention">[1],
+	next: Args<"prompt.mention">[2],
+): Promise<PromptMentionResult> {
+	return isEnvFile(e.path, enrollment.listed()) ? REFUSED_MENTION : next(e);
+}
+
+/** R10, P5: a deny after next still holds, since the host forgets a read already made (d.ts:9427). */
+export const onPromptMentionCatch: CatchHandler<Hook<"prompt.mention">> = () =>
+	REFUSED_MENTION;
