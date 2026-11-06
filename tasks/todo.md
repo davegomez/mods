@@ -171,7 +171,7 @@ Spec: `docs/specs/blindfold/SPEC-shield.md`. Commands, run for every task: the 3
 
 - Acceptance:
   - [x] `guardText`, `guardValue`, `guardArgs`, and `clockFor` match the module shape. `rewrite` returns the scanned copy. A cycle or a `BigInt` is `stop` with `unsupported`.
-  - [ ] `guardArgs` refuses known values, private keys, and vendor prefixes, and passes a context rule hit alone (Q30).
+  - [x] `guardArgs` refuses known values, private keys, and vendor prefixes, and passes a context rule hit alone (Q30).
   - [x] A speed test: `"pwd=&".repeat(…)` at 2 Mi characters ends or stops inside the deadline.
 - Verify: the 4 commands pass. Tests name R1, R2, Q30.
 - Files: `blindfold/hooks/shield.ts`, `blindfold/tests/shield.test.ts`.

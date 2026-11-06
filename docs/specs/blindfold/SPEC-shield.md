@@ -46,7 +46,7 @@ R4. `tool.call` before `next` (`d.ts:13840`). Scan the arguments (every field of
 R5. `tool.call` after `next` (`d.ts:13876`). Call `refreshIfNamed` with `e` again, then scan with the new set:
 
 - `{ deny }` from below: scan the deny text. On a hit, return `{ deny: copy }`.
-- success or error: scan `result` and `context` together. On `pass`, return the object from `next` unchanged, so core keeps `ref`. On `rewrite`, return a new object with the scanned `result` and `context`, the same `isError` and `isReadOnly`, and no `ref` and no `text`, so core maps the new `result` for the model (Q26). On `stop`, return `{ deny: "blindfold withheld this result (<reason>). Narrow the call." }`.
+- success or error: scan `result`, `context`, and `text` together (F37). On `pass`, return the object from `next` unchanged, so core keeps `ref`. On `rewrite`, return a new object with the scanned `result` and `context`, the same `isError` and `isReadOnly`, and no `ref` and no `text`, so core maps the new `result` for the model (Q26). On `stop`, return `{ deny: "blindfold withheld this result (<reason>). Narrow the call." }`.
 - `.catch`: `next.called ? { deny: "blindfold withheld this result." } : { deny: "blindfold refused this call." }`.
 
 R6. `prompt.context` (`d.ts:8945`). Scan each block `text`. Rewrite a block with a hit. Leave out a block on `stop`. There is no refuse shape. `.catch`: return `{ blocks: [] }`.

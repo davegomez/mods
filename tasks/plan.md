@@ -72,7 +72,7 @@ Independent review by Pi in a herdr pane (owner request), then owner approval.
 
 Spec: `docs/specs/blindfold/SPEC-shield.md` (Q26 to Q30 accepted). Tasks with full criteria: `tasks/todo.md`, T12 to T15. 1 `worker-high` per task, in sequence, because T13 to T15 all change `shield.ts` and `register.ts`. T12 builds the pure part. T13 does `tool.call` first, because Q26 is the riskiest fact.
 
-- [ ] T12. Pure part: plain copy, verdicts, argument filter, clock.
+- [x] T12. Pure part: plain copy, verdicts, argument filter, clock.
 - [x] T13. `tool.call` before and after `next`, with `refreshIfNamed`.
 - [ ] T14. Prompt paths: `prompt.submit`, `prompt.context`, `prompt.section`, `prompt.attachment`, `skill.prompt`, `prompt.mention`.
 - [ ] T15. Agent and session paths: `agent.spawn`, `session.send`, `session.receive`, `session.append`, and `config.set`.
