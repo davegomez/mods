@@ -45,7 +45,8 @@ function original(index: number, removed: number[]): number {
 	let high = removed.length;
 	while (low < high) {
 		const mid = (low + high) >> 1;
-		if (removed[mid] < index) low = mid + 1;
+		const at = removed[mid];
+		if (at !== undefined && at < index) low = mid + 1;
 		else high = mid;
 	}
 	return index + low;
@@ -78,15 +79,24 @@ function matches(text: string): Match[] {
 	while (at >= 0 && at <= text.length) {
 		LINE.lastIndex = at;
 		const m = LINE.exec(text);
-		if (m?.indices) {
+		const name = m?.[2];
+		const nameSpan = m?.indices?.[2];
+		const separator = m?.indices?.[3];
+		// Groups 2 and 3 are required, so every match passes this check.
+		if (m?.indices && name !== undefined && nameSpan && separator) {
 			const { indices } = m;
+			const value = m[4];
+			const valueSpan = indices[4];
 			const end = m.index + m[0].length;
 			found.push({
-				name: m[2],
-				value: clean(m[4] ?? ""),
-				start: (indices[1] ?? indices[2])[0],
-				nameStart: indices[2][0],
-				end: m[4] ? indices[4][0] + m[4].trimEnd().length : indices[3][1],
+				name,
+				value: clean(value ?? ""),
+				start: (indices[1] ?? nameSpan)[0],
+				nameStart: nameSpan[0],
+				end:
+					value && valueSpan
+						? valueSpan[0] + value.trimEnd().length
+						: separator[1],
 				matchStart: m.index,
 				matchEnd: end,
 			});
@@ -198,12 +208,10 @@ export function setValue(text: string, name: string, value: string): SetResult {
 		e.name,
 		e.name === name ? value : e.value,
 	]);
+	const current = parsed.entries[at];
 	let next: string;
-	if (at >= 0) {
-		next =
-			text.slice(0, nameStarts[at]) +
-			entry +
-			text.slice(parsed.entries[at].end);
+	if (current) {
+		next = text.slice(0, nameStarts[at]) + entry + text.slice(current.end);
 	} else {
 		const eol = text.includes("\r\n") ? "\r\n" : "\n";
 		const gap = text === "" || /[\r\n]$/.test(text) ? "" : eol;
@@ -217,7 +225,7 @@ export function setValue(text: string, name: string, value: string): SetResult {
 	const same =
 		after.entries.length === expected.length &&
 		after.entries.every(
-			(e, i) => e.name === expected[i][0] && e.value === expected[i][1],
+			(e, i) => e.name === expected[i]?.[0] && e.value === expected[i]?.[1],
 		);
 	return same ? { ok: true, text: next } : fail("unsafe-value");
 }

@@ -47,11 +47,13 @@ describe("parse", () => {
 
 	test("R1: a span runs from export or the name to the end of the value", () => {
 		const text = "# c\r\nexport A=1 # note\r\nB='x\r\ny'\r\nC=\r\n";
-		const [a, b, c] = parsed(text).entries;
-		expect(text.slice(a.start, a.end)).toBe("export A=1");
-		expect(text.slice(b.start, b.end)).toBe("B='x\r\ny'");
-		expect(text.slice(c.start, c.end)).toBe("C=");
-		expect(b.value).toBe("x\ny");
+		const { entries } = parsed(text);
+		expect(entries.map((e) => text.slice(e.start, e.end))).toEqual([
+			"export A=1",
+			"B='x\r\ny'",
+			"C=",
+		]);
+		expect(entries[1]?.value).toBe("x\ny");
 	});
 
 	test("R2: every duplicate is an entry, and its name is listed once", () => {
@@ -82,7 +84,9 @@ describe("parse", () => {
 			const started = performance.now();
 			parsed(text);
 			const ms = performance.now() - started;
-			console.log(`R3 parse time: ${ms.toFixed(0)} ms`);
+			(globalThis as { console?: { log: (s: string) => void } }).console?.log(
+				`R3 parse time: ${ms.toFixed(0)} ms`,
+			);
 			expect(ms).toBeLessThan(1000);
 		}
 	});
@@ -195,7 +199,7 @@ describe("setValue", () => {
 		});
 	});
 
-	test("R6: text or output above MAX_FILE_CHARS is too-large", () => {
+	test("R6: a text just below or above MAX_FILE_CHARS is too-large, as it is above MAX_WRITE_CHARS", () => {
 		expect(setValue("#".repeat(MAX_FILE_CHARS + 1), "NAME", "x")).toEqual({
 			ok: false,
 			reason: "too-large",

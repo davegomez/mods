@@ -1,4 +1,11 @@
-import type { EngineInterface, On } from "claude-code";
+import type {
+	EngineInterface,
+	FsBytes,
+	FsReadBytesOptions,
+	FsReadCall,
+	FsReadOptions,
+	On,
+} from "claude-code";
 
 /** Fake secrets for tests. Each token is joined at run time, so no file holds a full token shape. */
 
@@ -169,6 +176,24 @@ export function fakeApi(
 		},
 	} as unknown as EngineInterface;
 	return { api, reads, sets };
+}
+
+/** A `$.fs.read` that answers text from `read`. The mod reads text only, so a bytes read fails. */
+export function textRead(read: (path: string) => Promise<string>): FsReadCall {
+	function call(path: string): Promise<string>;
+	function call(path: string, options: FsReadBytesOptions): Promise<FsBytes>;
+	function call(
+		path: string,
+		options: FsReadOptions,
+	): Promise<string | FsBytes>;
+	async function call(
+		path: string,
+		options?: FsReadOptions,
+	): Promise<string | FsBytes> {
+		if (options?.as === "bytes") throw new Error("the fake reads text only");
+		return read(path);
+	}
+	return call;
 }
 
 /** Answers the mod's own `$.session.root` and `$.fs` calls with kit stubs over a fake `$`, for tests that fire the mod's hooks. */

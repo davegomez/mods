@@ -16,7 +16,14 @@ import {
 	type Status,
 	statusOf,
 } from "../hooks/enroll.ts";
-import { type FakeFile, fakeApi, fakes, gate, REAL_ROOT } from "./fakes.ts";
+import {
+	type FakeFile,
+	fakeApi,
+	fakes,
+	gate,
+	REAL_ROOT,
+	textRead,
+} from "./fakes.ts";
 
 const fake = fakes(23);
 const never = { now: () => 0, deadline: Number.POSITIVE_INFINITY };
@@ -590,12 +597,12 @@ describe("R2 path checks through $.fs.stat", () => {
 		const file: FakeFile = { text: envText(inside) };
 		const { e, api } = setup({ ".env": file });
 		const read = api.fs.read;
-		api.fs.read = async (path: string) => {
+		api.fs.read = textRead(async (path) => {
 			await read(path);
 			file.isLink = true;
 			file.realPath = "/etc/out.env";
 			return envText(outside);
-		};
+		});
 		const status = await load(api, e, ".env");
 		expect(stateOf(status)).toEqual([{ kind: "stale", reason: "read-failed" }]);
 		expect(hides(e, outside)).toBe(false);
@@ -607,11 +614,11 @@ describe("R2 path checks through $.fs.stat", () => {
 		const file: FakeFile = secretFile();
 		const { e, api } = setup({ ".env": file });
 		const read = api.fs.read;
-		api.fs.read = async (path: string) => {
+		api.fs.read = textRead(async (path) => {
 			const text = await read(path);
 			file.realPath = `${REAL_ROOT}/other/.env`;
 			return text;
-		};
+		});
 		const status = await load(api, e, ".env");
 		expect(stateOf(status)).toEqual([{ kind: "stale", reason: "read-failed" }]);
 	});
