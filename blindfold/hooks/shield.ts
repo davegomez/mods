@@ -147,8 +147,9 @@ function guardResult(out: ToolCallResult, set: KnownSet, clock: Clock) {
 		if (verdict.kind === "stop") return withheld(verdict.reason);
 		return verdict.kind === "rewrite" ? { deny: verdict.value } : out;
 	}
+	// F37: `text` is what the model reads, so a hit there alone must rewrite too.
 	const verdict = guardValue(
-		{ result: out.result, context: out.context },
+		{ result: out.result, context: out.context, text: out.text },
 		set,
 		clock,
 	);

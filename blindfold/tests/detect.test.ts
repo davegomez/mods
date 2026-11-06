@@ -121,10 +121,10 @@ describe("R2 known values in text", () => {
 });
 
 describe("R3 match order", () => {
-	test("R3: longest span wins, a known value inside a vendor token loses", () => {
+	test("R3 (Q31): a known value inside a longer vendor token names the merged span, which hides the whole token", () => {
 		const token = fake.githubClassic;
 		const known = [{ name: "PART", value: token.slice(4, 20) }];
-		expect(hide(`t=${token}`, known)).toBe("t=[secret hidden]");
+		expect(hide(`t=${token}`, known)).toBe("t=[secret: PART]");
 	});
 
 	test("R3: a known value wins over a rule for spans of equal length", () => {
@@ -144,9 +144,26 @@ describe("R3 match order", () => {
 
 	test("F13: overlapping spans merge into their union", () => {
 		const known = [{ name: "PW", value: "Pa55w0rdXy;zQ" }];
-		expect(hide("token=v1-Kq9Pa55w0rdXy;zQ", known)).toBe(
-			"token=[secret hidden]",
-		);
+		expect(hide("token=v1-Kq9Pa55w0rdXy;zQ", known)).toBe("token=[secret: PW]");
+	});
+
+	test("R3 (Q31): a vendor token inside a longer context value names the merged span", () => {
+		const text = `curl "https://h/api?token=${fake.githubClassic}&page=2"`;
+		expect(scan(text)).toEqual({
+			status: "found",
+			value: 'curl "https://h/api?token=[secret hidden]"',
+			hits: [{ kind: "rule", rule: "vendor:github" }],
+		});
+	});
+
+	test("R3 (Q31): a known value inside a longer context value names the merged span", () => {
+		const value = fake.secret(24);
+		const known = [{ name: "DB_PASSWORD", value }];
+		expect(scan(`password=${value}Zq9xT`, known)).toEqual({
+			status: "found",
+			value: "password=[secret: DB_PASSWORD]",
+			hits: [{ kind: "known", name: "DB_PASSWORD" }],
+		});
 	});
 
 	test("R3: replaces every span that does not overlap", () => {

@@ -216,6 +216,15 @@ describe("Q30 argument filter", () => {
 		).toEqual({ kind: "refuse" });
 	});
 
+	test("R4 (F36): a vendor token or a known value inside a longer context value refuses", () => {
+		expect(
+			args({ command: `curl "https://h/api?token=${vendorToken}&page=2"` }),
+		).toEqual({ kind: "refuse" });
+		expect(args({ new_string: `password=${known}Zq9xT` })).toEqual({
+			kind: "refuse",
+		});
+	});
+
 	test("Q30: clean arguments pass, and an unscannable copy is stop", () => {
 		expect(args({ command: "ls -la", flags: [1, true] })).toEqual({
 			kind: "pass",
@@ -429,6 +438,15 @@ describe("R5 tool.call after next", () => {
 		const answer = { ref: 9, result: `out ${envValue}`, text: "x" };
 		const { result } = await call(e, answer);
 		expect(result).toEqual({ result: `out [secret: ${ENV_NAME}]` });
+	});
+
+	test("R5 (F37): a hit in text alone is a new object with no ref and no text", async () => {
+		const answer = { ref: 13, result: { stdout: "clean" }, text: envValue };
+		const { result } = await call(e, answer);
+		expect(result).not.toBe(answer);
+		expect(result).toEqual({ result: { stdout: "clean" } });
+		expect("ref" in result).toBe(false);
+		expect("text" in result).toBe(false);
 	});
 
 	test("R5: a deny from below with a hit is masked, and a clean deny is the same object", async () => {

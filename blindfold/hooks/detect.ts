@@ -382,11 +382,13 @@ const onMarker = (markers: readonly Range[], span: Span) =>
 	overlaps(markers, span);
 
 const length = (span: Span) => span.end - span.start;
-const rank = (span: Span) => (span.hit.kind === "known" ? 0 : 1);
+/** R3 (Q31): a known value, then a private key or vendor rule, then a context rule. */
+const rank = (span: Span) =>
+	span.hit.kind === "known" ? 0 : span.hit.rule.startsWith("context:") ? 2 : 1;
 
 /**
  * R3: overlapping spans merge into their union, so no part of a match stays visible. The union
- * takes the hit of its longest member, a known value before a rule, then the earliest.
+ * takes the hit of its highest-ranked member, then the longest, then the earliest.
  */
 function resolve(spans: Span[]): Span[] {
 	const merged: { start: number; end: number; best: Span }[] = [];
@@ -398,7 +400,7 @@ function resolve(spans: Span[]): Span[] {
 		}
 		last.end = Math.max(last.end, span.end);
 		const { best } = last;
-		const better = length(span) - length(best) || rank(best) - rank(span);
+		const better = rank(best) - rank(span) || length(span) - length(best);
 		if (better > 0) last.best = span;
 	}
 	return merged.map(({ start, end, best }) => ({ start, end, hit: best.hit }));
