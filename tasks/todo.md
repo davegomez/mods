@@ -248,7 +248,7 @@ Commands, run for every task: the 4 above.
 
 `SPEC-write.md` R1 to R12.
 
-- [ ] Each step refuses in a test, the call order is checked, and no argv holds the value. `plugin.json` has `saveToEnvFile`.
+- [x] Each step refuses in a test, the call order is checked, and no argv holds the value. `plugin.json` has `saveToEnvFile`.
 - Files: `blindfold/hooks/write.ts`, `blindfold/tests/write.test.ts`, `blindfold/.claude-plugin/plugin.json`. Size: M.
 
 ## Checkpoint F

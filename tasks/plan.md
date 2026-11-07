@@ -94,7 +94,7 @@ Specs: `SPEC-request.md`, `SPEC-entry.md`, `SPEC-write.md` (Q34 to Q38 accepted 
 - [x] T16. F46: load on first use after a reload.
 - [x] T17. `request`: the tool, the lifecycle, Continue, and the `"empty"` name state.
 - [ ] T18. `entry`: platform, the native dialogs, `readNative`, `maskStep`, `inputMethod`.
-- [ ] T19. `write`: the save order and `saveToEnvFile`.
+- [x] T19. `write`: the save order and `saveToEnvFile`.
 
 ### Checkpoint F: step 4 done
 
