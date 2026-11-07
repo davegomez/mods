@@ -6,6 +6,7 @@ Mods for [Claude Code](https://code.claude.com/docs/en/plugins/mods/overview). A
 
 | Mod | What it does |
 | :- | :- |
+| [blindfold](blindfold/README.md) | Keeps the values in your env files out of the conversation, and lets Claude ask for a missing secret that you enter in a native dialog. |
 | [ember](ember/README.md) | Tracks how warm the prompt cache stays across idle pauses, and refreshes it before it expires. |
 
 ## Install a mod
