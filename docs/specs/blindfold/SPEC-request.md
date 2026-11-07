@@ -56,6 +56,8 @@ R4. Lifecycle. At most 1 open request. The id comes from `crypto.randomUUID()` (
 | ready | the user presses Continue | cleared, then 1 `$.prompt.submit` (R5) |
 | pending or ready | Dismiss, `session.end`, a module reload, or a user prompt | cleared |
 
+Each clear starts a new epoch. A `request_secret` call that started in an older epoch answers from the status but makes no request, so a call that waited during a clear cannot open a request again (F62).
+
 A user prompt is a `prompt.submit` whose `origin` is not `{ kind: "plugin", name: $.plugin.name }` (`d.ts:9470`, `d.ts:2355`). `register.ts` already has the `shield` hook for `prompt.submit` without a matcher, so the same hook clears the request first (1 hook without a matcher per event).
 
 R5. Continue. `continueRequest` reads `enrollment.status()` and calls `consume(status)`. It returns the request only when it is ready and the name is still set in an active file, and it clears the request before the submit, so a 2nd press does nothing (F53). `request` calls `sync` after each `load`. Then `$.prompt.submit({ text: "NAME is now set. Continue the task that needed it." })` (`d.ts:4955`). It is called from a button handler, never from a hook, because the submit waits until the session is idle (`build/use-the-mods-api.md`, "Start a turn from a background job"). A result with `drop` shows the toast "Continue was not sent. Ask Claude again." There is no retry (Q38).
@@ -91,3 +93,4 @@ Same as `SPEC-detect.md`, with the 4 commands (Q24). Files: `blindfold/hooks/req
 
 - Q37. `request_secret` is not deferred (`isDeferred: false`), so Claude sees it without a ToolSearch and knows to ask instead of asking for a paste. It adds its description to every request. Accepted (agent decision, owner delegated 2026-11-06).
 - Q38. A user Stop does not clear the request, because no hook reports it reliably. A Continue after a Stop is dropped by the host ("the session was stopped and nobody has sent input since"), and the request clears with the toast in R5. The design listed Stop as a clear event. Accepted (agent decision, owner delegated 2026-11-06).
+- Pi review F62 (`reviews/step4-code-pi.md`) is applied in R4. Accepted (agent decision).

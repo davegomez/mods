@@ -25,13 +25,13 @@ R1. Setting. The `userConfig` field `saveToEnvFile` is a string with `options: [
 
 R2. Path, step `path`. A write target uses only the characters `A-Z`, `a-z`, `0-9`, `.`, `_`, `-`, and `/`, and no segment starts with `-` (F52). Refuse any other spelling before any step changes a file. Build 1 absolute target from the real root and `path`, and use it for every `$.fs` call, `chmod`, and `stat` (F51). Keep the root-relative `path` for git and for `enroll`. Apply the `enroll` R2 rules to `path` right before the write: the spelling rules, then `stat` with `resolve`. Refuse a symbolic link, a real path outside the root, and a path that is not a regular file. A missing file is accepted only when its nearest existing folder is a folder at or under the real root (F33: run this check here again, not only in `addFile`). Read the current text (empty for a missing file) and keep it as `before`.
 
-R3. Git, step `git`. Run git with `$.process.run`, with `cwd` the session root (git runs with repository hooks off, `d.ts:3649`):
+R3. Git, step `git`. Run git with `$.process.run`, with `cwd` the session root (git runs with repository hooks off, `d.ts:3649`). First, run `git rev-parse --show-toplevel` with `cwd` the nearest existing folder of the target, and once with `cwd` the root. When the target's folder is in a work tree that is not the root's work tree (also when the root is in none), refuse with `nested-repository`, because the checks below see only the root's index (F59).
 
 - `git rev-parse --is-inside-work-tree`. A failure, or git that does not start, skips the git step (Q36).
 - `git --literal-pathspecs ls-files --error-unmatch -- <path>`. Exit code 1 means untracked. Exit code 0 means tracked: refuse. Any other exit refuses (F48).
 - `git check-ignore -q -- ./<path>`. Exit code 0 means ignored. Exit code 1 means not ignored: add the line `/<path>` to the root `.gitignore` (R2 allows no character that a pattern treats as special). Apply the R2 rules to `.gitignore` first. Keep its other lines. Add a line ending before the new line when the file does not end with one. Run `check-ignore` again, and continue only on exit code 0. Any other exit refuses (F48).
 
-R4. Create, step `create`. For a missing file: `$.fs.write(target, "")`, then `$.process.run(["chmod", "600", target])` with the absolute target, which never starts with `-` (F50). Only the path goes in argv. A non-zero exit refuses. On Windows `chmod` does not run, and the README states that folder access rules apply.
+R4. Create, step `create`. `$.fs.write` has no exclusive create and truncates a file that appeared after R2 (F60). On macOS and Linux: `mktemp <folder>/.blindfold-XXXXXX` makes an empty file with mode `600`, `ln <temp> <target>` (no `-f`) links it only when the target does not exist, and `rm <temp>` removes the temp name. A failed `ln` refuses with `exists`. On Windows: `stat` again right before `$.fs.write(target, "")`, a known narrow window. Then `$.process.run(["chmod", "600", target])` with the absolute target, which never starts with `-` (F50). Only the path goes in argv. A non-zero exit refuses. On Windows `chmod` does not run, and the README states that folder access rules apply.
 
 R5. Change check, step `changed`. Read the file again. Stop when the text is not `before`.
 
@@ -43,7 +43,7 @@ R8. Verify, step `verify`. Read the file again and parse it. The last entry for 
 
 R9. Mode, step `mode`. For a file that R4 created, read its mode with `["stat", "-f", "%Lp", target]` on macOS or `["stat", "-c", "%a", target]` on Linux. `600` is `ok`. Another mode: run `chmod` again and read the mode again. `600` then is `ok` with `warning: "mode-repaired"`, because the value was on disk with a wider mode for a moment. Any failure stops with step `mode`. Whether `$.fs.write` keeps the mode is a release-blocking check in G3 (F49). If G3 shows that it does not, the value write moves to a writer that keeps the mode, before release.
 
-R10. Status. After `verify` and `mode`: `load` with the current list, so the status shows the name as set and `request` can move to ready. The value learned in R7 stays learned after a failure (enroll R5).
+R10. Status. After `verify` and `mode`: `load` with the current list, so the status shows the name as set and `request` can move to ready. After a failure in `write`, `verify`, or `mode`, also `load`, so the status shows what is on disk and a ready request moves back to pending (F61). The value learned in R7 stays learned after a failure (enroll R5).
 
 R11. No file listed (Q9). When no listed file exists, `ui` asks which file to use: `.env`, `.env.local`, or a typed name. The choice goes through `addFile` (enroll R9). `ui` offers this only after the first status has loaded (F34).
 
@@ -78,3 +78,4 @@ Same as `SPEC-detect.md`, with the 4 commands. Files: `blindfold/hooks/write.ts`
 
 - Q36. Outside a git work tree, or when git does not start, the git step is skipped, because no commit can take the file. Accepted (agent decision, owner delegated 2026-11-06).
 - Pi review F47 to F54 (`reviews/step4-specs-pi.md`) are applied in R2 to R10: learn before the value write, strict git exit codes, a literal path allowlist, 1 absolute target, the tested `chmod` and `stat` argv, the real `setValue` reasons, and the mode check as a release gate. Accepted (agent decision).
+- Pi review F59 to F61 (`reviews/step4-code-pi.md`) are applied in R3, R4, and R10. Accepted (agent decision).

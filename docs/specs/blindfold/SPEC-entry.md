@@ -41,7 +41,7 @@ R2. Native dialogs. 1 fixed script per platform. The name and the reason go in a
 
 - macOS: `["osascript", "-e", SCRIPT, "--", name, reason]`. `SCRIPT` is a fixed `on run argv` handler that shows `display dialog … default answer "" with hidden answer` and returns `text returned`.
 - Windows: `powershell -NoProfile -NonInteractive -Command SCRIPT` with a fixed WinForms dialog that has `UseSystemPasswordChar`. The name and the reason come from 2 environment variables in `ProcessRunInit.env` (`d.ts:8385`). Not tested (Q13).
-- Linux: without `$.env.get("DISPLAY")` and `$.env.get("WAYLAND_DISPLAY")`, `unavailable` (F57). With a display: `zenity --entry --hide-text --title blindfold --text <reason>`, else `kdialog --password <reason>`. Exit code 1 from either is `cancelled`, because both use it for Cancel. A program that does not start is `unavailable`. Not tested (Q13).
+- Linux: without `$.env.get("DISPLAY")` and `$.env.get("WAYLAND_DISPLAY")`, `unavailable` (F57). With a display: `zenity --entry --hide-text --title blindfold --text <reason>`, and when zenity does not start, `kdialog --password <reason>` (F63). A cancel or a timeout from zenity never starts kdialog. Exit code 1 from either is `cancelled`, because both use it for Cancel. When neither program starts, `unavailable`. Not tested (Q13).
 
 `timeoutMs` is 300,000. A timeout kills the dialog and the call rejects (`d.ts:8385`), which is `cancel` with `timeout`.
 
@@ -89,3 +89,4 @@ Same as `SPEC-detect.md`, with the 4 commands. Files: `blindfold/hooks/entry.ts`
 
 - Q34. A mod earlier in the hook chain can see the value in `ui.input`, `process.run`, and `fs.write`. blindfold cannot hide a call from those hooks. Other mods are trusted, and the README states this next to the promise. Accepted (agent decision, owner delegated 2026-11-06).
 - Q35. The terminal field stays off until G2 shows that the host draws the controlled `value` (the dots). Until then, `auto` uses the native dialog, and a platform without one tells the user to edit the file. If G2 passes, the field turns on as in Q10. Accepted (agent decision, owner delegated 2026-11-06).
+- Pi review F63 (`reviews/step4-code-pi.md`) is applied in R2. Accepted (agent decision).
