@@ -24,11 +24,12 @@ export function statusLine(status: Status, request: Request | undefined, outcome
 
 ### Requirements
 
-R1. Command. At `session.start`, `$.command.register({ name: "secrets", description, argumentHint: "[set NAME | add NAME | dismiss | refresh]" })` (`d.ts:3234`). A `command.run` hook with the matcher `{ command: "secrets" }` parses `e.args`:
+R1. Command. At `session.start`, `$.command.register({ name: "secrets", description, argumentHint: "[set NAME | add NAME | continue | dismiss | refresh]" })` (`d.ts:3234`). A `command.run` hook with the matcher `{ command: "secrets" }` parses `e.args`:
 
 - empty: open the pane (R4),
 - `set NAME`: start the flow in R5 for `NAME`,
 - `add NAME`: show the line to add by hand (R5, `never`),
+- `continue`: the same as the Continue button for the open request, started without a wait inside the hook (F85),
 - `dismiss`: clear the open request,
 - `refresh`: `load` with the current list.
 
@@ -120,3 +121,4 @@ Same as `SPEC-detect.md`, with the 4 commands. Files: `blindfold/hooks/ui.ts`, `
 - Q44. When no listed file can take a value, the flow keeps the outcome `choose` with the name, and the pane and the band show `.env` and `.env.local` for that name. Without it, `/secrets set NAME` with no open request has no place to keep the name. Accepted (agent decision).
 - Pi review F77 to F82 (`reviews/ui-code-pi.md`) are applied in R5 and R7. Accepted (agent decision).
 - Known limit after F78: a count key that was safe when counted stays in memory if a value learned later makes it secret. The pane builds rows from the hidden status, so it never shows that key. Accepted (agent decision).
+- Live run 2026-11-07 (`live-run-m5.md`): all gates pass. Defects F83 to F87 are fixed after it: the host already shows the mod name before a status line or a toast (F83). Every command form answers with its own text, also `open` (F84). `/secrets continue` exists, so every button has a command (F85, design 1h). F86 (no focus for the band and the pane) is investigated, and the commands are the fallback. The dialog names the value first (F87). Accepted (agent decision).
