@@ -106,7 +106,7 @@ Spec: `docs/specs/blindfold/SPEC-ui.md` (Q39, Q40 accepted as agent decisions). 
 
 - [x] T20. Pure part: `rowsOf`, `parseCommand`, `statusLine`, and the rewrite count per known name in `shield`.
 - [x] T20b. `request`: scan the name and the reason (F65). Runs beside T20, because the files differ.
-- [ ] T21. `/secrets`, the status line, and the band.
+- [x] T21. `/secrets`, the status line, and the band.
 - [ ] T22. The pane, with the git state per file read after each load.
 - [ ] T23. The flow in R5: file choice, `saveToEnvFile`, entry, save, Continue.
 

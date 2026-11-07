@@ -281,8 +281,8 @@ Commands, run for every task: the 4 above.
 
 `SPEC-ui.md` R1, R2, R3, R6.
 
-- [ ] `/secrets` registers at `session.start`. Each form runs its action, and a refused argument shows only the toast.
-- [ ] The status line updates after each load and each request change. The band adds 1 line to the tree from `next` and keeps the children of other mods. The toast shows when a request opens.
+- [x] `/secrets` registers at `session.start`. Each form runs its action, and a refused argument shows only the toast.
+- [x] The status line updates after each load and each request change. The band adds 1 line to the tree from `next` and keeps the children of other mods. The toast shows when a request opens.
 - Files: `blindfold/hooks/ui.ts`, `blindfold/hooks/register.ts`, `blindfold/tests/ui.test.ts`. Size: M.
 
 ## T22. Pane

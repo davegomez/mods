@@ -58,7 +58,7 @@ R4. Lifecycle. At most 1 open request. The id comes from `crypto.randomUUID()` (
 
 Each clear starts a new epoch. A `request_secret` call that started in an older epoch answers from the status but makes no request, so a call that waited during a clear cannot open a request again (F62).
 
-A user prompt is a `prompt.submit` whose `origin` is not `{ kind: "plugin", name: $.plugin.name }` (`d.ts:9470`, `d.ts:2355`). `register.ts` already has the `shield` hook for `prompt.submit` without a matcher, so the same hook clears the request first (1 hook without a matcher per event).
+A user prompt is a `prompt.submit` whose `origin` is not `{ kind: "plugin", name: $.plugin.name }` (`d.ts:9470`, `d.ts:2355`). A `prompt.submit` that runs `/secrets` does not clear, because that command answers the request (ui R1). `register.ts` already has the `shield` hook for `prompt.submit` without a matcher, so the same hook clears the request first (1 hook without a matcher per event).
 
 R5. Continue. `continueRequest` reads `enrollment.status()` and calls `consume(status)`. It returns the request only when it is ready and the name is still set in an active file, and it clears the request before the submit, so a 2nd press does nothing (F53). `request` calls `sync` after each `load`. Then `$.prompt.submit({ text: "NAME is now set. Continue the task that needed it." })` (`d.ts:4955`). It is called from a button handler, never from a hook, because the submit waits until the session is idle (`build/use-the-mods-api.md`, "Start a turn from a background job"). A result with `drop` shows the toast "Continue was not sent. Ask Claude again." There is no retry (Q38).
 
