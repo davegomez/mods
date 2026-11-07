@@ -96,7 +96,7 @@ Specs: `SPEC-request.md`, `SPEC-entry.md`, `SPEC-write.md` (Q34 to Q38 accepted 
 - [x] T18. `entry`: platform, the native dialogs, `readNative`, `maskStep`, `inputMethod`.
 - [x] T19. `write`: the save order and `saveToEnvFile`.
 
-### Checkpoint F: step 4 done
+### Checkpoint F: step 4 done (closed 2026-11-07)
 
 The 4 commands pass. 1 Pi review of the 3 modules. High findings are fixed at once. The live gates G1 to G3 run at milestone 5, when `ui` can start entry and write.
 

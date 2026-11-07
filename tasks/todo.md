@@ -253,9 +253,9 @@ Commands, run for every task: the 4 above.
 
 ## Checkpoint F
 
-- [ ] The 4 commands pass.
-- [ ] Pi reviews `request.ts`, `entry.ts`, and `write.ts`. High findings are fixed.
-- [ ] F59 to F63 and F57 are fixed with a test each.
+- [x] The 4 commands pass.
+- [x] Pi reviews `request.ts`, `entry.ts`, and `write.ts`. High findings are fixed.
+- [x] F59 to F63 and F57 are fixed with a test each.
 
 # Step 5: `ui`
 
