@@ -68,13 +68,17 @@ R5. The flow for 1 name.
 4. Save: `write.saveValue`. A failure shows "Not saved: step <step>, <reason>." and names no value. A `mode-repaired` warning shows "Saved. The file was readable by others for a moment." Then `load`, and `request` moves to ready.
 5. Continue: the band or the pane calls `request.continueRequest`.
 
-1 flow runs at a time. A 2nd start while a flow runs shows "blindfold is already asking for a value." The value exists only inside steps 3 and 4 and is never stored in module state, a render prop, `$.state`, or `$.store` (entry R4).
+A new flow clears the last outcome when it starts (F81). 1 flow runs at a time. A 2nd start while a flow runs shows "blindfold is already asking for a value." The value exists only inside steps 3 and 4 and is never stored in module state, a render prop, `$.state`, or `$.store` (entry R4).
 
-Invalidation (F67). A flow takes the request epoch (`requests.epoch()`, request R4) and the request id when it starts. After entry returns, and before `saveValue`, it stops when the epoch changed, the request id changed, or the session ended. The value is then dropped, and the outcome is "Not saved: the request was cleared." After `saveValue`, the same check decides whether the flow updates the request or the outcome. A session end during `saveValue` can still let `write` learn and load, which only adds masking. The README does not need to state this.
+Invalidation (F67). A flow takes the request epoch (`requests.epoch()`, request R4) and the request id when it starts. After entry returns, and before `saveValue`, it stops when the epoch changed, the request id changed, or the session ended. The value is then dropped, and the outcome is "Not saved: the request was cleared." After `saveValue`, the same check decides whether the flow updates the request or the outcome. Every exit after an await checks the fence before it sets an outcome: the unavailable cancel, an error, and the file choice (F79).
+
+Buttons for a request (F80). Each request button carries the id of the request it was drawn for. Its handler does nothing when the open request has another id, and Continue consumes only that id (request R5). The band checks the request again after its awaited `next(e)`. A session end during `saveValue` can still let `write` learn and load, which only adds masking. The README does not need to state this.
 
 R6. Accessibility (design 1h). Every state in words, never color alone, no dim text for a security fact. Stable `key` on each `Button` and `Input`. No timed instruction. A toast is never the only signal: the pane and the status line hold every state.
 
-R7. No leak. No row, prop, toast, status line, command answer, outcome, or log holds a value or its length. The request reason and name are scanned first (request R2, F65). A file name is never typed (F66).
+R7. No leak. No row, prop, button key, toast, status line, command answer, outcome, rewrite count key, or log holds a value or its length. The request reason and name are scanned first (request R2, F65). A file name is never typed (F66).
+
+A value learned later can turn safe text into a secret (F77). After each load, scan the open request and the outcome again with the current known values: a hit in the reason replaces it with the request R2 text, a hit in the name clears the request, and a hit in the outcome name clears the outcome. A row is never built again from a name that the status hides. The shield counts no name that holds a known value (F78).
 
 ### Not in scope
 
@@ -114,3 +118,4 @@ Same as `SPEC-detect.md`, with the 4 commands. Files: `blindfold/hooks/ui.ts`, `
 - Q43. With `saveToEnvFile` set to `ask`, the band's buttons are the question: `1` reads "Enter it here (blindfold saves it to FILE)", with `2` Add it myself and `3` Dismiss. An explicit `/secrets set NAME`, or the pane's Enter value, is the answer "Enter it", so the flow asks nothing more and goes to entry. A 2nd question after the user already chose to enter the value would only add a step. Accepted (agent decision).
 - Pi review F64 to F76 (`reviews/ui-spec-pi.md`) are applied in R1 to R7 and the testing strategy. Accepted (agent decision).
 - Q44. When no listed file can take a value, the flow keeps the outcome `choose` with the name, and the pane and the band show `.env` and `.env.local` for that name. Without it, `/secrets set NAME` with no open request has no place to keep the name. Accepted (agent decision).
+- Pi review F77 to F82 (`reviews/ui-code-pi.md`) are applied in R5 and R7. Accepted (agent decision).
