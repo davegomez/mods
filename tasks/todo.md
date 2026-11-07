@@ -265,16 +265,16 @@ Commands, run for every task: the 4 above.
 
 `SPEC-ui.md` R3, R4 (rows), R1 (parse), R7.
 
-- [ ] `parseCommand` for each form and each refusal (Q39). `rowsOf` for each state, the requested name in no file, and a stale file that never reads Set. `statusLine` puts a degraded shield first (Q40).
-- [ ] `shield` adds 1 to the count of each distinct name with a `known` hit in a rewritten tool result (F75). The count map holds numbers only.
-- [ ] `rowsOf` marks hidden rows (F73). `canonicalArgs` gives `set NAME` or `""` (F64). `statusLine` takes the outcome (F74).
+- [x] `parseCommand` for each form and each refusal (Q39). `rowsOf` for each state, the requested name in no file, and a stale file that never reads Set. `statusLine` puts a degraded shield first (Q40).
+- [x] `shield` adds 1 to the count of each distinct name with a `known` hit in a rewritten tool result (F75). The count map holds numbers only.
+- [x] `rowsOf` marks hidden rows (F73). `canonicalArgs` gives `set NAME` or `""` (F64). `statusLine` takes the outcome (F74).
 - Files: `blindfold/hooks/ui.ts`, `blindfold/tests/ui.test.ts`, `blindfold/hooks/shield.ts`, `blindfold/tests/shield.test.ts`. Size: M.
 
 ## T20b. Request name and reason scan (F65)
 
 `SPEC-request.md` R2.
 
-- [ ] A name with a `detect` hit is denied. A reason with any hit is replaced in the request. The forwarded arguments do not change.
+- [x] A name with a `detect` hit is denied. A reason with any hit is replaced in the request. The forwarded arguments do not change.
 - Files: `blindfold/hooks/request.ts`, `blindfold/tests/request.test.ts`. Size: S.
 
 ## T21. Command, status line, band

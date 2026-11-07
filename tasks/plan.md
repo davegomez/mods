@@ -104,8 +104,8 @@ The 4 commands pass. 1 Pi review of the 3 modules. High findings are fixed at on
 
 Spec: `docs/specs/blindfold/SPEC-ui.md` (Q39, Q40 accepted as agent decisions). Tasks: `tasks/todo.md`, T20 to T23. Pi reviews the spec before T20 starts. 1 `worker-high` per task, in sequence, because T21 to T23 all change `ui.ts` and `register.ts`. T20 builds the pure part and the shield counts.
 
-- [ ] T20. Pure part: `rowsOf`, `parseCommand`, `statusLine`, and the rewrite count per known name in `shield`.
-- [ ] T20b. `request`: scan the name and the reason (F65). Runs beside T20, because the files differ.
+- [x] T20. Pure part: `rowsOf`, `parseCommand`, `statusLine`, and the rewrite count per known name in `shield`.
+- [x] T20b. `request`: scan the name and the reason (F65). Runs beside T20, because the files differ.
 - [ ] T21. `/secrets`, the status line, and the band.
 - [ ] T22. The pane, with the git state per file read after each load.
 - [ ] T23. The flow in R5: file choice, `saveToEnvFile`, entry, save, Continue.
