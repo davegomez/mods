@@ -18,7 +18,9 @@ import {
 	createRequests,
 	DROPPED_TOAST,
 	NAME_RULE,
+	NAME_SECRET,
 	onRequestSecret,
+	REASON_HIDDEN,
 	type Request,
 	statusText,
 	TOOL_NAME,
@@ -596,6 +598,78 @@ describe("R5 Continue", () => {
 		await continueRequest($, own, ownRequests);
 		expect(submits.length).toBe(1);
 		expect(toasts).toEqual([DROPPED_TOAST]);
+	});
+});
+
+describe("R2 (F65) the name and reason scan", () => {
+	const contextOnly = "b9Xq7Lm4Rt2Pv8Nw";
+
+	test("R2 (F65): a context-only secret in the reason is hidden in the request, and the arguments stay", async () => {
+		const { api } = fakeApi({ ".env": { text: "OTHER=1\n" } });
+		const own = createRequests();
+		const reason = `password=${contextOnly}`;
+		const e = Object.freeze({
+			tool: TOOL,
+			tool_use_id: "t65",
+			name: NAME,
+			reason,
+		});
+		const result = await onRequestSecret(
+			api,
+			createEnrollment(),
+			own,
+			e,
+			nextSpy().next,
+			".env",
+		);
+		expect(result).toEqual({ result: MISSING_TEXT });
+		expect(own.current()?.reason).toBe(REASON_HIDDEN);
+		expect(e.reason).toBe(reason);
+		expect(JSON.stringify([result, own.current()]).includes(contextOnly)).toBe(
+			false,
+		);
+	});
+
+	test("R2 (F65): a known value in the reason is hidden in the request", async () => {
+		const { api } = fakeApi({
+			".env": { text: `API_TOKEN=${otherValue}\n` },
+		});
+		const { result, requests } = await call(api, {
+			name: NAME,
+			reason: `use ${otherValue} to charge`,
+		});
+		expect(result).toEqual({ result: MISSING_TEXT });
+		expect(requests.current()?.reason).toBe(REASON_HIDDEN);
+		expect(
+			JSON.stringify([result, requests.current()]).includes(otherValue),
+		).toBe(false);
+	});
+
+	test("R2 (F65): a vendor-shaped name is denied with a fixed text, and no request is made", async () => {
+		const { api } = fakeApi({});
+		const own = createRequests();
+		const open = own.ask("OPEN_TOKEN", "kept");
+		const name = fake.aws;
+		expect(validName(name)).toBe(true);
+		const { result, calls } = await call(
+			api,
+			{ name, reason: "r" },
+			undefined,
+			own,
+		);
+		expect(result).toEqual({ deny: NAME_SECRET });
+		expect(calls).toEqual([]);
+		expect(own.current()).toBe(open);
+		expect(JSON.stringify([result, own.current()]).includes(name)).toBe(false);
+	});
+
+	test("R2 (F65): a clean reason stays in the request", async () => {
+		const { api } = fakeApi({ ".env": { text: "OTHER=1\n" } });
+		const { requests } = await call(api, {
+			name: NAME,
+			reason: "to charge the card",
+		});
+		expect(requests.current()?.reason).toBe("to charge the card");
 	});
 });
 

@@ -8,6 +8,7 @@ import type {
 } from "claude-code";
 import { isValidName } from "./dotenv.ts";
 import { type Enrollment, ensureLoaded, type Status } from "./enroll.ts";
+import { clockFor, guardText } from "./shield.ts";
 
 export const TOOL_NAME = "request_secret";
 
@@ -37,6 +38,13 @@ export const TOOL_SPEC: ToolSpec = {
 /** R2: the rule, without the name, which could be a value. */
 export const NAME_RULE =
 	"request_secret refused the name: use letters, digits, and _, start with a letter or _, keep it to 64 characters, and do not use __proto__.";
+
+/** R2 (F65): fixed, so it holds no part of the name. */
+export const NAME_SECRET =
+	"request_secret refused the name: it looks like a secret. Pass the env variable name, such as STRIPE_API_KEY.";
+
+/** R2 (F65): the request reason when the reason held a detector hit. */
+export const REASON_HIDDEN = "(reason hidden: it held a secret)";
 
 export const DROPPED_TOAST = "Continue was not sent. Ask Claude again.";
 
@@ -141,16 +149,27 @@ export async function onRequestSecret(
 	enrollment: Enrollment,
 	requests: Requests,
 	e: ToolCall[1],
-	_next: unknown,
+	next: { budget: { remainingMs: number } },
 	list: string,
 	epoch = requests.epoch(),
 ): Promise<ToolCallResult> {
 	await ensureLoaded($, enrollment, list);
 	const { name, reason } = e as Record<string, unknown>;
 	if (!validName(name)) return { deny: NAME_RULE };
+	// R2 (F65): every rule kind, and a scan that cannot finish counts as a hit.
+	const clean = (text: string) =>
+		guardText(
+			text,
+			enrollment.knownSet(),
+			clockFor(next.budget.remainingMs, () => performance.now()),
+		).kind === "pass";
+	if (!clean(name)) return { deny: NAME_SECRET };
 	const status = enrollment.status();
 	if (epoch === requests.epoch() && setIn(name, status) === undefined) {
-		requests.ask(name, cleanReason(reason));
+		const cut = cleanReason(reason);
+		// The raw reason too, so a secret the cut splits is still found.
+		const safe = clean(cut) && (typeof reason !== "string" || clean(reason));
+		requests.ask(name, safe ? cut : REASON_HIDDEN);
 	}
 	return { result: statusText(name, status) };
 }
