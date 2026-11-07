@@ -8,7 +8,11 @@ import {
 	statusOf,
 } from "../hooks/enroll.ts";
 import type { Entered, Platform } from "../hooks/entry.ts";
-import { createRequests, type Request } from "../hooks/request.ts";
+import {
+	createRequests,
+	REASON_HIDDEN,
+	type Request,
+} from "../hooks/request.ts";
 import {
 	BUSY,
 	type Command,
@@ -21,6 +25,7 @@ import {
 	type Outcome,
 	outcomeText,
 	parseCommand,
+	rescan,
 	rowsOf,
 	startFlow,
 	statusLine,
@@ -604,15 +609,24 @@ describe("R5 the flow, with a fake entry and write", () => {
 	});
 
 	for (const why of ["cancelled", "timeout", "failed"] as const) {
-		test(`R5 step 3: a cancel (${why}) stops with the outcome unchanged and the request open`, async () => {
+		test(`R5 step 3 (F81): a cancel (${why}) stops with the earlier outcome cleared and the request open`, async () => {
 			const { ui, requests, request } = setup();
-			const before: Outcome = { kind: "cleared", name: NAME };
-			ui.setOutcome(before);
-			const { io, calls, toasts } = fakeIo({
-				entered: { kind: "cancel", why },
+			ui.setOutcome({
+				kind: "not-saved",
+				name: "OLD_KEY",
+				step: "git",
+				reason: "tracked",
 			});
-			await startFlow(ui, NAME, io, ASK).done;
-			expect(ui.outcome()).toEqual(before);
+			const dialog = gate();
+			const entered = dialog.wait.then(
+				(): Entered => ({ kind: "cancel", why }),
+			);
+			const { io, calls, toasts } = fakeIo({ entered });
+			const flow = startFlow(ui, NAME, io, ASK);
+			expect(ui.outcome()).toBeUndefined();
+			dialog.open();
+			await flow.done;
+			expect(ui.outcome()).toBeUndefined();
 			expect(requests.current()).toEqual(request);
 			expect(calls.some((c) => c.startsWith("save"))).toBe(false);
 			expect(toasts).toEqual([]);
@@ -673,6 +687,88 @@ describe("R5 the flow, with a fake entry and write", () => {
 		expect(again.calls.at(-1)).toBe(`save .env ${NAME}`);
 	});
 
+	test("R5 (F81): a start that is not accepted keeps the outcome", async () => {
+		const { ui } = setup();
+		const dialog = gate();
+		const entered = dialog.wait.then(
+			(): Entered => ({ kind: "cancel", why: "cancelled" }),
+		);
+		const flow = startFlow(ui, NAME, fakeIo({ entered }).io, ASK);
+		const before: Outcome = { kind: "cleared", name: NAME };
+		ui.setOutcome(before);
+		expect(startFlow(ui, NAME, fakeIo().io, ASK).text).toBe(BUSY);
+		expect(ui.outcome()).toEqual(before);
+		dialog.open();
+		await flow.done;
+	});
+
+	/** F79: what Dismiss and session.end do to the ui while a flow waits. */
+	const ends: [string, (s: ReturnType<typeof setup>) => void][] = [
+		[
+			"a Dismiss",
+			({ ui, requests }) => {
+				requests.clear();
+				ui.setOutcome(undefined);
+			},
+		],
+		[
+			"a session end",
+			({ ui, requests }) => {
+				requests.clear();
+				ui.setOutcome(undefined);
+				ui.sessions++;
+			},
+		],
+	];
+	for (const [label, end] of ends) {
+		test(`R5 (F79): ${label} during entry, then a cancel with why unavailable, sets no outcome and no toast`, async () => {
+			const s = setup();
+			const dialog = gate();
+			const entered = dialog.wait.then(
+				(): Entered => ({ kind: "cancel", why: "unavailable" }),
+			);
+			const { io, toasts } = fakeIo({ entered });
+			const flow = startFlow(s.ui, NAME, io, ASK);
+			await Promise.resolve();
+			end(s);
+			dialog.open();
+			await flow.done;
+			expect(s.ui.outcome()).toBeUndefined();
+			expect(toasts).toEqual([]);
+			expect(s.ui.busy).toBe(false);
+		});
+
+		test(`R5 (F79): ${label} during saveValue, then a save that throws, sets no outcome and no toast`, async () => {
+			const s = setup();
+			const { io, toasts } = fakeIo();
+			io.save = async () => {
+				end(s);
+				throw new Error("made-up");
+			};
+			await startFlow(s.ui, NAME, io, ASK).done;
+			expect(s.ui.outcome()).toBeUndefined();
+			expect(toasts).toEqual([]);
+			expect(s.ui.busy).toBe(false);
+		});
+
+		test(`R5 (F79): ${label} while a file choice waits, then denied, sets no outcome and no toast`, async () => {
+			const s = setup({});
+			const door = gate();
+			const { io, toasts } = fakeIo();
+			io.addFile = async () => {
+				await door.wait;
+				return "denied";
+			};
+			const choose = chooseFile(s.ui, NAME, ".env.local", io);
+			end(s);
+			door.open();
+			await choose;
+			expect(s.ui.outcome()).toBeUndefined();
+			expect(toasts).toEqual([]);
+			expect(s.ui.busy).toBe(false);
+		});
+	}
+
 	const changes: [string, (s: ReturnType<typeof setup>) => void][] = [
 		["a clear (Dismiss, a user prompt)", ({ requests }) => requests.clear()],
 		["a new request", ({ requests }) => void requests.ask("OTHER_KEY", "r")],
@@ -721,5 +817,46 @@ describe("R5 the flow, with a fake entry and write", () => {
 			texts.push(flow.text, ui.outcome(), toasts);
 		}
 		expect(JSON.stringify(texts)).not.toContain(VALUE);
+	});
+});
+
+describe("R7 (F77) rescan after a load", () => {
+	const VALUE = `V${fake.secret(23)}`;
+	/** A ui whose enrollment learns `value` for `name` only after the request and the outcome were made. */
+	const setup = () => {
+		const enrollment = createEnrollment();
+		enrollment.apply([
+			{ path: ".env", state: { kind: "active", names: [] }, feed: [] },
+		]);
+		const requests = createRequests();
+		return { enrollment, requests, ui: createUi(enrollment, requests) };
+	};
+
+	test("R7 (F77): a reason that now holds a known value becomes the request R2 text", () => {
+		const { enrollment, requests, ui } = setup();
+		const asked = requests.ask("DB_PASSWORD", `Use ${VALUE} for the database`);
+		enrollment.learn(".env", "DB_PASSWORD", VALUE);
+		rescan(ui);
+		expect(requests.current()).toEqual({ ...asked, reason: REASON_HIDDEN });
+	});
+
+	test("R7 (F77): a name that now holds a known value clears the request", () => {
+		const { enrollment, requests, ui } = setup();
+		requests.ask("DB_PASSWORD", "for the database");
+		enrollment.learn(".env", "DB_PASSWORD", "DB_PASSWORD");
+		rescan(ui);
+		expect(requests.current()).toBeUndefined();
+	});
+
+	test("R7 (F77): an outcome whose name now holds a known value is cleared; another stays", () => {
+		const { enrollment, ui } = setup();
+		const kept: Outcome = { kind: "denied", name: "API_KEY" };
+		ui.setOutcome(kept);
+		enrollment.learn(".env", "OTHER_KEY", "DB_PASSWORD");
+		rescan(ui);
+		expect(ui.outcome()).toEqual(kept);
+		ui.setOutcome({ kind: "manual", name: "DB_PASSWORD", file: ".env" });
+		rescan(ui);
+		expect(ui.outcome()).toBeUndefined();
 	});
 });

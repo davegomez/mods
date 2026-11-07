@@ -93,11 +93,28 @@ export type Request = {
 	state: "pending" | "ready";
 };
 
+/** ui R7 (F77): `request` as it may be shown now, since a value learned later can turn its name or reason into a secret. A name hit leaves none. */
+export function redacted(
+	request: Request | undefined,
+	isSecret: (text: string) => boolean,
+): Request | undefined {
+	if (!request || isSecret(request.name)) return undefined;
+	return request.reason !== REASON_HIDDEN && isSecret(request.reason)
+		? { ...request, reason: REASON_HIDDEN }
+		: request;
+}
+
 /** R4: at most 1 open request. Each clear starts a new epoch (F62). */
 export function createRequests() {
 	let open: Request | undefined;
 	let epoch = 0;
 	let changed = () => {};
+	const clear = (): void => {
+		const had = open;
+		open = undefined;
+		epoch++;
+		if (had) changed();
+	};
 	const sync = (status: Status): void => {
 		if (open) {
 			const state = setIn(open.name, status) ? "ready" : "pending";
@@ -116,8 +133,9 @@ export function createRequests() {
 		},
 		/** R4 (F53): ready while the status shows the name set in an active file, else pending. */
 		sync,
-		/** R5 (F53): the request once, only when the status shows its name set; it is cleared before any submit. */
-		consume(status: Status): Request | undefined {
+		/** R5 (F53, F80): the request with `id` once, only when the status shows its name set; it is cleared before any submit. */
+		consume(status: Status, id: string): Request | undefined {
+			if (open?.id !== id) return undefined;
 			sync(status);
 			const ready = open?.state === "ready" ? open : undefined;
 			if (ready) {
@@ -126,11 +144,16 @@ export function createRequests() {
 			}
 			return ready;
 		},
-		clear(): void {
-			const had = open;
-			open = undefined;
-			epoch++;
-			if (had) changed();
+		clear,
+		/** ui R7 (F77): after a load, a reason hit hides the reason, and a name hit clears the request. */
+		redact(isSecret: (text: string) => boolean): void {
+			const next = redacted(open, isSecret);
+			if (!next) {
+				if (open) clear();
+			} else if (next !== open) {
+				open = next;
+				changed();
+			}
 		},
 		/** ui R3 (F71): `listener` runs after each change of the open request. 1 listener; a 2nd replaces it. */
 		watch(listener: () => void): void {
@@ -188,13 +211,14 @@ export async function onRequestSecret(
 	return { result: statusText(name, status) };
 }
 
-/** R5: from a button handler, never a hook, because the submit waits for an idle session. Never rejects. No retry (Q38). */
+/** R5: from a button handler, never a hook, because the submit waits for an idle session. `id` is the request the button was drawn for (F80). Never rejects. No retry (Q38). */
 export async function continueRequest(
 	$: EngineInterface,
 	enrollment: Enrollment,
 	requests: Requests,
+	id: string,
 ): Promise<void> {
-	const request = requests.consume(enrollment.status());
+	const request = requests.consume(enrollment.status(), id);
 	if (!request) return;
 	const out = await $.prompt
 		.submit({

@@ -100,14 +100,18 @@ export function classify(entries: readonly Entry[]): {
 export const HIDDEN_PATH = "[hidden path]";
 export const HIDDEN_NAME = "[hidden name]";
 
-/** R10: `text`, or `placeholder` when `known` finds a kept value in it or cannot scan it. */
-function shown(text: string, known: KnownSet, placeholder: string): string {
+/** R10: true when `known` finds a kept value in `text` or cannot scan it. */
+export function holdsKnown(text: string, known: KnownSet): boolean {
 	const scan = scanText(text, known, DEFAULT_LIMITS, NO_DEADLINE);
-	const hit =
+	return (
 		scan.status === "unscannable" ||
-		(scan.status === "found" && scan.hits.some((h) => h.kind === "known"));
-	return hit ? placeholder : text;
+		(scan.status === "found" && scan.hits.some((h) => h.kind === "known"))
+	);
 }
+
+/** R10: `text`, or `placeholder` when it holds a kept value. */
+const shown = (text: string, known: KnownSet, placeholder: string): string =>
+	holdsKnown(text, known) ? placeholder : text;
 
 /** R6: degraded when any listed file is stale or refused. R10: copies only path and state, and hides a path or a name that holds a value of `known`. */
 export function statusOf(

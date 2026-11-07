@@ -193,16 +193,28 @@ describe("R4 lifecycle", () => {
 		const requests = createRequests();
 		const asked = requests.ask(NAME, "r");
 		requests.sync(setStatus);
-		expect(requests.consume(setStatus)).toEqual({ ...asked, state: "ready" });
+		expect(requests.consume(setStatus, asked.id)).toEqual({
+			...asked,
+			state: "ready",
+		});
 		expect(requests.current()).toBeUndefined();
-		expect(requests.consume(setStatus)).toBeUndefined();
+		expect(requests.consume(setStatus, asked.id)).toBeUndefined();
+	});
+
+	test("R5 (F80): consume takes only the id it is given, and leaves another request open", () => {
+		const requests = createRequests();
+		const old = requests.ask("OLD_KEY", "old");
+		const fresh = requests.ask(NAME, "new");
+		requests.sync(setStatus);
+		expect(requests.consume(setStatus, old.id)).toBeUndefined();
+		expect(requests.current()).toEqual({ ...fresh, state: "ready" });
 	});
 
 	test("R5 (F53): consume returns nothing when the name is no longer set, and the request is pending again", () => {
 		const requests = createRequests();
-		requests.ask(NAME, "r");
+		const { id } = requests.ask(NAME, "r");
 		requests.sync(setStatus);
-		expect(requests.consume(emptyStatus)).toBeUndefined();
+		expect(requests.consume(emptyStatus, id)).toBeUndefined();
 		expect(requests.current()?.state).toBe("pending");
 	});
 
@@ -534,20 +546,20 @@ describe("R5 Continue", () => {
 		ownRequests.ask(NAME, "r");
 		await load(fakeApi({ ".env": { text } }).api, own, ".env");
 		ownRequests.sync(own.status());
-		return { own, ownRequests };
+		return { own, ownRequests, id: ownRequests.current()?.id ?? "" };
 	};
 	const entered = async (): Promise<PromptSubmitResult> => ({
 		text: "entered",
 	});
 
 	test("R5: Continue clears the request, then submits 1 turn that tells Claude the name is set", async () => {
-		const { own, ownRequests } = await ready();
+		const { own, ownRequests, id } = await ready();
 		expect(ownRequests.current()?.state).toBe("ready");
 		const { $, submits, toasts, openAtSubmit } = continueApi(
 			entered,
 			ownRequests,
 		);
-		await continueRequest($, own, ownRequests);
+		await continueRequest($, own, ownRequests, id);
 		expect(submits).toEqual([
 			{ text: `${NAME} is now set. Continue the task that needed it.` },
 		]);
@@ -556,33 +568,43 @@ describe("R5 Continue", () => {
 	});
 
 	test("R5 (F53): Continue twice submits once", async () => {
-		const { own, ownRequests } = await ready();
+		const { own, ownRequests, id } = await ready();
 		const { $, submits } = continueApi(entered, ownRequests);
 		await Promise.all([
-			continueRequest($, own, ownRequests),
-			continueRequest($, own, ownRequests),
+			continueRequest($, own, ownRequests, id),
+			continueRequest($, own, ownRequests, id),
 		]);
-		await continueRequest($, own, ownRequests);
+		await continueRequest($, own, ownRequests, id);
 		expect(submits.length).toBe(1);
 	});
 
 	test("R5 (F53): Continue when the name is no longer set submits nothing", async () => {
-		const { own, ownRequests } = await ready();
+		const { own, ownRequests, id } = await ready();
 		await load(fakeApi({ ".env": { text: `${NAME}=\n` } }).api, own, ".env");
 		const { $, submits, toasts } = continueApi(entered, ownRequests);
-		await continueRequest($, own, ownRequests);
+		await continueRequest($, own, ownRequests, id);
 		expect(submits).toEqual([]);
 		expect(toasts).toEqual([]);
 		expect(ownRequests.current()?.state).toBe("pending");
 	});
 
+	test("R5 (F80): a Continue drawn for an older request submits nothing and leaves the open one", async () => {
+		const { own, ownRequests, id } = await ready();
+		const fresh = ownRequests.ask(NAME, "new");
+		ownRequests.sync(own.status());
+		const { $, submits } = continueApi(entered, ownRequests);
+		await continueRequest($, own, ownRequests, id);
+		expect(submits).toEqual([]);
+		expect(ownRequests.current()?.id).toBe(fresh.id);
+	});
+
 	test("R5 (Q38): a dropped Continue shows the toast once and is not retried", async () => {
-		const { own, ownRequests } = await ready();
+		const { own, ownRequests, id } = await ready();
 		const { $, submits, toasts } = continueApi(
 			async () => ({ drop: "the session was stopped" }),
 			ownRequests,
 		);
-		await continueRequest($, own, ownRequests);
+		await continueRequest($, own, ownRequests, id);
 		expect(submits.length).toBe(1);
 		expect(toasts).toEqual([DROPPED_TOAST]);
 		expect(DROPPED_TOAST).toBe("Continue was not sent. Ask Claude again.");
@@ -590,12 +612,12 @@ describe("R5 Continue", () => {
 	});
 
 	test("R5: a submit that rejects shows the same toast, and Continue does not reject", async () => {
-		const { own, ownRequests } = await ready();
+		const { own, ownRequests, id } = await ready();
 		const { $, submits, toasts } = continueApi(
 			() => Promise.reject(new Error("host gone")),
 			ownRequests,
 		);
-		await continueRequest($, own, ownRequests);
+		await continueRequest($, own, ownRequests, id);
 		expect(submits.length).toBe(1);
 		expect(toasts).toEqual([DROPPED_TOAST]);
 	});
@@ -670,6 +692,42 @@ describe("R2 (F65) the name and reason scan", () => {
 			reason: "to charge the card",
 		});
 		expect(requests.current()?.reason).toBe("to charge the card");
+	});
+});
+
+describe("ui R7 (F77) redact after a load", () => {
+	const holds = (secret: string) => (text: string) => text.includes(secret);
+
+	test("ui R7 (F77): a reason that now holds a known value becomes the fixed text, and the request stays open with its id", () => {
+		const own = createRequests();
+		const changes: string[] = [];
+		own.watch(() => changes.push("changed"));
+		const asked = own.ask(NAME, `use ${value} for the database`);
+		const epoch = own.epoch();
+		own.redact(holds(value));
+		expect(own.current()).toEqual({ ...asked, reason: REASON_HIDDEN });
+		expect(own.epoch()).toBe(epoch);
+		expect(changes).toEqual(["changed", "changed"]);
+	});
+
+	test("ui R7 (F77): a name that now holds a known value clears the request and starts a new epoch", () => {
+		const own = createRequests();
+		own.ask(NAME, "r");
+		const epoch = own.epoch();
+		own.redact(holds(NAME));
+		expect(own.current()).toBeUndefined();
+		expect(own.epoch()).toBe(epoch + 1);
+	});
+
+	test("ui R7 (F77): with no hit, or no request, nothing changes", () => {
+		const own = createRequests();
+		const changes: string[] = [];
+		own.watch(() => changes.push("changed"));
+		own.redact(holds(value));
+		const asked = own.ask(NAME, "to charge the card");
+		own.redact(holds(value));
+		expect(own.current()).toBe(asked);
+		expect(changes).toEqual(["changed"]);
 	});
 });
 

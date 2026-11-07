@@ -2,7 +2,11 @@ import type { EngineInterface } from "claude-code";
 import { describe, expect, test } from "claude-code/testing";
 import { createEnrollment } from "../hooks/enroll.ts";
 import { enrollment, register, requests, ui } from "../hooks/register.ts";
-import { createRequests, DROPPED_TOAST } from "../hooks/request.ts";
+import {
+	createRequests,
+	DROPPED_TOAST,
+	REASON_HIDDEN,
+} from "../hooks/request.ts";
 import { resetRewriteCounts } from "../hooks/shield.ts";
 import { createUi, type GitState, REFUSED_COMMAND } from "../hooks/ui.ts";
 import {
@@ -984,5 +988,212 @@ describe("R7 no value through the whole flow (F76)", () => {
 		expect(a.seen).toBe(b.seen);
 		expect(a.stored).not.toContain(short);
 		expect(b.stored).not.toContain(long);
+		// F82: a write that holds a length would differ between the 2 runs.
+		expect(a.stored).toBe(b.stored);
+	});
+});
+
+describe("R7 (F77) a value learned after the request", () => {
+	const PASSWORD = "DB_PASSWORD";
+	const REQUEST = `tool.call ${JSON.stringify({ tool: "mcp__blindfold__request_secret" })}`;
+	const ask = ($: EngineInterface, reason: string) =>
+		hooks().get(REQUEST)?.(
+			$,
+			{ tool: "mcp__blindfold__request_secret", name: PASSWORD, reason },
+			Object.assign(async (e: unknown) => e, budget),
+		);
+	const lastStatus = (shown: FakeCall[]) => of(shown, "ui.status").at(-1);
+
+	test("R7 (F77): a value saved through the flow that is in the reason leaves the reason as the request R2 text, and nothing shows the value", async () => {
+		const value = "orchard-river-value";
+		const files: Record<string, FakeFile> = {
+			".env": { text: `${PASSWORD}=\n` },
+		};
+		const { api, shown } = await start(files, ".env", { run: mac(value) });
+		await ask(api, `Use ${value} for the database`);
+		await secrets(api, `set ${PASSWORD}`);
+		await idle();
+		expect(files[".env"]?.text).toBe(`${PASSWORD}='${value}'\n`);
+		const { id } = requests.current() ?? { id: "" };
+		expect(requests.current()).toEqual({
+			id,
+			name: PASSWORD,
+			reason: REASON_HIDDEN,
+			state: "ready",
+		});
+		const seen = JSON.stringify([
+			await band(api),
+			await pane(api),
+			ui.outcome(),
+			lastStatus(shown),
+		]);
+		expect(seen).toContain(REASON_HIDDEN);
+		expect(seen).not.toContain(value);
+	});
+
+	test("R7 (F77): a value saved through the flow that is the name itself clears the request, and no row is built from the name again", async () => {
+		const files: Record<string, FakeFile> = {
+			".env": { text: `${PASSWORD}=\n` },
+		};
+		const { api, shown } = await start(files, ".env", { run: mac(PASSWORD) });
+		await ask(api, "for the database");
+		await secrets(api, `set ${PASSWORD}`);
+		await idle();
+		expect(files[".env"]?.text).toBe(`${PASSWORD}='${PASSWORD}'\n`);
+		expect(requests.current()).toBeUndefined();
+		expect(await band(api)).toBe(OTHER);
+		const seen = JSON.stringify([
+			await pane(api),
+			ui.outcome(),
+			lastStatus(shown),
+		]);
+		expect(seen).toContain("hidden, because it holds a secret value");
+		expect(seen).not.toContain(PASSWORD);
+	});
+
+	test("R7 (F77): a load clears an outcome whose name now holds a known value", async () => {
+		const disk: Record<string, FakeFile> = { ".env": { text: "A=1\n" } };
+		const { api } = await start(disk);
+		ui.setOutcome({ kind: "manual", name: PASSWORD, file: ".env" });
+		disk[".env"] = { text: `OTHER_KEY=${PASSWORD}\n` };
+		await secrets(api, "refresh");
+		expect(ui.outcome()).toBeUndefined();
+	});
+
+	test("R7 (F77): between a save's learn and its load, the band and the pane show neither the value nor a name that holds it", async () => {
+		const value = "orchard-river-value";
+		const { api } = await start({ ".env": { text: `${PASSWORD}=\n` } });
+		requests.ask(PASSWORD, `Use ${value} for the database`);
+		enrollment.learn(".env", PASSWORD, value);
+		const reasonSeen = JSON.stringify([await band(api), await pane(api)]);
+		expect(reasonSeen).toContain(REASON_HIDDEN);
+		expect(reasonSeen).not.toContain(value);
+		requests.ask(PASSWORD, "for the database");
+		enrollment.learn(".env", "OTHER_KEY", PASSWORD);
+		expect(await band(api)).toBe(OTHER);
+		expect(JSON.stringify(await pane(api))).not.toContain(PASSWORD);
+	});
+});
+
+describe("R2, R4 (F80) buttons act only for the request they were drawn for", () => {
+	const VALUE = `V${fake.secret(25)}`;
+	const both = (): Record<string, FakeFile> => ({
+		".env": { text: "OLD_KEY=\nNEW_KEY=\n" },
+	});
+	/** A write, or the dialog that asks for a value. */
+	const wrote = (calls: FakeCall[]) =>
+		calls.filter(
+			(c) =>
+				c.noun === "fs.write" ||
+				(c.noun === "process.run" &&
+					(c.args[0] as string[])[0] === "osascript"),
+		);
+
+	test("R2 (F80): the band's Enter drawn for OLD_KEY, pressed after NEW_KEY replaced it, opens no dialog and saves nothing", async () => {
+		const files = both();
+		const { api, calls } = await start(files, ".env", { run: mac(VALUE) });
+		requests.ask("OLD_KEY", "old");
+		const old = await band(api);
+		requests.ask("NEW_KEY", "new");
+		const before = wrote(calls).length;
+		await press(old, "blindfold-enter");
+		await idle();
+		expect(wrote(calls).length).toBe(before);
+		expect(files[".env"]?.text).toBe("OLD_KEY=\nNEW_KEY=\n");
+		expect(requests.current()?.name).toBe("NEW_KEY");
+	});
+
+	test("R2 (F80): the band's Continue drawn for OLD_KEY submits nothing for a ready NEW_KEY, and Dismiss keeps it open", async () => {
+		const { api, after } = await start({
+			".env": {
+				text: `OLD_KEY=${fake.secret(24)}\nNEW_KEY=${fake.secret(24)}\n`,
+			},
+		});
+		requests.ask("OLD_KEY", "old");
+		requests.sync(enrollment.status());
+		const old = await band(api);
+		requests.ask("NEW_KEY", "new");
+		requests.sync(enrollment.status());
+		await press(old, "blindfold-continue");
+		await press(old, "blindfold-dismiss");
+		await idle();
+		expect(of(after(), "prompt.submit")).toEqual([]);
+		expect(requests.current()?.name).toBe("NEW_KEY");
+	});
+
+	test("R2 (F80): a file choice drawn for OLD_KEY, pressed after NEW_KEY replaced it, changes no setting", async () => {
+		const { api, sets } = await start({
+			".env": { text: "A=1\n", isLink: true },
+		});
+		requests.ask("OLD_KEY", "old");
+		const old = await band(api);
+		requests.ask("NEW_KEY", "new");
+		await press(old, "blindfold-use-.env.local");
+		await idle();
+		expect(sets).toEqual([]);
+	});
+
+	test("R2 (F80): a request cleared or replaced while next draws is checked again after it", async () => {
+		const { api } = await start(both());
+		const e = {
+			surface: "terminal",
+			component: "AbovePrompt",
+			requestId: "band",
+			props: {
+				hasSurvey: false,
+				isWorking: false,
+				maxRows: 10,
+				bodyColumns: 80,
+			},
+		};
+		const drawn = async (change: () => void) => {
+			const below = gate();
+			const tree = hooks().get(BAND)?.(api, e, async () => {
+				await below.wait;
+				return OTHER;
+			});
+			change();
+			below.open();
+			return (await tree) as FakeElement;
+		};
+		requests.ask("OLD_KEY", "old");
+		expect(await drawn(() => requests.clear())).toBe(OTHER);
+		requests.ask("OLD_KEY", "old");
+		const tree = await drawn(() => void requests.ask("NEW_KEY", "new"));
+		expect(JSON.stringify(tree)).toContain("Claude asks for NEW_KEY: new.");
+		expect(JSON.stringify(tree)).not.toContain("OLD_KEY");
+	});
+
+	test("R4 (F80): the pane's Enter, Dismiss, and Continue drawn for OLD_KEY do nothing once NEW_KEY replaced it", async () => {
+		const files: Record<string, FakeFile> = {
+			".env": { text: `OLD_KEY=${fake.secret(24)}\nNEW_KEY=\n` },
+		};
+		const { api, calls, after } = await start(files, ".env", {
+			run: mac(VALUE),
+		});
+		requests.ask("OLD_KEY", "old");
+		requests.sync(enrollment.status());
+		const old = await pane(api);
+		requests.ask("NEW_KEY", "new");
+		const before = wrote(calls).length;
+		await press(old, "enter:.env:OLD_KEY");
+		await press(old, "continue");
+		await press(old, "dismiss");
+		await idle();
+		expect(wrote(calls).length).toBe(before);
+		expect(of(after(), "prompt.submit")).toEqual([]);
+		expect(requests.current()?.name).toBe("NEW_KEY");
+	});
+
+	test("R4 (F80): the pane's file choice drawn for OLD_KEY changes no setting once NEW_KEY replaced it", async () => {
+		const { api, sets } = await start({
+			".env": { text: "A=1\n", isLink: true },
+		});
+		requests.ask("OLD_KEY", "old");
+		const old = await pane(api);
+		requests.ask("NEW_KEY", "new");
+		await press(old, "use:.env.local");
+		await idle();
+		expect(sets).toEqual([]);
 	});
 });

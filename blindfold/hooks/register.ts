@@ -43,6 +43,7 @@ import {
 	onCommand,
 	onCommandCatch,
 	onPane,
+	rescan,
 	screenOf,
 } from "./ui.ts";
 
@@ -55,9 +56,11 @@ export const requests = createRequests();
 /** ui R3: the last flow outcome, and the redraw after each change. */
 export const ui = createUi(enrollment, requests);
 
-// request R4, R5: every load, restart, and forget syncs the request, whoever started it. ui R3 (F71): then the status line and a redraw.
+// ui R7 (F77): every load, restart, and forget first scans the request and the outcome with the values known now.
+// request R4, R5: then it syncs the request, whoever started it. ui R3 (F71): then the status line and a redraw.
 // ui R4: then the git state of the listed files, which redraws again when it comes.
 enrollment.watch(() => {
+	rescan(ui);
 	if (requests.current()) requests.sync(enrollment.status());
 	ui.redraw();
 	ui.probe();

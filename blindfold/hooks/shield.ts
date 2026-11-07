@@ -20,6 +20,7 @@ import {
 	ENV_FILES_KEY,
 	type Enrollment,
 	ensureLoaded,
+	holdsKnown,
 	load,
 	parseList,
 	refreshIfNamed,
@@ -243,10 +244,12 @@ export const watchRewrites = (listener: () => void): void => {
 	counted = listener;
 };
 
-/** ui R4 (F75): 1 per distinct name with a `known` hit, not 1 per hit. */
-function countRewrite(hits: readonly Hit[]): void {
+/** ui R4 (F75): 1 per distinct name with a `known` hit, not 1 per hit. ui R7 (F78): a name that holds a known value, which enroll hides, is never a key. */
+function countRewrite(hits: readonly Hit[], set: KnownSet): void {
 	const names = new Set(
-		hits.flatMap((h) => (h.kind === "known" ? [h.name] : [])),
+		hits.flatMap((h) =>
+			h.kind === "known" && !holdsKnown(h.name, set) ? [h.name] : [],
+		),
 	);
 	for (const name of names) rewrites.set(name, (rewrites.get(name) ?? 0) + 1);
 	if (names.size > 0) counted();
@@ -266,7 +269,7 @@ function guardResult(out: ToolCallResult, set: KnownSet, clock: Clock) {
 	if (scan.status === "unscannable") return withheld(scan.reason);
 	// pass keeps the same object, so core keeps `ref`.
 	if (scan.status === "clean") return out;
-	countRewrite(scan.hits);
+	countRewrite(scan.hits, set);
 	return out.deny !== undefined
 		? { deny: scan.value as string }
 		: rewritten(out, scan.value as Scanned);

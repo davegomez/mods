@@ -1836,6 +1836,27 @@ describe("ui R4 (F75) rewrite counts", () => {
 		for (const n of rewriteCounts().values()) expect(typeof n).toBe("number");
 	});
 
+	test("ui R7 (F78): a name that holds a known value is no count key, and the other name still counts", async () => {
+		resetRewriteCounts();
+		const kept = "orchard_secret42";
+		const second = "second-madeup-value";
+		const { api } = fakeApi({
+			".env": { text: `API_KEY=${kept}\n${kept}_TOKEN=${second}\n` },
+		});
+		const enrollment = createEnrollment();
+		await load(api, enrollment, ".env");
+		expect(JSON.stringify(enrollment.status())).not.toContain(kept);
+		const { next } = nextOf({ result: `${second} ${kept}` });
+		await onToolCall(
+			api,
+			enrollment,
+			e as Parameters<typeof onToolCall>[2],
+			next,
+			".env",
+		);
+		expect(counts()).toEqual({ API_KEY: 1 });
+	});
+
 	test("ui R4 (F75): a masked deny from below and a masked error each add 1", async () => {
 		resetRewriteCounts();
 		await call(e, { deny: `no: ${envValue}` });

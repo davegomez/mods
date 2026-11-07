@@ -28,6 +28,7 @@ import {
 	continueRequest,
 	type Request,
 	type Requests,
+	redacted,
 	validName,
 } from "./request.ts";
 import { clockFor, guardText, rewriteCounts } from "./shield.ts";
@@ -365,6 +366,32 @@ export function createUi(enrollment: Enrollment, requests: Requests) {
 
 export type Ui = ReturnType<typeof createUi>;
 
+/** A name or a reason is short (request R2), so its scan needs no deadline. */
+const UNTIMED = { now: () => 0, deadline: Number.POSITIVE_INFINITY };
+
+/** R7 (F77): true when `text` holds a value known now, or any other detector hit (request R2). */
+const secretIn = (enrollment: Enrollment) => {
+	const set = enrollment.knownSet();
+	return (text: string) => guardText(text, set, UNTIMED).kind !== "pass";
+};
+
+/** R7 (F77): after each load. A value learned since can turn the request or the outcome into a secret. */
+export function rescan(ui: Ui): void {
+	const isSecret = secretIn(ui.enrollment);
+	ui.requests.redact(isSecret);
+	const outcome = ui.outcome();
+	if (
+		outcome &&
+		(isSecret(outcome.name) || ("file" in outcome && isSecret(outcome.file)))
+	) {
+		ui.setOutcome(undefined);
+	}
+}
+
+/** R2, R4 (F77): the open request as a render may show it now. */
+const shownRequest = (ui: Ui): Request | undefined =>
+	redacted(ui.requests.current(), secretIn(ui.enrollment));
+
 /**
  * R5 step 1 (Q41, F34): the file choice when no listed file can take a value, else the line to add by hand (`never`,
  * choice 2). Every caller runs after the first load: the command loads first, and the band and the pane rows exist only after one.
@@ -441,6 +468,8 @@ export function startFlow(
 		return { text: addByHand(ui, name), done: Promise.resolve() };
 	}
 	ui.busy = true;
+	// F81: the last outcome belongs to the flow before.
+	ui.setOutcome(undefined);
 	const request = ui.requests.current();
 	const reason =
 		(request?.name === name && request.reason) ||
@@ -468,8 +497,8 @@ async function enterAndSave(
 				? await io.enter(platform, name, reason)
 				: UNAVAILABLE;
 		if (entered.kind === "cancel") {
-			// F70: unavailable before the other cancels, which keep the outcome and the open request (design 1g).
-			if (entered.why === "unavailable") {
+			// F70: unavailable before the other cancels, which keep the open request (design 1g). F79: only inside the fence.
+			if (entered.why === "unavailable" && fenceOf(ui) === fence) {
 				finish(ui, io, { kind: "manual", name, file });
 			}
 			return;
@@ -487,8 +516,8 @@ async function enterAndSave(
 					: undefined,
 		);
 	} catch {
-		// The error is dropped unread: it could hold the value.
-		finish(ui, io, { kind: "manual", name, file });
+		// The error is dropped unread: it could hold the value. F79: only inside the fence.
+		if (fenceOf(ui) === fence) finish(ui, io, { kind: "manual", name, file });
 	} finally {
 		ui.busy = false;
 	}
@@ -510,8 +539,11 @@ export async function chooseFile(
 		return;
 	}
 	ui.busy = true;
+	const fence = fenceOf(ui);
 	try {
 		const added = await io.addFile(file).catch(() => "denied" as const);
+		// F79: a Dismiss or a session end meanwhile keeps the outcome it cleared.
+		if (fenceOf(ui) !== fence) return;
 		finish(
 			ui,
 			io,
@@ -600,11 +632,13 @@ export async function onBand(
 	next: (e: Band) => Promise<RenderElement>,
 	settings: FlowSettings,
 ): Promise<RenderElement> {
-	const request = ui.requests.current();
-	if (e.props.hasSurvey || !request) return next(e);
+	if (e.props.hasSurvey || !ui.requests.current()) return next(e);
 	const below = await next(e);
+	// F80: the request again, since a Dismiss or a new request can come while next draws.
+	const request = shownRequest(ui);
+	if (!request) return below;
 	const { Box, Button, Text } = $.ui.resolve(e);
-	const { name, reason, state } = request;
+	const { id, name, reason, state } = request;
 	const asks = `Claude asks for ${name}${reason ? `: ${reason.replace(/\.$/, "")}` : ""}.`;
 	const button = (
 		key: string,
@@ -617,7 +651,10 @@ export async function onBand(
 			hotkey,
 			label,
 			plain: true,
-			onPress: () => void onPress(),
+			// F80: every band button is for the request it was drawn for.
+			onPress: () => {
+				if (ui.requests.current()?.id === id) void onPress();
+			},
 		});
 	const toast = (text: string) => $.ui.toast(text);
 	const file = targetFile(ui.enrollment.status());
@@ -641,7 +678,7 @@ export async function onBand(
 		state === "ready"
 			? [
 					button("continue", "4", "Continue", () =>
-						continueRequest($, ui.enrollment, ui.requests),
+						continueRequest($, ui.enrollment, ui.requests, id),
 					),
 					button("dismiss", "3", "Dismiss", () => dismiss(ui)),
 				]
@@ -685,7 +722,8 @@ export async function onPane(
 ): Promise<RenderElement> {
 	if (e.requestId !== PANE_ID) return next(e);
 	const { Box, Button, Text } = $.ui.resolve(e);
-	const request = ui.requests.current();
+	// F77: a name that holds a value known now gives no row and no action.
+	const request = shownRequest(ui);
 	const status = ui.enrollment.status();
 	const rows = rowsOf(status, request, rewriteCounts(), ui.git());
 	const direction = e.props.bodyColumns < 60 ? "column" : "row";
@@ -705,22 +743,34 @@ export async function onPane(
 					.then(onPress)
 					.catch(() => $.ui.toast(ACTION_FAILED)),
 		});
+	/** F80: an action for the request does nothing once another request is open. */
+	const forRequest = (act: () => unknown) => (): unknown =>
+		ui.requests.current()?.id === request?.id ? act() : undefined;
 	let requestedRow = true;
 	const actions = (row: Row) => {
 		if (row.hidden || row.name === "") return [];
 		const requested = requestedRow && row.name === request?.name;
 		if (requested) requestedRow = false;
+		const start = () =>
+			$.ui.toast(
+				startFlow(ui, row.name, flowIoOf($, ui.enrollment), settings).text,
+			);
 		const enter = button(
 			`enter:${row.file}:${row.name}`,
 			"Enter value",
-			() =>
-				$.ui.toast(
-					startFlow(ui, row.name, flowIoOf($, ui.enrollment), settings).text,
-				),
+			requested ? forRequest(start) : start,
 			requested ? "e" : undefined,
 		);
 		if (!requested) return [enter];
-		return [enter, button("dismiss", "Dismiss", () => dismiss(ui), "d")];
+		return [
+			enter,
+			button(
+				"dismiss",
+				"Dismiss",
+				forRequest(() => dismiss(ui)),
+				"d",
+			),
+		];
 	};
 	const line = (key: string, children: RenderElement[]) =>
 		Box({ key, flexDirection: direction, gap: 1, children });
@@ -742,8 +792,12 @@ export async function onPane(
 						line("choose", [
 							Text({ children: `Pick the env file for ${chosen}:` }),
 							...CHOICES.map((choice) =>
-								button(`use:${choice}`, `Use ${choice}`, () =>
-									chooseFile(ui, chosen, choice, flowIoOf($, ui.enrollment)),
+								button(
+									`use:${choice}`,
+									`Use ${choice}`,
+									forRequest(() =>
+										chooseFile(ui, chosen, choice, flowIoOf($, ui.enrollment)),
+									),
 								),
 							),
 						]),
@@ -767,7 +821,8 @@ export async function onPane(
 							button(
 								"continue",
 								"Continue",
-								() => continueRequest($, ui.enrollment, ui.requests),
+								() =>
+									continueRequest($, ui.enrollment, ui.requests, request.id),
 								"c",
 							),
 						]
