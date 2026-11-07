@@ -37,7 +37,7 @@ export type SaveMode = "ask" | "always" | "never";
 class Refusal extends Error {}
 
 /** R2 (F52): only characters no git pattern or pathspec treats as special. No segment is empty, `.`, `.git`, or starts with `-`. */
-function spellingOk(path: string): boolean {
+export function spellingOk(path: string): boolean {
 	if (!/^[A-Za-z0-9._/-]+$/.test(path) || parseList(path)[0]?.refused) {
 		return false;
 	}
@@ -91,6 +91,56 @@ async function appendIgnore(
 	);
 }
 
+/** R3: 1 git command in `cwd`. Rejects when git does not start. */
+function git($: EngineInterface, cwd: string, args: readonly string[]) {
+	return $.process.run(["git", ...args], { cwd });
+}
+
+async function ignoredCode(
+	$: EngineInterface,
+	cwd: string,
+	path: string,
+): Promise<number> {
+	return (await git($, cwd, ["check-ignore", "-q", "--", `./${path}`]))
+		.exitCode;
+}
+
+export type GitProbe =
+	| "outside"
+	| "tracked"
+	| "ignored"
+	| "not-ignored"
+	| "failed";
+
+/**
+ * R3, Q36: what the read-only commands say of the root-relative `path`, with `cwd` the root. A rev-parse that does not start
+ * is `outside`; a later command that does not start rejects. `ui` R4 shows it too.
+ */
+export async function probeGit(
+	$: EngineInterface,
+	cwd: string,
+	path: string,
+): Promise<GitProbe> {
+	const inside = await git($, cwd, [
+		"rev-parse",
+		"--is-inside-work-tree",
+	]).catch(() => undefined);
+	if (inside?.exitCode !== 0 || inside.stdout.trim() !== "true") {
+		return "outside";
+	}
+	const listed = await git($, cwd, [
+		"--literal-pathspecs",
+		"ls-files",
+		"--error-unmatch",
+		"--",
+		path,
+	]);
+	if (listed.exitCode === 0) return "tracked";
+	if (listed.exitCode !== 1) return "failed";
+	const ignored = await ignoredCode($, cwd, path);
+	return ignored === 0 ? "ignored" : ignored === 1 ? "not-ignored" : "failed";
+}
+
 /** R3, Q36, F48: true when this save made git ignore `path`. Only the exit codes the spec names let the save go on. */
 async function ensureIgnored(
 	$: EngineInterface,
@@ -98,37 +148,21 @@ async function ensureIgnored(
 	path: string,
 	folder: string,
 ): Promise<boolean> {
-	const git = (args: string[], cwd = root.real) =>
-		$.process.run(["git", ...args], { cwd });
 	// F59: the checks below see only the root's index, so the target's folder must be in the root's work tree, or both in none (Q36).
 	const top = (cwd: string) =>
-		git(["rev-parse", "--show-toplevel"], cwd).then(
+		git($, cwd, ["rev-parse", "--show-toplevel"]).then(
 			(r) => (r.exitCode === 0 ? r.stdout.replace(/\r?\n$/, "") : undefined),
 			() => undefined,
 		);
 	if ((await top(folder)) !== (await top(root.real))) {
 		throw new Refusal("nested-repository");
 	}
-	const probe = await git(["rev-parse", "--is-inside-work-tree"]).catch(
-		() => undefined,
-	);
-	if (probe?.exitCode !== 0 || probe.stdout.trim() !== "true") return false;
-	const listed = await git([
-		"--literal-pathspecs",
-		"ls-files",
-		"--error-unmatch",
-		"--",
-		path,
-	]);
-	if (listed.exitCode === 0) throw new Refusal("tracked");
-	if (listed.exitCode !== 1) throw new Refusal("git-failed");
-	const ignored = async () =>
-		(await git(["check-ignore", "-q", "--", `./${path}`])).exitCode;
-	const first = await ignored();
-	if (first === 0) return false;
-	if (first !== 1) throw new Refusal("git-failed");
+	const probe = await probeGit($, root.real, path);
+	if (probe === "outside" || probe === "ignored") return false;
+	if (probe === "tracked") throw new Refusal("tracked");
+	if (probe === "failed") throw new Refusal("git-failed");
 	await appendIgnore($, root, path);
-	const again = await ignored();
+	const again = await ignoredCode($, root.real, path);
 	if (again === 1) throw new Refusal("not-ignored");
 	if (again !== 0) throw new Refusal("git-failed");
 	return true;
