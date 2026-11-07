@@ -233,8 +233,8 @@ Commands, run for every task: the 4 above.
 
 `SPEC-request.md` R1 to R6.
 
-- [ ] The tool registers at `session.start` and answers without `next`. Every R4 row has a test. Continue consumes before the submit.
-- [ ] `enroll` reports `why: "empty"`.
+- [x] The tool registers at `session.start` and answers without `next`. Every R4 row has a test. Continue consumes before the submit.
+- [x] `enroll` reports `why: "empty"`.
 - Files: `blindfold/hooks/request.ts`, `blindfold/tests/request.test.ts`, `blindfold/hooks/register.ts`, `blindfold/hooks/enroll.ts`. Size: M.
 
 ## T18. `entry`
