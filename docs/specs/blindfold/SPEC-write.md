@@ -76,4 +76,4 @@ Same as `SPEC-detect.md`, with the 4 commands. Files: `blindfold/hooks/write.ts`
 
 ## Decisions
 
-- Q36. Outside a git work tree, or when git does not start, the git step is skipped, because no commit can take the file. Proposed: accept.
+- Q36. Outside a git work tree, or when git does not start, the git step is skipped, because no commit can take the file. Accepted (agent decision, owner delegated 2026-11-06).

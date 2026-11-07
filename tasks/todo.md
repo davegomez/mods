@@ -219,3 +219,39 @@ Spec: `docs/specs/blindfold/SPEC-shield.md`. Commands, run for every task: the 3
 - [x] Pi reviews `shield.ts` in a herdr pane, and the findings are fixed.
 - [x] The owner approves the live session, and the live check confirms Q26 and R13.
 - [x] The owner approves step 3. Next: `SPEC-request.md`, `SPEC-entry.md`, `SPEC-write.md`.
+
+# Step 4: `request`, `entry`, `write`
+
+Commands, run for every task: the 4 above.
+
+## T16. Load on first use (F46)
+
+- [ ] Each `shield` guard hook and the `request` tool hook call `load` with the current list when the enrollment never loaded. A test makes a new enrollment, fires `tool.call` without `session.start`, and the known value is masked.
+- Files: `blindfold/hooks/enroll.ts`, `blindfold/hooks/shield.ts`, `blindfold/hooks/register.ts`, `blindfold/tests/shield.test.ts`. Size: S.
+
+## T17. `request`
+
+`SPEC-request.md` R1 to R6.
+
+- [ ] The tool registers at `session.start` and answers without `next`. Every R4 row has a test. Continue consumes before the submit.
+- [ ] `enroll` reports `why: "empty"`.
+- Files: `blindfold/hooks/request.ts`, `blindfold/tests/request.test.ts`, `blindfold/hooks/register.ts`, `blindfold/hooks/enroll.ts`. Size: M.
+
+## T18. `entry`
+
+`SPEC-entry.md` R1 to R6.
+
+- [ ] `nativeCommand`, `readNative`, `maskStep`, `detectPlatform`, `enterNative` with tests for each rule. `plugin.json` has `inputMethod`.
+- Files: `blindfold/hooks/entry.ts`, `blindfold/tests/entry.test.ts`, `blindfold/.claude-plugin/plugin.json`. Size: M.
+
+## T19. `write`
+
+`SPEC-write.md` R1 to R12.
+
+- [ ] Each step refuses in a test, the call order is checked, and no argv holds the value. `plugin.json` has `saveToEnvFile`.
+- Files: `blindfold/hooks/write.ts`, `blindfold/tests/write.test.ts`, `blindfold/.claude-plugin/plugin.json`. Size: M.
+
+## Checkpoint F
+
+- [ ] The 4 commands pass.
+- [ ] Pi reviews `request.ts`, `entry.ts`, and `write.ts`. High findings are fixed.

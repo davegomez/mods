@@ -86,3 +86,16 @@ Independent review by Pi in a herdr pane. Then the live check in `SPEC-shield.md
 | Q26: core does not map a new `result` when `text` is missing | High: the model reads the unmasked text | The live check tests it. Fallback in the spec: masked text in `{ deny }`. |
 | The `claude-code/testing` kit cannot fire some of the 11 events | Medium: a path without a handler test | The worker calls the handler function directly with `fakeApi` and a fake `next`, as `smoke.test.ts` does. |
 | A scan on every `session.append` and `prompt.attachment` slows the session | Low | T12 measures 2 Mi characters. The known-value set is cached in `enroll`. |
+
+# Step 4: `request`, `entry`, `write`
+
+Specs: `SPEC-request.md`, `SPEC-entry.md`, `SPEC-write.md` (Q34 to Q38 accepted as agent decisions, owner delegated 2026-11-06), and F46 in `SPEC-enroll.md`. Tasks: `tasks/todo.md`, T16 to T19. 1 `worker-high` per task, in sequence, because they share `register.ts`, `enroll.ts`, and `plugin.json`. Pi reviews the 3 specs before T17 starts.
+
+- [ ] T16. F46: load on first use after a reload.
+- [ ] T17. `request`: the tool, the lifecycle, Continue, and the `"empty"` name state.
+- [ ] T18. `entry`: platform, the native dialogs, `readNative`, `maskStep`, `inputMethod`.
+- [ ] T19. `write`: the save order and `saveToEnvFile`.
+
+### Checkpoint F: step 4 done
+
+The 4 commands pass. 1 Pi review of the 3 modules. High findings are fixed at once. The live gates G1 to G3 run at milestone 5, when `ui` can start entry and write.

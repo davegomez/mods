@@ -87,5 +87,5 @@ Same as `SPEC-detect.md`, with the 4 commands. Files: `blindfold/hooks/entry.ts`
 
 ## Decisions
 
-- Q34. A mod earlier in the hook chain can see the value in `ui.input`, `process.run`, and `fs.write`. blindfold cannot hide a call from those hooks. Other mods are trusted, and the README states this next to the promise. Proposed: accept.
-- Q35. The terminal field stays off until G2 shows that the host draws the controlled `value` (the dots). Until then, `auto` uses the native dialog, and a platform without one tells the user to edit the file. If G2 passes, the field turns on as in Q10. Proposed: accept.
+- Q34. A mod earlier in the hook chain can see the value in `ui.input`, `process.run`, and `fs.write`. blindfold cannot hide a call from those hooks. Other mods are trusted, and the README states this next to the promise. Accepted (agent decision, owner delegated 2026-11-06).
+- Q35. The terminal field stays off until G2 shows that the host draws the controlled `value` (the dots). Until then, `auto` uses the native dialog, and a platform without one tells the user to edit the file. If G2 passes, the field turns on as in Q10. Accepted (agent decision, owner delegated 2026-11-06).
