@@ -476,7 +476,10 @@ function isEnvFile(path: string, list: string): boolean {
 	});
 }
 
-/** R10 (Q27): other files pass, and R8 scans their text. R15 (Q32): a deny from below is masked, since a deny after next holds (d.ts:9450). */
+/**
+ * R10 (Q27): other files pass, and R8 scans their text. R15 (Q32): a deny from below is masked, since a deny after next holds (d.ts:9450).
+ * R10 (F44, Q33): a context from below cannot be changed (d.ts:9439), so a hit or a stop in it refuses.
+ */
 export async function onPromptMention(
 	_$: Args<"prompt.mention">[0],
 	enrollment: Enrollment,
@@ -485,7 +488,14 @@ export async function onPromptMention(
 ): Promise<PromptMentionResult> {
 	if (isEnvFile(e.path, enrollment.listed())) return REFUSED_MENTION;
 	const out = await next(e);
-	return maskBelow(out, "deny", enrollment.knownSet(), clockOf(next));
+	const set = enrollment.knownSet();
+	const clock = clockOf(next);
+	if (
+		out.context !== undefined &&
+		guardValue(out.context, set, clock).kind !== "pass"
+	)
+		return REFUSED_MENTION;
+	return maskBelow(out, "deny", set, clock);
 }
 
 /** R10, P5: a deny after next still holds, since the host forgets a read already made (d.ts:9427). */

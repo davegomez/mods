@@ -1051,6 +1051,24 @@ describe("R10 prompt.mention", () => {
 		expect(result.deny).toBe(unscannedBelow("too-large"));
 	});
 
+	test("R10 (F44, Q33): a value in the context from below refuses the mention", async () => {
+		const result = await mentionBelow({
+			type: "file",
+			context: ["clean", `token ${envValue}`],
+		});
+		expect(result).toEqual(REFUSED_MENTION);
+	});
+
+	test("R10 (F44, Q33): a context from below it cannot scan refuses the mention", async () => {
+		const result = await mentionBelow({ type: "file", context: [tooLarge()] });
+		expect(result).toEqual(REFUSED_MENTION);
+	});
+
+	test("R10 (F44, Q33): a clean context from below is the same object", async () => {
+		const below = { type: "file", context: ["clean notes"] };
+		expect(await mentionBelow(below)).toBe(below);
+	});
+
 	test("R10 (Q27): with no list, a .env base name is still a deny", async () => {
 		const { next, passed } = nextOf<MentionNext>(read);
 		const result = await onPromptMention(

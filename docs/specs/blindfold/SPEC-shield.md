@@ -57,7 +57,7 @@ R8. `prompt.attachment` (`d.ts:8554`). Scan `text`. Rewrite on a hit. Return `{ 
 
 R9. `skill.prompt` (`d.ts:12946`). Scan `text`. Rewrite on a hit. On `stop` and in `.catch`, return `{ text: "blindfold withheld this skill text." }`.
 
-R10. `prompt.mention` (`d.ts:9387`). Refuse with `{ deny }` when the path is a listed env file, or when its base name is `.env` or starts with `.env.`. Other files pass, and R8 scans their text (Q27). `.catch`: `{ deny }`.
+R10. `prompt.mention` (`d.ts:9387`). Refuse with `{ deny }` when the path is a listed env file, or when its base name is `.env` or starts with `.env.`. Other files pass, and R8 scans their text (Q27). After `next`, the `context` it returns is scanned. A hit or a `stop` refuses the mention with `{ deny }`, because the host lets a hook neither change nor remove a `context` entry (d.ts:9439), and a deny after `next` drops it (d.ts:9450) (F44, Q33). `.catch`: `{ deny }`.
 
 R11. `agent.spawn` (`d.ts:261`). Scan `prompt` and `description`. A hit or `stop` is `{ deny }`. `.catch`: `next.called ? next(e) : { deny }`.
 
@@ -130,3 +130,4 @@ Same as `SPEC-detect.md`, plus `cd blindfold && bunx tsc -p .` (Q24). Files: `bl
 - Q29. A prompt with a pinned slash command and a hit in its text is dropped, because the host does not apply a text rewrite then. Accepted.
 - Q30. A context rule hit alone in tool arguments does not refuse the call. Code such as `password = "…"` in an `Edit` call is common, and the context rules are the least precise detectors (design 1a). Known values, private keys, and vendor prefixes still refuse. Accepted.
 - Q32. R15 covers the texts that blindfold writes. A refusal text from below is masked where the host allows a changed text after next and the model or a log reads it. Env names in text from below are not hidden, because markers show names (F40, F42). Accepted.
+- Q33. A mention whose `context` from below holds a secret is refused, not masked, because the host forbids a changed `context` after `next`. Accepted.
