@@ -45,7 +45,7 @@ R9. Mode, step `mode`. For a file that R4 created, read its mode with `["stat", 
 
 R10. Status. After `verify` and `mode`: `load` with the current list, so the status shows the name as set and `request` can move to ready. After a failure in `write`, `verify`, or `mode`, also `load`, so the status shows what is on disk and a ready request moves back to pending (F61). The value learned in R7 stays learned after a failure (enroll R5).
 
-R11. No file listed (Q9). When no listed file exists, `ui` asks which file to use: `.env`, `.env.local`, or a typed name. The choice goes through `addFile` (enroll R9). `ui` offers this only after the first status has loaded (F34).
+R11. No file listed (Q9, Q41). When no listed file can take a value, `ui` asks which file to use: `.env` or `.env.local`. The choice goes through `addFile` (enroll R9). `ui` offers this only after the first status has loaded (F34).
 
 R12. No leak. The value goes only to `setValue`, `$.fs.write`, and `learn`. A `Saved` result, an error, a toast, and a log hold the step and a fixed reason, never the value. A mod earlier in the hook chain sees the `fs.write` text (Q34).
 

@@ -14,10 +14,11 @@ Success: when Claude calls `request_secret`, the user sees the request, enters t
 
 ```ts
 // Pure:
-export type Row = { name: string; file: string; state: "Set" | "Requested" | "Empty" | "Missing" | "Stale" | "Refused"; gitWarning?: "not-ignored" | "tracked"; rewrites: number };
+export type Row = { name: string; file: string; state: "Set" | "Requested" | "Empty" | "Missing" | "Stale" | "Refused"; hidden: boolean; gitWarning?: "not-ignored" | "tracked"; rewrites: number };
 export function rowsOf(status: Status, request: Request | undefined, counts: ReadonlyMap<string, number>, git: ReadonlyMap<string, GitState>): Row[]; // R4
 export function parseCommand(args: string): Command;                 // R1
-export function statusLine(status: Status, request: Request | undefined): string | undefined; // R3
+export function canonicalArgs(command: Command): string;             // R1, F64
+export function statusLine(status: Status, request: Request | undefined, outcome: Outcome | undefined): string | undefined; // R3, F74
 // Thin: the hooks for command.run, ui.render (Pane and AbovePrompt), and the flow in R5.
 ```
 
@@ -31,34 +32,49 @@ R1. Command. At `session.start`, `$.command.register({ name: "secrets", descript
 - `dismiss`: clear the open request,
 - `refresh`: `load` with the current list.
 
-`NAME` must pass `request.validName`. Any other argument is refused with the toast "blindfold: /secrets takes a name, never a value." and nothing else happens, because the command line is stored in the transcript (Q39).
+`NAME` must pass `request.validName`, and `NAME` with a known-value hit from `detect` is refused (F64). Any other argument is refused, because the command line is stored in the transcript (Q39). A refusal shows the toast "blindfold: /secrets takes a name, never a value." and the same text as the command's own `{ text }` answer, so it is not only a toast (F74).
 
-R2. Band. While a request is open, a `ui.render` hook on `{ component: "AbovePrompt" }` adds 1 line to the tree that `next` returns (the band is shared with other mods): "Claude asks for NAME: <reason>." and buttons with hotkeys (`d.ts:1093`). Pending: `1` Enter it (or Save it, per R5), `2` Add it myself, `3` Dismiss. Ready: `4` Continue, `3` Dismiss. The reason is drawn as plain `Text` (request R2). When the request opens, `$.ui.toast("blindfold: Claude asks for NAME. Run /secrets or use the band.")`.
+The hook rewrites `e.args` to `canonicalArgs(command)` before anything else: the parsed form (`set NAME`) or `""` for a refusal. It passes that through `next({ ...e, args })`, then answers with its own `{ text }`. The declarations name `command.run` as the place to mask arguments (`d.ts:9741`). Whether the stored command line then holds only the canonical form is checked live in G2. A value that the shield does not know and that passes as a name cannot be told from a name. The README states this limit (F64).
 
-R3. Status line. `$.ui.status(statusLine(...))` after each load and each request change (`d.ts:2506`). A degraded shield comes first: "blindfold: degraded, <file> could not be read. New values may not be hidden." Then an open request: "blindfold: NAME requested, run /secrets". Otherwise `undefined`. A stale file never reads as Set (design 1g).
+R2. Band. While a request is open and `e.props.hasSurvey` is false (`d.ts:11064`, F72), a `ui.render` hook on `{ component: "AbovePrompt" }` adds 1 line to the tree that `next` returns (the band is shared with other mods): "Claude asks for NAME: <reason>." and buttons with hotkeys (`d.ts:1093`). Pending: `1` Enter it (or Save it, per R5), `2` Add it myself, `3` Dismiss. Ready: `4` Continue, `3` Dismiss. The reason is drawn as plain `Text`, after the request R2 scan (F65). While `hasSurvey` is true, the hook returns `next(e)` unchanged, and the pane and the status line still show the request. When the request opens, `$.ui.toast("blindfold: Claude asks for NAME. Run /secrets or use the band.")`.
+
+R3. Status line. `$.ui.status(statusLine(...))` after each load, each request change, and each flow outcome (`d.ts:2506`). The order:
+
+1. A degraded shield: "blindfold: degraded, <file> could not be read. New values may not be hidden."
+2. A failed flow outcome (F74): "blindfold: NAME not saved, run /secrets".
+3. An open request: "blindfold: NAME requested, run /secrets".
+4. Otherwise `undefined`.
+
+A stale file never reads as Set (design 1g). The outcome is 1 fixed, value-free text per R5 result, kept in module state until the next flow, a Dismiss, or a session end. The pane shows it too.
+
+Redraw (F71). The host does not see module state. After each load, request change, flow outcome, and count change, call `$.ui.invalidate("ui.render")` (`d.ts:2398`). The host limits the rate.
 
 R4. Pane. `/secrets` calls `$.ui.open({ id: "blindfold", title: "blindfold" })` and a `ui.render` hook on `{ component: "Pane" }` with `e.requestId === "blindfold"` draws:
 
 - 1 row per name in each listed file, and the requested name when it is in no file: the name, the file, the state in words, a git warning in words, and the count of results the shield rewrote for that name in this session. No value and no value length.
+- A row whose name or file `enroll` shows as `[hidden name]` or `[hidden path]` has `hidden: true`. It shows "hidden, because it holds a secret value" and has no action, because the hidden text is not an identity (F73).
+- The last flow outcome (R3).
 - Per row: Enter value (R5), and Dismiss for the requested row. Per file: Forget (`enrollment.forget`), and Refresh.
 - Hotkeys only where they work (1h), the same actions as R1.
 - `e.props.bodyColumns` below 60: 1 column.
 
-The git state per file comes from the `write` R3 commands (read-only: `rev-parse`, `ls-files`, `check-ignore`), run after each load, never during a render. The shield counts rewrites per known name in memory (a number per name, design 1d). This needs 1 change in `shield`: a hit of kind `known` adds 1 to the count of its name.
+The git state per file comes from the `write` R3 commands (read-only: `rev-parse`, `ls-files`, `check-ignore`), run after each load, never during a render. The shield counts rewrites per known name in memory (a number per name, design 1d). This needs 1 change in `shield`: when a tool result is rewritten, each distinct name with a `known` hit in it adds 1 to its count. A scan with no rewrite, and a 2nd hit of the same name in the same result, add nothing (F75).
 
 R5. The flow for 1 name.
 
-1. Target file: the first listed file that is active. When none is active, and only after the first status has loaded (F34), ask which file to use: `.env`, `.env.local`, or a typed name in an `Input` (a file name is not secret). The choice goes through `enroll.addFile`. A `refused` or `denied` result shows its reason and stops.
+1. Target file: the first listed file that is active, else the first listed file that is missing (`write` creates it). Only when no listed file can take the value, and only after the first status has loaded (F34), ask which file to use: `.env` or `.env.local`. There is no typed file name, because typed text can hold a value (F66, Q41). The choice goes through `enroll.addFile`. `refused` shows "blindfold cannot use FILE: it is outside the project, a link, or not a regular file." `denied` shows "The env file setting was not saved." (F69). `added` changes a setting, which reloads the module and clears the request (request R4). The flow then stops with "FILE added. Run /secrets set NAME, or ask Claude again." (F68, Q42).
 2. `saveToEnvFile` (write R1): `ask` shows `1` Enter it here (blindfold saves it to FILE), `2` Add it myself, `3` Dismiss. `always` goes to step 3. `never` and choice `2` show "Add NAME= to FILE in your editor, then press Refresh." and stop.
-3. Entry: `entry.pickMethod` and `entry.enterNative`. A `cancel` stops, and the request stays open (design 1g). `unavailable` shows the text from `never`.
+3. Entry: `entry.pickMethod`, then `entry.enterNative`. The route `unavailable`, and a result `{ kind: "cancel", why: "unavailable" }`, show the text from `never` and stop. Check them before the other cancels (F70). Any other cancel stops, and the request stays open (design 1g).
 4. Save: `write.saveValue`. A failure shows "Not saved: step <step>, <reason>." and names no value. A `mode-repaired` warning shows "Saved. The file was readable by others for a moment." Then `load`, and `request` moves to ready.
 5. Continue: the band or the pane calls `request.continueRequest`.
 
 1 flow runs at a time. A 2nd start while a flow runs shows "blindfold is already asking for a value." The value exists only inside steps 3 and 4 and is never stored in module state, a render prop, `$.state`, or `$.store` (entry R4).
 
+Invalidation (F67). A flow takes the request epoch (`requests.epoch()`, request R4) and the request id when it starts. After entry returns, and before `saveValue`, it stops when the epoch changed, the request id changed, or the session ended. The value is then dropped, and the outcome is "Not saved: the request was cleared." After `saveValue`, the same check decides whether the flow updates the request or the outcome. A session end during `saveValue` can still let `write` learn and load, which only adds masking. The README does not need to state this.
+
 R6. Accessibility (design 1h). Every state in words, never color alone, no dim text for a security fact. Stable `key` on each `Button` and `Input`. No timed instruction. A toast is never the only signal: the pane and the status line hold every state.
 
-R7. No leak. No row, prop, toast, status line, or log holds a value or its length.
+R7. No leak. No row, prop, toast, status line, command answer, outcome, or log holds a value or its length. The request reason and name are scanned first (request R2, F65). A file name is never typed (F66).
 
 ### Not in scope
 
@@ -72,7 +88,8 @@ Same as `SPEC-detect.md`, with the 4 commands. Files: `blindfold/hooks/ui.ts`, `
 
 - Pure tests: `parseCommand` for each form and each refusal, `rowsOf` for each state, `statusLine` order.
 - Hook tests with `fakeApi`: the band adds to the tree from `next` and keeps the other mods' children, the pane renders at 59 and 60 columns, the flow with a fake `entry` and `write` for each branch in R5, 1 flow at a time.
-- R7: the JSON text of every rendered tree, toast, and status line holds no fake value.
+- R7 (F76): 2 fake values of different lengths. The JSON text of every rendered tree, toast, status line, and command answer holds neither value, and is the same for both values. `$.state` and `$.store` writes are recorded and hold neither value.
+- F67: a Dismiss, a user prompt, and a session end during entry each stop the flow before `saveValue`.
 
 ## Boundaries
 
@@ -92,3 +109,6 @@ Same as `SPEC-detect.md`, with the 4 commands. Files: `blindfold/hooks/ui.ts`, `
 
 - Q39. `/secrets` takes a name or nothing. Any other argument is refused with a toast, because the command line is stored in the transcript and a value there is not yet known to the shield. Accepted (agent decision).
 - Q40. The status line shows a degraded shield before an open request, because a degraded shield is the larger risk. Accepted (agent decision).
+- Q41. The file choice offers only `.env` and `.env.local`. Another file goes in the `envFiles` setting. Typed text can hold a value, and a file name goes into the setting and into instructions (F66). This replaces the typed name in write R11 and Q9. Accepted (agent decision).
+- Q42. A missing listed file is a valid target, so the file choice is needed only when no listed file can take a value. Adding a file reloads the module, so the flow stops there and does not try to carry the request across the reload (F68). Accepted (agent decision).
+- Pi review F64 to F76 (`reviews/ui-spec-pi.md`) are applied in R1 to R7 and the testing strategy. Accepted (agent decision).

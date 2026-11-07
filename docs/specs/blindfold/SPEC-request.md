@@ -35,7 +35,7 @@ export function continueRequest($, enrollment, requests): Promise<void>; // R5, 
 
 R1. The tool. At `session.start`, call `$.tool.register({ name: "request_secret", description, inputSchema, isDeferred: false })` (`d.ts:3193`, `d.ts:14343`). The model sees it as `mcp__blindfold__request_secret`. The input schema has `name` (string) and `reason` (string), both required. A `tool.call` hook with the matcher `{ tool: "mcp__blindfold__request_secret" }` answers the call without `next`, because a call that no hook answers fails (`d.ts:3182`). `register.ts` wires this hook after the `shield` hook, so `shield` scans the arguments and the result (R4 and R5 of `SPEC-shield.md`).
 
-R2. Validation. `name` matches `^[A-Za-z_][A-Za-z0-9_]{0,63}$`, and `dotenv.isValidName` accepts it, which refuses `__proto__` (F54). A name that does not match returns `{ deny }` with the rule, and no request is made. `reason` is cut to 120 characters, and control characters are removed. `ui` draws the reason as plain `Text` only.
+R2. Validation. `name` matches `^[A-Za-z_][A-Za-z0-9_]{0,63}$`, and `dotenv.isValidName` accepts it, which refuses `__proto__` (F54). A name that does not match returns `{ deny }` with the rule, and no request is made. `reason` is cut to 120 characters, and control characters are removed. Then `detect` scans the name and the reason with every rule (known, vendor, private key, and context). A hit in the name returns `{ deny }`, and no request is made. A hit in the reason replaces the reason with "(reason hidden: it held a secret)" in the request. The arguments that go on to the shield and the transcript do not change (F65). `ui` draws the reason as plain `Text` only.
 
 R3. The answer. `{ result: statusText(name, enrollment.status()) }`, which is 1 of these:
 
@@ -94,3 +94,4 @@ Same as `SPEC-detect.md`, with the 4 commands (Q24). Files: `blindfold/hooks/req
 - Q37. `request_secret` is not deferred (`isDeferred: false`), so Claude sees it without a ToolSearch and knows to ask instead of asking for a paste. It adds its description to every request. Accepted (agent decision, owner delegated 2026-11-06).
 - Q38. A user Stop does not clear the request, because no hook reports it reliably. A Continue after a Stop is dropped by the host ("the session was stopped and nobody has sent input since"), and the request clears with the toast in R5. The design listed Stop as a clear event. Accepted (agent decision, owner delegated 2026-11-06).
 - Pi review F62 (`reviews/step4-code-pi.md`) is applied in R4. Accepted (agent decision).
+- Pi review F65 (`reviews/ui-spec-pi.md`) is applied in R2. Accepted (agent decision).
