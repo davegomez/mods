@@ -32,4 +32,4 @@ Each mod's README states the Claude Code version it was tested with.
 
 ## License
 
-The mods are licensed under the GNU Affero General Public License v3.0 only (`AGPL-3.0-only`). Each mod folder holds its `LICENSE` file.
+This repository and its mods are licensed under the GNU Affero General Public License v3.0 only (`AGPL-3.0-only`). See [LICENSE](LICENSE). Each mod folder also holds a copy.
