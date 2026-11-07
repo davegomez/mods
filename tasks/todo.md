@@ -297,8 +297,8 @@ Commands, run for every task: the 4 above.
 
 `SPEC-ui.md` R5, R7.
 
-- [ ] Each R5 branch has a test with a fake `entry` and `write`. A 2nd start while a flow runs shows the busy text.
-- [ ] R7: the JSON text of every tree, toast, and status line in the tests holds no fake value.
+- [x] Each R5 branch has a test with a fake `entry` and `write`. A 2nd start while a flow runs shows the busy text.
+- [x] R7: the JSON text of every tree, toast, and status line in the tests holds no fake value.
 - Files: `blindfold/hooks/ui.ts`, `blindfold/hooks/register.ts`, `blindfold/tests/ui.test.ts`. Size: M.
 
 ## Checkpoint G
