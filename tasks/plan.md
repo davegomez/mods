@@ -91,7 +91,7 @@ Independent review by Pi in a herdr pane. Then the live check in `SPEC-shield.md
 
 Specs: `SPEC-request.md`, `SPEC-entry.md`, `SPEC-write.md` (Q34 to Q38 accepted as agent decisions, owner delegated 2026-11-06), and F46 in `SPEC-enroll.md`. Tasks: `tasks/todo.md`, T16 to T19. 1 `worker-high` per task, in sequence, because they share `register.ts`, `enroll.ts`, and `plugin.json`. Pi reviews the 3 specs before T17 starts.
 
-- [ ] T16. F46: load on first use after a reload.
+- [x] T16. F46: load on first use after a reload.
 - [ ] T17. `request`: the tool, the lifecycle, Continue, and the `"empty"` name state.
 - [ ] T18. `entry`: platform, the native dialogs, `readNative`, `maskStep`, `inputMethod`.
 - [ ] T19. `write`: the save order and `saveToEnvFile`.

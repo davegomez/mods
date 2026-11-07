@@ -226,7 +226,7 @@ Commands, run for every task: the 4 above.
 
 ## T16. Load on first use (F46)
 
-- [ ] Each `shield` guard hook and the `request` tool hook call `load` with the current list when the enrollment never loaded. A test makes a new enrollment, fires `tool.call` without `session.start`, and the known value is masked.
+- [x] Each `shield` guard hook and the `request` tool hook call `load` with the current list when the enrollment never loaded. A test makes a new enrollment, fires `tool.call` without `session.start`, and the known value is masked.
 - Files: `blindfold/hooks/enroll.ts`, `blindfold/hooks/shield.ts`, `blindfold/hooks/register.ts`, `blindfold/tests/shield.test.ts`. Size: S.
 
 ## T17. `request`
