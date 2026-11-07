@@ -217,5 +217,5 @@ Spec: `docs/specs/blindfold/SPEC-shield.md`. Commands, run for every task: the 3
 
 - [x] The 4 commands pass.
 - [x] Pi reviews `shield.ts` in a herdr pane, and the findings are fixed.
-- [ ] The owner approves the live session, and the live check confirms Q26 and R13.
+- [x] The owner approves the live session, and the live check confirms Q26 and R13.
 - [ ] The owner approves step 3. Next: `SPEC-request.md`, `SPEC-entry.md`, `SPEC-write.md`.
