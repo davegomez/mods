@@ -180,6 +180,10 @@ const withheld = (reason: string) => ({
 	deny: `blindfold withheld this result (${reason}). Narrow the call.`,
 });
 
+/** R5 (F45): the model reads `<tool> ran, and a plugin withheld its result: <text>` (d.ts:13883), so this starts the text. */
+export const MASKED_ERROR =
+	"blindfold masked secrets in its error output, which follows:";
+
 type ToolCall = Parameters<Hook<"tool.call">>;
 
 /** R2: `performance.now` is monotonic, so a wall-clock change cannot move the deadline. */
@@ -192,15 +196,28 @@ function argsOf(e: ToolCall[1]): Record<string, unknown> {
 	return args;
 }
 
-/** R5 (Q26): a copy without `ref` and `text`, so core maps the scanned `result` again. */
+type Scanned = { result?: unknown; context?: string[]; text?: string };
+
+/**
+ * R5 (Q26): a success is a copy without `ref` and `text`, so core maps the scanned `result` again.
+ * F45: core checks an error copy against the success shape and rejects it, so an error is a deny.
+ */
 function rewritten(
-	from: { isError?: true; isReadOnly?: true },
-	scanned: { result?: unknown; context?: string[] },
+	from: { isError?: true; isReadOnly?: true; text?: string },
+	scanned: Scanned,
 ): ToolCallResult {
+	if (from.isError) {
+		const masked =
+			from.text !== undefined
+				? scanned.text
+				: typeof scanned.result === "string"
+					? scanned.result
+					: JSON.stringify(scanned.result);
+		return { deny: `${MASKED_ERROR}\n${masked ?? ""}` };
+	}
 	return {
 		result: scanned.result,
 		...(scanned.context === undefined ? {} : { context: scanned.context }),
-		...(from.isError ? { isError: true } : {}),
 		...(from.isReadOnly ? { isReadOnly: true } : {}),
 	} as ToolCallResult;
 }
@@ -221,7 +238,7 @@ function guardResult(out: ToolCallResult, set: KnownSet, clock: Clock) {
 	if (verdict.kind === "stop") return withheld(verdict.reason);
 	// pass keeps the same object, so core keeps `ref`.
 	return verdict.kind === "rewrite"
-		? rewritten(out, verdict.value as { result?: unknown; context?: string[] })
+		? rewritten(out, verdict.value as Scanned)
 		: out;
 }
 

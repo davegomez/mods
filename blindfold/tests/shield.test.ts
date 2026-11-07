@@ -8,6 +8,7 @@ import {
 	guardArgs,
 	guardText,
 	guardValue,
+	MASKED_ERROR,
 	onAgentSpawn,
 	onAgentSpawnCatch,
 	onConfigSet,
@@ -525,20 +526,18 @@ describe("R5 tool.call after next", () => {
 		expect(result).toBe(answer);
 	});
 
-	test("R5 (Q26): a hit in result and context is a new object with no ref and no text, and keeps isError and isReadOnly", async () => {
+	test("R5 (Q26): a hit in result and context is a new object with no ref and no text, and keeps isReadOnly", async () => {
 		const answer = {
 			ref: 8,
 			result: { stdout: `out ${envValue}` },
 			text: `out ${envValue}`,
 			context: [`ctx ${vendorToken}`],
-			isError: true,
 			isReadOnly: true,
 		};
 		const { result } = await call(e, answer);
 		expect(result).toEqual({
 			result: { stdout: `out [secret: ${ENV_NAME}]` },
 			context: ["ctx [secret hidden]"],
-			isError: true,
 			isReadOnly: true,
 		});
 		expect("ref" in result).toBe(false);
@@ -549,6 +548,54 @@ describe("R5 tool.call after next", () => {
 		const answer = { ref: 9, result: `out ${envValue}`, text: "x" };
 		const { result } = await call(e, answer);
 		expect(result).toEqual({ result: `out [secret: ${ENV_NAME}]` });
+	});
+
+	test("R5 (F45): an error result with a hit in text is a deny with the masked text", async () => {
+		const answer = {
+			ref: 14,
+			result: { stdout: `Note: ${envValue}` },
+			text: `Note: ${envValue}\nexit 3`,
+			isError: true,
+		};
+		const { result } = await call(e, answer);
+		expect(result).toEqual({
+			deny: `${MASKED_ERROR}\nNote: [secret: ${ENV_NAME}]\nexit 3`,
+		});
+		expect(JSON.stringify(result)).not.toContain(envValue);
+	});
+
+	test("R5 (F45): an error result with no text and a string result with a hit is a deny with the masked result", async () => {
+		const answer = { ref: 15, result: `Note: ${envValue}`, isError: true };
+		const { result } = await call(e, answer);
+		expect(result).toEqual({
+			deny: `${MASKED_ERROR}\nNote: [secret: ${ENV_NAME}]`,
+		});
+		expect(JSON.stringify(result)).not.toContain(envValue);
+	});
+
+	test("R5 (F45): an error result with no text and an object result is a deny with the masked JSON", async () => {
+		const answer = {
+			ref: 16,
+			result: { stderr: `Note: ${envValue}` },
+			isError: true,
+		};
+		const { result } = await call(e, answer);
+		expect(result).toEqual({
+			deny: `${MASKED_ERROR}\n{"stderr":"Note: [secret: ${ENV_NAME}]"}`,
+		});
+	});
+
+	test("R5 (F45): a success result with a hit is still the rewrite object, not a deny", async () => {
+		const answer = { ref: 17, result: `Note: ${envValue}`, text: "x" };
+		const { result } = await call(e, answer);
+		expect(result).toEqual({ result: `Note: [secret: ${ENV_NAME}]` });
+		expect("deny" in result).toBe(false);
+	});
+
+	test("R5 (F45): a clean error result is the same object next returned", async () => {
+		const answer = { ref: 18, result: "exit 3", text: "exit 3", isError: true };
+		const { result } = await call(e, answer);
+		expect(result).toBe(answer);
 	});
 
 	test("R5 (F37): a hit in text alone is a new object with no ref and no text", async () => {

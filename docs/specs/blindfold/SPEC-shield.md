@@ -46,7 +46,7 @@ R4. `tool.call` before `next` (`d.ts:13840`). Scan the arguments (every field of
 R5. `tool.call` after `next` (`d.ts:13876`). Call `refreshIfNamed` with `e` again, then scan with the new set:
 
 - `{ deny }` from below: scan the deny text. On a hit, return `{ deny: copy }`.
-- success or error: scan `result`, `context`, and `text` together (F37). On `pass`, return the object from `next` unchanged, so core keeps `ref`. On `rewrite`, return a new object with the scanned `result` and `context`, the same `isError` and `isReadOnly`, and no `ref` and no `text`, so core maps the new `result` for the model (Q26). On `stop`, return `{ deny: "blindfold withheld this result (<reason>). Narrow the call." }`.
+- success or error: scan `result`, `context`, and `text` together (F37). On `pass`, return the object from `next` unchanged, so core keeps `ref`. On `rewrite` of a success, return a new object with the scanned `result` and `context`, the same `isReadOnly`, and no `ref` and no `text`, so core maps the new `result` for the model (Q26). On `rewrite` of an error (`isError: true`), return `{ deny }` with the masked text: the scanned `text` when the error had `text`, else the scanned `result` when it is a string, else the JSON text of the scanned `result` (F45). On `stop`, return `{ deny: "blindfold withheld this result (<reason>). Narrow the call." }`.
 - `.catch`: `next.called ? { deny: "blindfold withheld this result." } : { deny: "blindfold refused this call." }`.
 
 R6. `prompt.context` (`d.ts:8945`). Scan each block `name` and `text`. The name renders as `# name` (`d.ts:8916`), but it also routes the block, so it is never rewritten: leave out a block whose name has a hit or a `stop` (F39). Rewrite the text of a block with a hit in its text, and keep its name. Leave out a block on `stop`. There is no refuse shape. `.catch`: return `{ blocks: [] }`.
@@ -104,7 +104,7 @@ Same as `SPEC-detect.md`, plus `cd blindfold && bunx tsc -p .` (Q24). Files: `bl
 - Pure tests for R1 and R2: a cycle, a `BigInt`, a deadline, and the copy that `rewrite` returns.
 - 1 handler test per event (R3 to R14), with `claude-code/testing` and the `fakeApi` fake. Each event gets 4 cases: a hit, a clean item, a `stop`, and the `.catch` (before and after `next` where both exist).
 - R4: a fake key in each argument shape (a flat field, a nested object, an MCP argument), and a context rule hit that passes.
-- R5: the returned object has no `ref` and no `text` after a rewrite, and is the same object after `pass`.
+- R5: the returned object has no `ref` and no `text` after a rewrite of a success, and is the same object after `pass`. An error result with a hit returns `{ deny }` with the masked text (F45); a success result is rewritten as before.
 - R15: after each test, the JSON text of every toast, deny, drop, reason, and consumed text holds no fake value and no env name outside a marker. Each event that masks a refusal text from below has a hit and a `stop` test. Each event that cannot has a test that the text passes unchanged.
 - A speed test: `"pwd=&".repeat(…)` at 2 Mi characters finishes or stops inside the deadline (capability map note).
 
@@ -112,7 +112,7 @@ Same as `SPEC-detect.md`, plus `cd blindfold && bunx tsc -p .` (Q24). Files: `bl
 
 - Always: scan before the item passes. Fail closed. Pass on only scanned data.
 - Ask first: a new event, a change to the deadline reserve, any refusal of a context rule hit in tool arguments.
-- Never: change a tool input (P2). Scan inside a `.catch`. Put a value or an env name in a toast, a deny, a log, `$.state`, or `$.store`.
+- Never: change a tool input (P2). Scan inside a `.catch`. Put a value in a toast, a deny, a log, `$.state`, or `$.store`. Put an env name in them outside a `[secret: NAME]` marker (P1).
 
 ## Success criteria
 
@@ -121,10 +121,11 @@ Same as `SPEC-detect.md`, plus `cd blindfold && bunx tsc -p .` (Q24). Files: `bl
 - Live check (milestone 3, a shield-only build): with the owner's approval, load `claude --plugin-dir ./blindfold` with a fake `.env`, and confirm the INFERRED facts:
   - the model sees the marker, not the value, after `Bash` runs `cat` on a file that holds the value (R5, Q26),
   - the stored transcript row holds the marker (R13).
+- Done 2026-11-06: success result and transcript confirmed. Error result: F45.
 
 ## Decisions
 
-- Q26. A `tool.call` result is rewritten by returning a new object with the scanned `result` and no `ref` or `text`, so core maps it again. The types say core uses `ref` when the hook returns the object it got, but they do not say that core maps `result` when `text` is missing. Accepted. Confirm in the live check. Fallback: put the masked text in `{ deny }`.
+- Q26. A `tool.call` success result is rewritten by returning a new object with the scanned `result` and no `ref` or `text`, so core maps it again. Confirmed in a live session on 2026-11-06 (Claude Code 2.1.319). An error result cannot be rewritten this way, because core checks it against the success shape, so it uses the fallback: the masked text in `{ deny }` (F45). Accepted.
 - Q27. `prompt.mention` refuses env files by path only. Other files are not read in the hook, because R8 scans their text. The design said "refuse any readable file with a recognised secret". Accepted.
 - Q28. `session.receive` rewrites a message from another session instead of refusing it, because `{ consumed }` drops the whole message without a word to the model. The design said "refuse". Accepted.
 - Q29. A prompt with a pinned slash command and a hit in its text is dropped, because the host does not apply a text rewrite then. Accepted.
