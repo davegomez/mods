@@ -399,6 +399,10 @@ Each gap band holds `{ n, read, total }`, like the gap-type totals: the request 
 
 `end` is 0 warm, 1 cold, 2 exit, or 3 unknown. `outcome` is 0 hit, 1 miss, or 2 refused. `source` and `skip` are indexes into the lists in `hooks/refresh.ts`. `idleCompacted` is 1 when idle compaction was seen in the pause, else 0. Records written before this field existed read as 0. The open pause, `refresh.pause`, holds the same as `idleCompactMs`, the time it was seen. A pause that ember left to idle compaction keeps the skip reason `idle compaction` when idle compaction runs in it. A rescued pause records the skip reason `none`, or a later stop reason, and its refreshes.
 
+### License
+
+ember is licensed under the GNU Affero General Public License v3.0 only (`AGPL-3.0-only`). See [LICENSE](LICENSE).
+
 ## Explanation
 
 ### Why the cache goes cold while you are away

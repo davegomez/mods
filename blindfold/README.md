@@ -271,6 +271,10 @@ A live run on 2026-11-07, Claude Code v2.1.318, macOS, in a scratch git reposito
 
 blindfold stores nothing. Values live in memory while the session runs and are dropped when it ends.
 
+### License
+
+blindfold is licensed under the GNU Affero General Public License v3.0 only (`AGPL-3.0-only`). See [LICENSE](LICENSE).
+
 ## Explanation
 
 ### Why Claude asks by name

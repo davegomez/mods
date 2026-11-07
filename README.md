@@ -28,4 +28,8 @@ Auto-update is off for third-party marketplaces. To turn it on, open `/plugin`, 
 
 A mod runs with your permissions. Read its README before you install it.
 
-The mods are tested with Claude Code v2.1.306. Each mod's README states the version it was tested with.
+Each mod's README states the Claude Code version it was tested with.
+
+## License
+
+The mods are licensed under the GNU Affero General Public License v3.0 only (`AGPL-3.0-only`). Each mod folder holds its `LICENSE` file.
