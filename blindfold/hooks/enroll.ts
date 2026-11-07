@@ -21,7 +21,7 @@ export type RefusedReason =
 export type NameState = {
 	name: string;
 	hidden: boolean;
-	why?: "too-short" | "not-secret";
+	why?: "too-short" | "not-secret" | "empty";
 };
 export type FileState =
 	| { kind: "active"; names: NameState[] }
@@ -71,7 +71,7 @@ function feeds({ name, value }: Known): boolean {
 	);
 }
 
-/** R4: 1 state per name, from its last entry, and every value long enough that feeds the set. */
+/** R4: 1 state per name, from its last entry, and every value long enough that feeds the set. request R3: an empty last value is `empty`. */
 export function classify(entries: readonly Entry[]): {
 	names: NameState[];
 	feed: Known[];
@@ -80,7 +80,9 @@ export function classify(entries: readonly Entry[]): {
 	const feed: Known[] = [];
 	for (const { name, value } of entries) {
 		let state: NameState = { name, hidden: false, why: "not-secret" };
-		if (feeds({ name, value })) {
+		if (value === "") {
+			state = { name, hidden: false, why: "empty" };
+		} else if (feeds({ name, value })) {
 			if (value.length < MIN_KNOWN_LENGTH) {
 				state = { name, hidden: false, why: "too-short" };
 			} else {
@@ -271,6 +273,9 @@ export function createEnrollment() {
 	/** F46: true once a load began or a drop ran; after that no first-use load starts. */
 	let used = false;
 	let firstLoad: Promise<unknown> | undefined;
+	/** F56: the latest load, settled either way, so a guard can wait for it. */
+	let loading: Promise<unknown> = Promise.resolve();
+	let changed = () => {};
 
 	const feed = (path: string, known: readonly Known[]) => {
 		const bucket = byFile.get(path) ?? new Map();
@@ -283,6 +288,7 @@ export function createEnrollment() {
 	const apply = (results: readonly ApplyFile[]): void => {
 		for (const { path, feed: known } of results) feed(path, known);
 		files = results.map(({ path, state }) => ({ path, state }));
+		changed();
 	};
 
 	const knownSet = (): KnownSet => {
@@ -312,6 +318,19 @@ export function createEnrollment() {
 			}
 			return firstLoad ?? Promise.resolve();
 		},
+		/** F56: keep `run` as the latest load. */
+		track<T>(run: Promise<T>): Promise<T> {
+			loading = run.catch(() => {});
+			return run;
+		},
+		/** F56: settles when the latest load has. */
+		settled(): Promise<unknown> {
+			return loading;
+		},
+		/** request R4: `listener` runs after each change of the files' states. 1 listener; a 2nd replaces it. */
+		watch(listener: () => void): void {
+			changed = listener;
+		},
 		/** R8: apply only when no newer load or drop took a generation meanwhile. */
 		finish(mine: number, results: readonly ApplyFile[]): void {
 			if (mine === generation) apply(results);
@@ -339,6 +358,7 @@ export function createEnrollment() {
 			byFile.delete(path);
 			files = files.filter((f) => f.path !== path);
 			set = undefined;
+			changed();
 		},
 		/** R8: takes a generation too, so a load still running adds nothing. Clears the list, so a late refresh reads nothing. */
 		drop(): void {
@@ -348,6 +368,7 @@ export function createEnrollment() {
 			byFile.clear();
 			files = [];
 			set = undefined;
+			changed();
 		},
 		knownSet,
 		status(): Status {
@@ -358,8 +379,16 @@ export function createEnrollment() {
 
 export type Enrollment = ReturnType<typeof createEnrollment>;
 
-/** R1, R8: read every listed file again. The result applies only if no newer load or drop came meanwhile. */
-export async function load(
+/** R1, R8: read every listed file again. The result applies only if no newer load or drop came meanwhile. F56: the enrollment keeps it as its latest load. */
+export function load(
+	$: EngineInterface,
+	enrollment: Enrollment,
+	list: string,
+): Promise<Status> {
+	return enrollment.track(readAll($, enrollment, list));
+}
+
+async function readAll(
 	$: EngineInterface,
 	enrollment: Enrollment,
 	list: string,
@@ -373,13 +402,14 @@ export async function load(
 	return enrollment.status();
 }
 
-/** F46: a reload runs `register` again without `session.start`, so a guard loads `list` first when this enrollment never loaded. */
+/** F46: a reload runs `register` again without `session.start`, so a guard loads `list` first when this enrollment never loaded. F56: then it waits for a load still running. */
 export async function ensureLoaded(
 	$: EngineInterface,
 	enrollment: Enrollment,
 	list: string,
 ): Promise<void> {
 	await enrollment.once(() => load($, enrollment, list));
+	await enrollment.settled();
 }
 
 /** R7: load again when the input names a listed file. */

@@ -1,32 +1,22 @@
-import type { EngineInterface, On, PluginOptions } from "claude-code";
+import type { EngineInterface, PluginOptions } from "claude-code";
 import { describe, expect, test } from "claude-code/testing";
 import { DEFAULT_LIMITS, scanText } from "../hooks/detect.ts";
 import { addFile } from "../hooks/enroll.ts";
 import { enrollment, register } from "../hooks/register.ts";
-import { type FakeFile, fakeApi, fakes, REAL_ROOT, stubFs } from "./fakes.ts";
+import {
+	type FakeFile,
+	fakeApi,
+	fakes,
+	type Hook,
+	hooksOf as hooksOfModule,
+	REAL_ROOT,
+	stubFs,
+} from "./fakes.ts";
 
 const fake = fakes(31);
 const never = { now: () => 0, deadline: Number.POSITIVE_INFINITY };
 
-type Hook = (
-	$: EngineInterface,
-	e: unknown,
-	next: (e: unknown) => Promise<unknown>,
-) => unknown;
-
-/** The hooks `register` adds, by event, read through a fake `on`. They act on the `enrollment` this file imports. */
-const hooksOf = (options: PluginOptions) => {
-	const hooks = new Map<string, Hook>();
-	const on = ((event: string, ...rest: unknown[]) => {
-		hooks.set(event, rest.at(-1) as Hook);
-		if (rest.length > 1) hooks.set(`${event}.matcher`, rest[0] as Hook);
-		return {
-			catch: (handler: Hook) => hooks.set(`${event}.catch`, handler),
-		};
-	}) as unknown as On;
-	register(on, options);
-	return hooks;
-};
+const hooksOf = (options: PluginOptions) => hooksOfModule(register, options);
 
 /** Runs 1 hook with a `next` that calls `atNext`, then answers `answer`. Returns what the hook returned and what `next` got. */
 const run = async (
@@ -62,7 +52,7 @@ const secretFile = (value: string): FakeFile => ({
 });
 
 describe("R7 lifecycle wiring", () => {
-	test("R7, R3 to R14: register hooks the lifecycle events and each guard event with a .catch, and no matcher", () => {
+	test("R7, R3 to R14, request R1: register hooks the lifecycle events, each guard event with a .catch and no matcher, and request_secret after the tool.call guard", () => {
 		expect([...hooksOf({ envFiles: ".env" }).keys()]).toEqual([
 			"session.start",
 			"classic.SessionStart",
@@ -70,6 +60,7 @@ describe("R7 lifecycle wiring", () => {
 			"session.end",
 			"tool.call",
 			"tool.call.catch",
+			'tool.call {"tool":"mcp__blindfold__request_secret"}',
 			"prompt.submit",
 			"prompt.submit.catch",
 			"prompt.context",

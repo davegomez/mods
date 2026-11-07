@@ -43,7 +43,7 @@ import {
 	WITHHELD_CONTENT,
 	WITHHELD_DELIVERY,
 } from "../hooks/shield.ts";
-import { fakeApi, fakes } from "./fakes.ts";
+import { fakeApi, fakes, gate } from "./fakes.ts";
 
 const fake = fakes(11);
 const NAME = "FAKE_SHIELD_KEY";
@@ -1715,6 +1715,25 @@ describe("R7 (F46) load on first use", () => {
 			{ result: `out ${HIDDEN}` },
 			{ result: `out ${HIDDEN}` },
 		]);
+		expect(reads.length).toBe(1);
+	});
+
+	test("R7 (F56): a guard that fires while a session.start load is gated waits for it and masks the value", async () => {
+		const { wait, open } = gate();
+		const { api, reads } = fakeApi({
+			".env": { ...envFile(envValue), gate: wait },
+		});
+		const enrollment = createEnrollment();
+		const starting = load(api, enrollment, ".env");
+		let settled = false;
+		const guarded = toolCall(api, enrollment).finally(() => {
+			settled = true;
+		});
+		for (let tick = 0; tick < 100; tick++) await Promise.resolve();
+		expect(settled).toBe(false);
+		open();
+		await starting;
+		expect(await guarded).toEqual({ result: `out ${HIDDEN}` });
 		expect(reads.length).toBe(1);
 	});
 });

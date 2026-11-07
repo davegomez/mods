@@ -1,6 +1,13 @@
 import type { Register } from "claude-code";
 import { createEnrollment, load } from "./enroll.ts";
 import {
+	createRequests,
+	isOwnPrompt,
+	onRequestSecret,
+	TOOL_NAME,
+	TOOL_SPEC,
+} from "./request.ts";
+import {
 	onAgentSpawn,
 	onAgentSpawnCatch,
 	onConfigSet,
@@ -29,6 +36,14 @@ import {
 /** The session's env files and known values, shared by every hook of this module instance. */
 export const enrollment = createEnrollment();
 
+/** request R4: the 1 open request; a module reload starts with none. */
+export const requests = createRequests();
+
+// request R4, R5: every load, restart, and forget syncs the request, whoever started it.
+enrollment.watch(() => {
+	if (requests.current()) requests.sync(enrollment.status());
+});
+
 /** R7: the `classic.SessionStart` sources that begin another conversation in the same process. */
 const RESTARTS: readonly string[] = ["clear", "resume", "fork"];
 
@@ -39,6 +54,7 @@ export const register: Register = (on, options) => {
 
 	on("session.start", async ($, e, next) => {
 		await load($, enrollment, list);
+		await $.tool.register(TOOL_SPEC);
 		return next(e);
 	});
 
@@ -53,6 +69,7 @@ export const register: Register = (on, options) => {
 	}).catch((_$, e, next) => next(e));
 
 	on("session.end", (_$, e, next) => {
+		requests.clear();
 		ended = enrollment.listed();
 		enrollment.drop();
 		return next(e);
@@ -63,10 +80,17 @@ export const register: Register = (on, options) => {
 		onToolCall($, enrollment, e, next, list),
 	).catch(onToolCallCatch);
 
+	// request R1: after the guard above, so the guard scans its arguments and its answer.
+	on("tool.call", { tool: `mcp__blindfold__${TOOL_NAME}` }, ($, e, next) =>
+		onRequestSecret($, enrollment, requests, e, next, list),
+	);
+
 	// R3, R6 to R10: no matcher, so every prompt, block, section, attachment, skill, and mention is guarded.
-	on("prompt.submit", ($, e, next) =>
-		onPromptSubmit($, enrollment, e, next, list),
-	).catch(onPromptSubmitCatch);
+	// request R4: a user prompt clears the request first; blindfold's own Continue does not.
+	on("prompt.submit", ($, e, next) => {
+		if (!isOwnPrompt(e.origin, $.plugin.name)) requests.clear();
+		return onPromptSubmit($, enrollment, e, next, list);
+	}).catch(onPromptSubmitCatch);
 	on("prompt.context", ($, e, next) =>
 		onPromptContext($, enrollment, e, next, list),
 	).catch(onPromptContextCatch);

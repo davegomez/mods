@@ -205,10 +205,26 @@ describe("R4 which values feed the set", () => {
 		);
 		expect(names).toEqual([
 			{ name: "API_KEY", hidden: false, why: "too-short" },
-			{ name: "EMPTY_TOKEN", hidden: false, why: "too-short" },
+			{ name: "EMPTY_TOKEN", hidden: false, why: "empty" },
 			{ name: "LONG_KEY", hidden: true },
 		]);
 		expect(feed.map((k) => k.name)).toEqual(["LONG_KEY"]);
+	});
+
+	test("R4 (request R3): a name whose last value is empty is empty, secret or not, and feeds nothing", () => {
+		const first = fake.secret(16);
+		const { names, feed } = classify(
+			entries([
+				["API_KEY", first],
+				["API_KEY", ""],
+				["PLAIN", ""],
+			]),
+		);
+		expect(names).toEqual([
+			{ name: "API_KEY", hidden: false, why: "empty" },
+			{ name: "PLAIN", hidden: false, why: "empty" },
+		]);
+		expect(feed.map((k) => k.name)).toEqual(["API_KEY"]);
 	});
 
 	test("R4: a repeated name has 1 state, from its last value, and every value feeds", () => {

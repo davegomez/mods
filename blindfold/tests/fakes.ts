@@ -5,6 +5,9 @@ import type {
 	FsReadCall,
 	FsReadOptions,
 	On,
+	PluginOptions,
+	Register,
+	ToolSpec,
 } from "claude-code";
 
 /** Fake secrets for tests. Each token is joined at run time, so no file holds a full token shape. */
@@ -125,6 +128,7 @@ export function fakeApi(
 		options.realRoot === undefined ? REAL_ROOT : options.realRoot;
 	const reads: string[] = [];
 	const sets: FakeSet[] = [];
+	const tools: ToolSpec[] = [];
 	const base = realRoot ?? REAL_ROOT;
 	const under = (path: string) =>
 		path.startsWith(`${base}/`) ? path.slice(base.length + 1) : "";
@@ -174,8 +178,14 @@ export function fakeApi(
 				return options.setAnswer ?? { value };
 			},
 		},
+		tool: {
+			register: async (tool: ToolSpec) => {
+				tools.push(tool);
+				return { tool: `mcp__blindfold__${tool.name}` };
+			},
+		},
 	} as unknown as EngineInterface;
-	return { api, reads, sets };
+	return { api, reads, sets, tools };
 }
 
 /** A `$.fs.read` that answers text from `read`. The mod reads text only, so a bytes read fails. */
@@ -221,3 +231,23 @@ export function gate(): { wait: Promise<void>; open: () => void } {
 	});
 	return { wait, open };
 }
+
+export type Hook = (
+	$: EngineInterface,
+	e: unknown,
+	next: (e: unknown) => Promise<unknown>,
+) => unknown;
+
+/** The hooks `register` adds, read through a fake `on`. A hook with a matcher is keyed by its event and the matcher's JSON. */
+export const hooksOf = (register: Register, options: PluginOptions) => {
+	const hooks = new Map<string, Hook>();
+	const on = ((event: string, ...rest: unknown[]) => {
+		const key = rest.length > 1 ? `${event} ${JSON.stringify(rest[0])}` : event;
+		hooks.set(key, rest.at(-1) as Hook);
+		return {
+			catch: (handler: Hook) => hooks.set(`${key}.catch`, handler),
+		};
+	}) as unknown as On;
+	register(on, options);
+	return hooks;
+};
