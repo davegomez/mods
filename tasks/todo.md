@@ -303,6 +303,6 @@ Commands, run for every task: the 4 above.
 
 ## Checkpoint G
 
-- [ ] The 4 commands pass. Pi reviews `ui.ts`. High findings are fixed.
+- [x] The 4 commands pass. Pi reviews `ui.ts`. High findings are fixed (F77 to F82).
 - [ ] Live run with the owner: G1, G2, G3, F58.
 - [ ] README, LICENSE, icon.
