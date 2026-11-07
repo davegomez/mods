@@ -114,3 +114,4 @@ Same as `SPEC-detect.md`. Files: `blindfold/hooks/enroll.ts` and `blindfold/test
 - Q23. R5 keeps a value hidden after it is deleted from the file, until the session ends or the user forgets the file. Accepted.
 - Q25. stat, read, stat again narrows the swap race but cannot close it, because $.fs has no no-follow read. Accepted.
 - F46. A `userConfig` change reloads the plugin (`d.ts:10004`), and `session.start` does not fire again. If the reload makes a new module instance, the known-value set is empty until the next load. Fix: each guard hook in `shield` and the `request` tool call `load` first when this enrollment has never loaded (generation 0). Accepted (agent decision, owner delegated 2026-11-06).
+- F56. A guard hook that runs while a `session.start` or restart load is still reading scans with the old set. Fix: the enrollment keeps the promise of its latest load, and `ensureLoaded` awaits it. Accepted (agent decision).

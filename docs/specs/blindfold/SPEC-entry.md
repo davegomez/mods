@@ -18,7 +18,7 @@ export type Platform = "macos" | "windows" | "linux" | "unknown";
 export type Entered = { kind: "value"; value: string } | { kind: "cancel"; why: "cancelled" | "timeout" | "unavailable" | "failed" };
 // Pure:
 export function nativeCommand(platform: Platform, name: string, reason: string): { argv: string[]; env?: Record<string, string> } | undefined; // R2
-export function readNative(platform: Platform, out: { exitCode: number; stdout: string; stderr: string }): Entered; // R3
+export function readNative(platform: Platform, out: { exitCode: number; stdout: string; stderr: string; isStdoutTruncated: boolean }): Entered; // R3
 export function maskStep(state: Masked, shown: string): Masked; // R5
 // Thin:
 export function detectPlatform($): Promise<Platform>;   // R1
@@ -45,7 +45,7 @@ R2. Native dialogs. 1 fixed script per platform. The name and the reason go in a
 
 `timeoutMs` is 300,000. A timeout kills the dialog and the call rejects (`d.ts:8385`), which is `cancel` with `timeout`.
 
-R3. Reading the answer. Exit code 0: the value is `stdout` with exactly 1 trailing `\n` (or `\r\n` on Windows) removed. No other trim (G1). An empty value is `cancel` with `cancelled`. On macOS, exit code 1 with `-128` in `stderr` is `cancelled`. Any other exit is `failed`. `stderr` is never shown, because it can hold text from the dialog.
+R3. Reading the answer. `isStdoutTruncated` is `failed`, whatever the exit code (F55). Exit code 0: the value is `stdout` with exactly 1 trailing `\n` (or `\r\n` on Windows) removed. No other trim (G1). An empty value is `cancel` with `cancelled`. On macOS, exit code 1 with `-128` in `stderr` is `cancelled`. Any other exit is `failed`. `stderr` is never shown, because it can hold text from the dialog.
 
 R4. The value. `entry` returns the value to its caller and keeps no copy in module state. It never puts the value in argv, `env`, a render prop, `$.state`, `$.store`, a log, a toast, or an error.
 

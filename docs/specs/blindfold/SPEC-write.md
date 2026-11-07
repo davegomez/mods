@@ -14,7 +14,7 @@ Success: after a save, the env file holds `NAME=value` in the dotenv dialect, al
 
 ```ts
 export type Step = "path" | "git" | "create" | "changed" | "value" | "write" | "verify" | "mode";
-export type Saved = { ok: true; created: boolean; ignoredNow: boolean } | { ok: false; step: Step; reason: string };
+export type Saved = { ok: true; created: boolean; ignoredNow: boolean; warning?: "mode-repaired" } | { ok: false; step: Step; reason: string };
 export function saveValue($, enrollment, path: string, name: string, value: string): Promise<Saved>;
 export type SaveMode = "ask" | "always" | "never";
 ```
@@ -23,27 +23,27 @@ export type SaveMode = "ask" | "always" | "never";
 
 R1. Setting. The `userConfig` field `saveToEnvFile` is a string with `options: ["ask", "always", "never"]`, default `ask` (Q8, Q12). `ui` reads it and asks before entry. `write` does not read it.
 
-R2. Path, step `path`. Apply the `enroll` R2 rules to `path` right before the write: the spelling rules, then `stat` with `resolve`. Refuse a symbolic link, a real path outside the root, and a path that is not a regular file. A missing file is accepted only when its nearest existing folder is a folder at or under the real root (F33: run this check here again, not only in `addFile`). Read the current text (empty for a missing file) and keep it as `before`.
+R2. Path, step `path`. A write target uses only the characters `A-Z`, `a-z`, `0-9`, `.`, `_`, `-`, and `/`, and no segment starts with `-` (F52). Refuse any other spelling before any step changes a file. Build 1 absolute target from the real root and `path`, and use it for every `$.fs` call, `chmod`, and `stat` (F51). Keep the root-relative `path` for git and for `enroll`. Apply the `enroll` R2 rules to `path` right before the write: the spelling rules, then `stat` with `resolve`. Refuse a symbolic link, a real path outside the root, and a path that is not a regular file. A missing file is accepted only when its nearest existing folder is a folder at or under the real root (F33: run this check here again, not only in `addFile`). Read the current text (empty for a missing file) and keep it as `before`.
 
 R3. Git, step `git`. Run git with `$.process.run`, with `cwd` the session root (git runs with repository hooks off, `d.ts:3649`):
 
 - `git rev-parse --is-inside-work-tree`. A failure, or git that does not start, skips the git step (Q36).
-- `git ls-files --error-unmatch -- <path>`. Exit code 0 means git tracks the file: refuse.
-- `git check-ignore -q -- <path>`. Exit code 1 means not ignored: add the line `/<path>` to the root `.gitignore`. Apply the R2 rules to `.gitignore` first. Keep its other lines. Add a line ending before the new line when the file does not end with one. Run `check-ignore` again, and refuse if it still says not ignored.
+- `git --literal-pathspecs ls-files --error-unmatch -- <path>`. Exit code 1 means untracked. Exit code 0 means tracked: refuse. Any other exit refuses (F48).
+- `git check-ignore -q -- ./<path>`. Exit code 0 means ignored. Exit code 1 means not ignored: add the line `/<path>` to the root `.gitignore` (R2 allows no character that a pattern treats as special). Apply the R2 rules to `.gitignore` first. Keep its other lines. Add a line ending before the new line when the file does not end with one. Run `check-ignore` again, and continue only on exit code 0. Any other exit refuses (F48).
 
-R4. Create, step `create`. For a missing file: `$.fs.write(path, "")`, then `$.process.run(["chmod", "600", "--", <path>])`. Only the path goes in argv. A non-zero exit refuses. On Windows `chmod` does not run, and the README states that folder access rules apply.
+R4. Create, step `create`. For a missing file: `$.fs.write(target, "")`, then `$.process.run(["chmod", "600", target])` with the absolute target, which never starts with `-` (F50). Only the path goes in argv. A non-zero exit refuses. On Windows `chmod` does not run, and the README states that folder access rules apply.
 
 R5. Change check, step `changed`. Read the file again. Stop when the text is not `before`.
 
-R6. Value, step `value`. `dotenv.setValue(before, name, value)`. A refusal (`invalid-name`, `unsafe-value`, `too-large`, CRLF rules) stops with that reason.
+R6. Value, step `value`. `dotenv.setValue(before, name, value)`. A refusal stops with the reason that `setValue` returns: `bad-name`, `unsafe-value`, `duplicate-name`, or `too-large` (F54).
 
-R7. Write, step `write`. `$.fs.write(path, text)` with the new text. `$.fs.write` has no mode option and is not documented as atomic (`d.ts:3389`). The README states that a crash during this step can damage the file.
+R7. Write, step `write`. First `enrollment.learn(path, name, value)`, so the shield masks the value from this moment, also when a later step fails (F47). Then `$.fs.write(target, text)` with the new text. `$.fs.write` has no mode option and is not documented as atomic (`d.ts:3389`). The README states that a crash during this step can damage the file.
 
 R8. Verify, step `verify`. Read the file again and parse it. The last entry for `name` must hold exactly `value`. Otherwise stop, and the name is not marked set.
 
-R9. Mode, step `mode`. For a file that R4 created, read its mode with `stat -f %Lp` on macOS or `stat -c %a` on Linux. When it is not `600`, run `chmod` again, and return `ok` with a warning, because the value was on disk with a wider mode for a moment. This settles the design's UNVERIFIED question about `$.fs.write` and the mode (G3).
+R9. Mode, step `mode`. For a file that R4 created, read its mode with `["stat", "-f", "%Lp", target]` on macOS or `["stat", "-c", "%a", target]` on Linux. `600` is `ok`. Another mode: run `chmod` again and read the mode again. `600` then is `ok` with `warning: "mode-repaired"`, because the value was on disk with a wider mode for a moment. Any failure stops with step `mode`. Whether `$.fs.write` keeps the mode is a release-blocking check in G3 (F49). If G3 shows that it does not, the value write moves to a writer that keeps the mode, before release.
 
-R10. Learn. After `verify`: `enrollment.learn(path, name, value)`, then `load` with the current list, so the status shows the name as set and `request` can move to ready.
+R10. Status. After `verify` and `mode`: `load` with the current list, so the status shows the name as set and `request` can move to ready. The value learned in R7 stays learned after a failure (enroll R5).
 
 R11. No file listed (Q9). When no listed file exists, `ui` asks which file to use: `.env`, `.env.local`, or a typed name. The choice goes through `addFile` (enroll R9). `ui` offers this only after the first status has loaded (F34).
 
@@ -77,3 +77,4 @@ Same as `SPEC-detect.md`, with the 4 commands. Files: `blindfold/hooks/write.ts`
 ## Decisions
 
 - Q36. Outside a git work tree, or when git does not start, the git step is skipped, because no commit can take the file. Accepted (agent decision, owner delegated 2026-11-06).
+- Pi review F47 to F54 (`reviews/step4-specs-pi.md`) are applied in R2 to R10: learn before the value write, strict git exit codes, a literal path allowlist, 1 absolute target, the tested `chmod` and `stat` argv, the real `setValue` reasons, and the mode check as a release gate. Accepted (agent decision).

@@ -21,21 +21,21 @@ export function statusText(name: string, status: Status): string;  // R3
 export type Request = { id: string; name: string; reason: string; state: "pending" | "ready" };
 export function createRequests(): {
 	ask(name: string, reason: string): Request;     // R4: supersedes any open request
-	ready(name: string): void;                      // R4: pending -> ready, for that name only
-	consume(): Request | undefined;                 // R4: ready -> cleared, returns it once
+	sync(status: Status): void;                     // R4: pending <-> ready from the status
+	consume(status: Status): Request | undefined;   // R4, R5: ready and still set -> cleared, returns it once
 	clear(): void;                                  // R4
 	current(): Request | undefined;
 };
 // Thin, wired in register.ts:
 export function onRequestSecret($, enrollment, requests, e, next); // R1, R3
-export function continueRequest($, requests): Promise<void>;       // R5, called by `ui`
+export function continueRequest($, enrollment, requests): Promise<void>; // R5, called by `ui`
 ```
 
 ### Requirements
 
 R1. The tool. At `session.start`, call `$.tool.register({ name: "request_secret", description, inputSchema, isDeferred: false })` (`d.ts:3193`, `d.ts:14343`). The model sees it as `mcp__blindfold__request_secret`. The input schema has `name` (string) and `reason` (string), both required. A `tool.call` hook with the matcher `{ tool: "mcp__blindfold__request_secret" }` answers the call without `next`, because a call that no hook answers fails (`d.ts:3182`). `register.ts` wires this hook after the `shield` hook, so `shield` scans the arguments and the result (R4 and R5 of `SPEC-shield.md`).
 
-R2. Validation. `name` matches `^[A-Za-z_][A-Za-z0-9_]{0,63}$`. A name that does not match returns `{ deny }` with the rule, and no request is made. `reason` is cut to 120 characters, and control characters are removed. `ui` draws the reason as plain `Text` only.
+R2. Validation. `name` matches `^[A-Za-z_][A-Za-z0-9_]{0,63}$`, and `dotenv.isValidName` accepts it, which refuses `__proto__` (F54). A name that does not match returns `{ deny }` with the rule, and no request is made. `reason` is cut to 120 characters, and control characters are removed. `ui` draws the reason as plain `Text` only.
 
 R3. The answer. `{ result: statusText(name, enrollment.status()) }`, which is 1 of these:
 
@@ -51,13 +51,14 @@ R4. Lifecycle. At most 1 open request. The id comes from `crypto.randomUUID()` (
 |---|---|---|
 | none | `request_secret` for a missing name | pending |
 | pending or ready | a new `request_secret` for a missing name | the old one is cleared, the new one is pending |
-| pending | `write` saved the name, or a load shows the name set | ready |
+| pending | a status shows the name set in an active file | ready |
+| ready | a status shows the name missing, empty, or its file stale or gone | pending (F53) |
 | ready | the user presses Continue | cleared, then 1 `$.prompt.submit` (R5) |
 | pending or ready | Dismiss, `session.end`, a module reload, or a user prompt | cleared |
 
 A user prompt is a `prompt.submit` whose `origin` is not `{ kind: "plugin", name: $.plugin.name }` (`d.ts:9470`, `d.ts:2355`). `register.ts` already has the `shield` hook for `prompt.submit` without a matcher, so the same hook clears the request first (1 hook without a matcher per event).
 
-R5. Continue. `continueRequest` takes the request with `consume()` before the submit, so a 2nd press does nothing. Then `$.prompt.submit({ text: "NAME is now set. Continue the task that needed it." })` (`d.ts:4955`). It is called from a button handler, never from a hook, because the submit waits until the session is idle (`build/use-the-mods-api.md`, "Start a turn from a background job"). A result with `drop` shows the toast "Continue was not sent. Ask Claude again." There is no retry (Q38).
+R5. Continue. `continueRequest` reads `enrollment.status()` and calls `consume(status)`. It returns the request only when it is ready and the name is still set in an active file, and it clears the request before the submit, so a 2nd press does nothing (F53). `request` calls `sync` after each `load`. Then `$.prompt.submit({ text: "NAME is now set. Continue the task that needed it." })` (`d.ts:4955`). It is called from a button handler, never from a hook, because the submit waits until the session is idle (`build/use-the-mods-api.md`, "Start a turn from a background job"). A result with `drop` shows the toast "Continue was not sent. Ask Claude again." There is no retry (Q38).
 
 R6. No leak. No request, tool answer, toast, `$.state`, or `$.store` holds a value. The tool answer holds a name and a file path only.
 
