@@ -44,6 +44,11 @@ enrollment.watch(() => {
 	if (requests.current()) requests.sync(enrollment.status());
 });
 
+const TOOL = `mcp__blindfold__${TOOL_NAME}`;
+
+/** request R4 (F62): the epoch each request_secret call started in, by its tool_use_id, else by its event. */
+const startedIn = new Map<unknown, number>();
+
 /** R7: the `classic.SessionStart` sources that begin another conversation in the same process. */
 const RESTARTS: readonly string[] = ["clear", "resume", "fork"];
 
@@ -76,13 +81,28 @@ export const register: Register = (on, options) => {
 	});
 
 	// R4: no matcher, so every tool and every MCP tool is guarded.
-	on("tool.call", ($, e, next) =>
-		onToolCall($, enrollment, e, next, list),
-	).catch(onToolCallCatch);
+	// request R4 (F62): the epoch is taken here, before the guard's first await.
+	on("tool.call", async ($, e, next) => {
+		const key = e.tool_use_id ?? e;
+		if (e.tool === TOOL) startedIn.set(key, requests.epoch());
+		try {
+			return await onToolCall($, enrollment, e, next, list);
+		} finally {
+			startedIn.delete(key);
+		}
+	}).catch(onToolCallCatch);
 
 	// request R1: after the guard above, so the guard scans its arguments and its answer.
-	on("tool.call", { tool: `mcp__blindfold__${TOOL_NAME}` }, ($, e, next) =>
-		onRequestSecret($, enrollment, requests, e, next, list),
+	on("tool.call", { tool: TOOL }, ($, e, next) =>
+		onRequestSecret(
+			$,
+			enrollment,
+			requests,
+			e,
+			next,
+			list,
+			startedIn.get(e.tool_use_id ?? e),
+		),
 	);
 
 	// R3, R6 to R10: no matcher, so every prompt, block, section, attachment, skill, and mention is guarded.

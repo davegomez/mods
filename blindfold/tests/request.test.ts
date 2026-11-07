@@ -24,7 +24,7 @@ import {
 	TOOL_NAME,
 	validName,
 } from "../hooks/request.ts";
-import { fakeApi, fakes, hooksOf } from "./fakes.ts";
+import { fakeApi, fakes, gate, hooksOf } from "./fakes.ts";
 
 const fake = fakes(41);
 const value = fake.secret(24);
@@ -410,6 +410,97 @@ describe("R4 clear and sync in register", () => {
 		);
 		expect(requests.current()?.state).toBe("pending");
 		expect(sets).toEqual([]);
+	});
+});
+
+describe("R4 (F62) the epoch fence", () => {
+	test("R4 (F62): every clear starts a new epoch, also with no open request; ask does not", () => {
+		const own = createRequests();
+		const first = own.epoch();
+		own.clear();
+		const second = own.epoch();
+		expect(second).not.toBe(first);
+		own.ask(NAME, "r");
+		expect(own.epoch()).toBe(second);
+	});
+
+	test("R4 (F62): a call that started in an older epoch answers from the status and makes no request", async () => {
+		const { api } = fakeApi({ ".env": { text: "OTHER=1\n" } });
+		const own = createRequests();
+		const open = own.ask("OPEN_TOKEN", "kept");
+		const stale = own.epoch() - 1;
+		const { next, calls } = nextSpy();
+		const result = keep(
+			await onRequestSecret(
+				api,
+				createEnrollment(),
+				own,
+				{ tool: TOOL, tool_use_id: "t62", name: NAME, reason: "r" },
+				next,
+				".env",
+				stale,
+			),
+		);
+		expect(result).toEqual({ result: MISSING_TEXT });
+		expect(calls).toEqual([]);
+		expect(own.current()).toBe(open);
+	});
+
+	/** The registered tool.call guard, with the request hook as its `next`, while the .env read waits on a gate. */
+	const waitingCall = async () => {
+		enrollment.drop();
+		requests.clear();
+		const door = gate();
+		const { api } = fakeApi({ ".env": { text: "OTHER=1\n", gate: door.wait } });
+		const $ = {
+			...api,
+			plugin: { name: "blindfold", dir: "/plugins/blindfold" },
+			ui: { toast: () => {} },
+		} as unknown as EngineInterface;
+		const hooks = hooksOf(register, { envFiles: ".env" });
+		const own = hooks.get(`tool.call ${JSON.stringify({ tool: TOOL })}`);
+		const budget = {
+			budget: { ms: 10_000, remainingMs: 10_000 },
+			called: false,
+		};
+		const toOwn = Object.assign(
+			async (e: unknown) => own?.($, e, nextSpy().next),
+			budget,
+		);
+		const answer = hooks.get("tool.call")?.(
+			$,
+			{ tool: TOOL, tool_use_id: "t62", name: NAME, reason: "r" },
+			toOwn,
+		) as Promise<unknown>;
+		return { hooks, $, door, answer, budget };
+	};
+
+	test("R4 (F62): with no clear, a call that waited in the guard still makes a request", async () => {
+		const { door, answer } = await waitingCall();
+		door.open();
+		expect(await answer).toEqual({ result: MISSING_TEXT });
+		expect(requests.current()?.name).toBe(NAME);
+	});
+
+	test("R4 (F62): a user prompt while a call waits in the guard means the call makes no request", async () => {
+		const { hooks, $, door, answer, budget } = await waitingCall();
+		const cleared = hooks.get("prompt.submit")?.(
+			$,
+			{ text: "hello", wait: false },
+			Object.assign(async (e: unknown) => e, budget),
+		);
+		door.open();
+		await cleared;
+		expect(await answer).toEqual({ result: MISSING_TEXT });
+		expect(requests.current()).toBeUndefined();
+	});
+
+	test("R4 (F62): session.end while a call waits in the guard means the call makes no request", async () => {
+		const { hooks, $, door, answer } = await waitingCall();
+		await hooks.get("session.end")?.($, { reason: "other" }, async (e) => e);
+		door.open();
+		expect(await answer).toEqual({ result: MISSING_TEXT });
+		expect(requests.current()).toBeUndefined();
 	});
 });
 

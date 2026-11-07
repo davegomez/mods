@@ -85,9 +85,10 @@ export type Request = {
 	state: "pending" | "ready";
 };
 
-/** R4: at most 1 open request. */
+/** R4: at most 1 open request. Each clear starts a new epoch (F62). */
 export function createRequests() {
 	let open: Request | undefined;
+	let epoch = 0;
 	const sync = (status: Status): void => {
 		if (open) {
 			const state = setIn(open.name, status) ? "ready" : "pending";
@@ -111,6 +112,11 @@ export function createRequests() {
 		},
 		clear(): void {
 			open = undefined;
+			epoch++;
+		},
+		/** R4 (F62): a call that started in an older epoch makes no request. */
+		epoch(): number {
+			return epoch;
 		},
 		current(): Request | undefined {
 			return open;
@@ -126,7 +132,10 @@ export const isOwnPrompt = (origin: PromptOrigin | undefined, plugin: string) =>
 
 type ToolCall = Parameters<Hook<"tool.call">>;
 
-/** R1, R3: answers the call itself, since a call no hook answers fails. `list` is for the first-use load (F46). */
+/**
+ * R1, R3: answers the call itself, since a call no hook answers fails. `list` is for the first-use load (F46).
+ * R4 (F62): `epoch` is the one the call started in, taken before the chain's first await.
+ */
 export async function onRequestSecret(
 	$: ToolCall[0],
 	enrollment: Enrollment,
@@ -134,12 +143,13 @@ export async function onRequestSecret(
 	e: ToolCall[1],
 	_next: unknown,
 	list: string,
+	epoch = requests.epoch(),
 ): Promise<ToolCallResult> {
 	await ensureLoaded($, enrollment, list);
 	const { name, reason } = e as Record<string, unknown>;
 	if (!validName(name)) return { deny: NAME_RULE };
 	const status = enrollment.status();
-	if (setIn(name, status) === undefined) {
+	if (epoch === requests.epoch() && setIn(name, status) === undefined) {
 		requests.ask(name, cleanReason(reason));
 	}
 	return { result: statusText(name, status) };
