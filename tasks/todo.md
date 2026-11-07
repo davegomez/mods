@@ -304,5 +304,6 @@ Commands, run for every task: the 4 above.
 ## Checkpoint G
 
 - [x] The 4 commands pass. Pi reviews `ui.ts`. High findings are fixed (F77 to F82).
-- [ ] Live run with the owner: G1, G2, G3, F58.
+- [x] Live run with the owner: G1, G2, G3, F58 (2026-11-07, `docs/specs/blindfold/live-run-m5.md`). All pass: dots and VoiceOver (owner), the value byte-exact in `.env`, mode 600 kept by `$.fs.write` (F49 closed), `/.env` ignored, the tool result masked, cancel, F64 canonical args in the transcript, no value in the transcript or debug log, the tool after `/clear` (F58), the dialog gone after 300 s.
+- [ ] Fix the live run defects: F83 doubled "blindfold:" prefix in the status line and toasts. F84 `/secrets` prints "no command.run hook answered it". F85 no `/secrets continue`. F86 the band and the pane take no focus (keys or mouse), so their buttons cannot be used. F87 the dialog shows the reason above the name.
 - [ ] README, LICENSE, icon.
