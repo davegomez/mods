@@ -184,7 +184,7 @@ describe("R2 native commands", () => {
 			"--title",
 			"blindfold",
 			"--text",
-			`use &lt;b&gt; &amp; go\n\n${NAME}`,
+			`Enter the value for ${NAME}.\n\nuse &lt;b&gt; &amp; go`,
 		]);
 	});
 
@@ -194,12 +194,26 @@ describe("R2 native commands", () => {
 			"--title",
 			"blindfold",
 			"--password",
-			`why\n\n${NAME}`,
+			`Enter the value for ${NAME}.\n\nwhy`,
 		]);
 		expect(nativeCommand("linux", NAME, "why")?.fallback?.fallback).toBe(
 			undefined,
 		);
 		expect(nativeCommand("macos", NAME, "why")?.fallback).toBe(undefined);
+	});
+
+	test("F87: the macOS dialog names the value first, then a blank line, then the reason", () => {
+		const script = nativeCommand("macos", NAME, HOSTILE)?.argv[2] ?? "";
+		expect(script).toContain(
+			'display dialog "Enter the value for " & (item 1 of argv) & "." & linefeed & linefeed & (item 2 of argv) default answer',
+		);
+	});
+
+	test("F87: the Windows dialog names the value first, then a blank line, then the reason", () => {
+		const script = nativeCommand("windows", NAME, HOSTILE)?.argv.at(-1) ?? "";
+		expect(script).toContain(
+			"$label.Text = 'Enter the value for ' + $env:BLINDFOLD_NAME + '.' + [Environment]::NewLine + [Environment]::NewLine + $env:BLINDFOLD_REASON",
+		);
 	});
 
 	test("R2: an unknown platform has no dialog", () => {

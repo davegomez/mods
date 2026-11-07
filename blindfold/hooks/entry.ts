@@ -52,11 +52,11 @@ export function pickMethod(
 	return method === "native" || platform === "macos" ? "unavailable" : terminal;
 }
 
-/** R2: item 1 is the name, item 2 the reason. Neither is ever in this text. */
+/** R2: item 1 is the name, item 2 the reason. Neither is ever in this text. F87: the name comes first. */
 const MACOS_SCRIPT = [
 	"on run argv",
 	"\tactivate",
-	`\tset answer to display dialog (item 2 of argv) & linefeed & linefeed & (item 1 of argv) default answer "" with hidden answer with title "${TITLE}" buttons {"Cancel", "Save"} default button "Save" cancel button "Cancel"`,
+	`\tset answer to display dialog "Enter the value for " & (item 1 of argv) & "." & linefeed & linefeed & (item 2 of argv) default answer "" with hidden answer with title "${TITLE}" buttons {"Cancel", "Save"} default button "Save" cancel button "Cancel"`,
 	"\treturn text returned of answer",
 	"end run",
 ].join("\n");
@@ -82,7 +82,7 @@ const WINDOWS_SCRIPT = [
 	"$label = New-Object System.Windows.Forms.Label",
 	"$label.AutoSize = $true",
 	"$label.MaximumSize = New-Object System.Drawing.Size 400, 0",
-	"$label.Text = $env:BLINDFOLD_REASON + [Environment]::NewLine + [Environment]::NewLine + $env:BLINDFOLD_NAME",
+	"$label.Text = 'Enter the value for ' + $env:BLINDFOLD_NAME + '.' + [Environment]::NewLine + [Environment]::NewLine + $env:BLINDFOLD_REASON",
 	"$box = New-Object System.Windows.Forms.TextBox",
 	"$box.UseSystemPasswordChar = $true",
 	"$box.Width = 400",
@@ -117,7 +117,8 @@ export function nativeCommand(
 	name: string,
 	reason: string,
 ): NativeCommand | undefined {
-	const prompt = `${reason}\n\n${name}`;
+	// F87: the name first, so the reason cannot read as the value's name.
+	const prompt = `Enter the value for ${name}.\n\n${reason}`;
 	switch (platform) {
 		case "macos":
 			return { argv: ["osascript", "-e", MACOS_SCRIPT, "--", name, reason] };
