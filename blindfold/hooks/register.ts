@@ -33,6 +33,15 @@ import {
 	onToolCallCatch,
 	resetRewriteCounts,
 } from "./shield.ts";
+import {
+	COMMAND,
+	COMMAND_SPEC,
+	createUi,
+	onBand,
+	onCommand,
+	onCommandCatch,
+	screenOf,
+} from "./ui.ts";
 
 /** The session's env files and known values, shared by every hook of this module instance. */
 export const enrollment = createEnrollment();
@@ -40,10 +49,15 @@ export const enrollment = createEnrollment();
 /** request R4: the 1 open request; a module reload starts with none. */
 export const requests = createRequests();
 
-// request R4, R5: every load, restart, and forget syncs the request, whoever started it.
+/** ui R3: the last flow outcome, and the redraw after each change. */
+export const ui = createUi(enrollment, requests);
+
+// request R4, R5: every load, restart, and forget syncs the request, whoever started it. ui R3 (F71): then the status line and a redraw.
 enrollment.watch(() => {
 	if (requests.current()) requests.sync(enrollment.status());
+	ui.redraw();
 });
+requests.watch(ui.redraw);
 
 const TOOL = `mcp__blindfold__${TOOL_NAME}`;
 
@@ -59,13 +73,16 @@ export const register: Register = (on, options) => {
 	let ended = list;
 
 	on("session.start", async ($, e, next) => {
+		ui.bind(screenOf($));
 		await load($, enrollment, list);
 		await $.tool.register(TOOL_SPEC);
+		await $.command.register(COMMAND_SPEC);
 		return next(e);
 	});
 
 	on("classic.SessionStart", async ($, e, next) => {
 		if (RESTARTS.includes(e.source)) {
+			ui.bind(screenOf($));
 			// Read before drop, which clears it. An empty list here means session.end ran first; loading more files is the safe side.
 			const current = enrollment.listed() || ended;
 			enrollment.drop();
@@ -76,6 +93,7 @@ export const register: Register = (on, options) => {
 
 	on("session.end", (_$, e, next) => {
 		requests.clear();
+		ui.setOutcome(undefined);
 		resetRewriteCounts();
 		ended = enrollment.listed();
 		enrollment.drop();
@@ -108,9 +126,11 @@ export const register: Register = (on, options) => {
 	);
 
 	// R3, R6 to R10: no matcher, so every prompt, block, section, attachment, skill, and mention is guarded.
-	// request R4: a user prompt clears the request first; blindfold's own Continue does not.
+	// request R4: a user prompt clears the request first; blindfold's own Continue and /secrets, which answers the request, do not.
 	on("prompt.submit", ($, e, next) => {
-		if (!isOwnPrompt(e.origin, $.plugin.name)) requests.clear();
+		if (!isOwnPrompt(e.origin, $.plugin.name) && e.command?.name !== COMMAND) {
+			requests.clear();
+		}
 		return onPromptSubmit($, enrollment, e, next, list);
 	}).catch(onPromptSubmitCatch);
 	on("prompt.context", ($, e, next) =>
@@ -145,4 +165,14 @@ export const register: Register = (on, options) => {
 
 	// R14: observes only, and refuses nothing, so it needs no .catch: a failed hook is skipped and the row is written.
 	on("config.set", ($, e, next) => onConfigSet($, enrollment, e, next));
+
+	// ui R1 (F64): the .catch masks the arguments too, since a skipped hook lets the command run as typed.
+	on("command.run", { command: COMMAND }, ($, e, next) =>
+		onCommand($, ui, e, next, list),
+	).catch(onCommandCatch);
+
+	// ui R2: the band, shared with other mods.
+	on("ui.render", { component: "AbovePrompt" }, ($, e, next) =>
+		onBand($, ui, e, next),
+	);
 };

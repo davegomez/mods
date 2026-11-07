@@ -97,16 +97,21 @@ export type Request = {
 export function createRequests() {
 	let open: Request | undefined;
 	let epoch = 0;
+	let changed = () => {};
 	const sync = (status: Status): void => {
 		if (open) {
 			const state = setIn(open.name, status) ? "ready" : "pending";
-			if (state !== open.state) open = { ...open, state };
+			if (state !== open.state) {
+				open = { ...open, state };
+				changed();
+			}
 		}
 	};
 	return {
 		/** R4: supersedes any open request. */
 		ask(name: string, reason: string): Request {
 			open = { id: crypto.randomUUID(), name, reason, state: "pending" };
+			changed();
 			return open;
 		},
 		/** R4 (F53): ready while the status shows the name set in an active file, else pending. */
@@ -115,12 +120,21 @@ export function createRequests() {
 		consume(status: Status): Request | undefined {
 			sync(status);
 			const ready = open?.state === "ready" ? open : undefined;
-			if (ready) open = undefined;
+			if (ready) {
+				open = undefined;
+				changed();
+			}
 			return ready;
 		},
 		clear(): void {
+			const had = open;
 			open = undefined;
 			epoch++;
+			if (had) changed();
+		},
+		/** ui R3 (F71): `listener` runs after each change of the open request. 1 listener; a 2nd replaces it. */
+		watch(listener: () => void): void {
+			changed = listener;
 		},
 		/** R4 (F62): a call that started in an older epoch makes no request. */
 		epoch(): number {

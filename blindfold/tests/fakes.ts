@@ -177,8 +177,40 @@ export function fakeApi(
 			...(realPath === null || !opts?.resolve ? {} : { realPath }),
 		};
 	};
+	const shown: FakeCall[] = [];
+	const show = (noun: string, ...args: unknown[]) => shown.push({ noun, args });
+	const element =
+		(type: string) =>
+		(props: Record<string, unknown>): FakeElement => ({ type, props });
 	const api = {
+		plugin: { name: "blindfold", dir: "/plugins/blindfold" },
 		session: { root: async () => ROOT },
+		ui: {
+			status: (text: string | undefined) => show("ui.status", text),
+			toast: (text: string) => show("ui.toast", text),
+			invalidate: (event: string) => show("ui.invalidate", event),
+			open: async (pane: unknown) => {
+				show("ui.open", pane);
+				return { isPlaced: true };
+			},
+			resolve: () => ({
+				Box: element("Box"),
+				Text: element("Text"),
+				Button: element("Button"),
+			}),
+		},
+		command: {
+			register: async (spec: { name: string }) => {
+				show("command.register", spec);
+				return { command: spec.name };
+			},
+		},
+		prompt: {
+			submit: async (args: unknown) => {
+				show("prompt.submit", args);
+				return {};
+			},
+		},
 		fs: {
 			stat,
 			exists: async (path: string) => {
@@ -238,8 +270,11 @@ export function fakeApi(
 			},
 		},
 	} as unknown as EngineInterface;
-	return { api, reads, sets, tools, calls };
+	return { api, reads, sets, tools, calls, shown };
 }
+
+/** 1 element the fake `$.ui.resolve` table builds: its type and its props, children included. */
+export type FakeElement = { type: string; props: Record<string, unknown> };
 
 /** A `$.fs.read` that answers text from `read`. The mod reads text only, so a bytes read fails. */
 export function textRead(read: (path: string) => Promise<string>): FsReadCall {

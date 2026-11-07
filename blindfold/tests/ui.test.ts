@@ -11,6 +11,7 @@ import {
 	parseCommand,
 	rowsOf,
 	statusLine,
+	targetFile,
 } from "../hooks/ui.ts";
 import { fakes } from "./fakes.ts";
 
@@ -408,5 +409,33 @@ describe("R4 rowsOf", () => {
 			["", "[hidden path]", true, 0],
 		]);
 		expect(JSON.stringify(rows)).not.toContain(value);
+	});
+});
+
+describe("R5 step 1 targetFile", () => {
+	test("R5: the first listed file that is active", () => {
+		const status = healthy(
+			file(".env", { kind: "missing" }),
+			file(".env.local", { kind: "active", names: [] }),
+			file(".env.dev", { kind: "active", names: [] }),
+		);
+		expect(targetFile(status)).toBe(".env.local");
+	});
+
+	test("R5: else the first listed file that is missing", () => {
+		const status = healthy(
+			file(".env", { kind: "stale", reason: "read-failed" }),
+			file(".env.local", { kind: "missing" }),
+			file(".env.dev", { kind: "missing" }),
+		);
+		expect(targetFile(status)).toBe(".env.local");
+	});
+
+	test("R5 (F73): a hidden path is no target, and with none left there is no target", () => {
+		const status = healthy(
+			file("[hidden path]", { kind: "active", names: [] }),
+			file(".env", { kind: "refused", reason: "absolute" }),
+		);
+		expect(targetFile(status)).toBeUndefined();
 	});
 });
