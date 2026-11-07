@@ -253,6 +253,30 @@ export const onToolCallCatch: CatchHandler<Hook<"tool.call">> = (
 		? { deny: "blindfold withheld this result." }
 		: { deny: "blindfold refused this call." };
 
+/** R15 (Q32): stands in for a refusal text from below that could not be scanned. */
+export const unscannedBelow = (reason: string) =>
+	`blindfold withheld a refusal text it could not scan (${reason}).`;
+
+/** R15 (Q32): the refusal text at `key` of what `next` answered, masked; the same object when clean or absent. */
+function maskBelow<R extends object>(
+	out: R,
+	key: keyof R & string,
+	set: KnownSet,
+	clock: Clock,
+): R {
+	const text = out[key];
+	if (typeof text !== "string") return out;
+	const verdict = guardText(text, set, clock);
+	if (verdict.kind === "pass") return out;
+	return {
+		...out,
+		[key]:
+			verdict.kind === "rewrite"
+				? verdict.value
+				: unscannedBelow(verdict.reason),
+	};
+}
+
 type Args<
 	E extends
 		| "prompt.submit"
@@ -290,7 +314,7 @@ const unscannedPrompt = (reason: string) => ({
 const hidToast = (count: number) =>
 	`blindfold hid ${count} secret${count === 1 ? "" : "s"} in your prompt`;
 
-/** R3: `text` and `context` are scanned together, so the toast counts both. Media in `attachments` is not scanned. */
+/** R3: `text` and `context` are scanned together, so the toast counts both. Media in `attachments` is not scanned. R15 (Q32): a drop from below stands as `next` gave it, since a changed drop after next fails the hook (d.ts:9843). */
 export async function onPromptSubmit(
 	$: Args<"prompt.submit">[0],
 	enrollment: Enrollment,
@@ -452,14 +476,16 @@ function isEnvFile(path: string, list: string): boolean {
 	});
 }
 
-/** R10 (Q27): other files pass, and R8 scans their text. */
+/** R10 (Q27): other files pass, and R8 scans their text. R15 (Q32): a deny from below is masked, since a deny after next holds (d.ts:9450). */
 export async function onPromptMention(
 	_$: Args<"prompt.mention">[0],
 	enrollment: Enrollment,
 	e: Args<"prompt.mention">[1],
 	next: Args<"prompt.mention">[2],
 ): Promise<PromptMentionResult> {
-	return isEnvFile(e.path, enrollment.listed()) ? REFUSED_MENTION : next(e);
+	if (isEnvFile(e.path, enrollment.listed())) return REFUSED_MENTION;
+	const out = await next(e);
+	return maskBelow(out, "deny", enrollment.knownSet(), clockOf(next));
 }
 
 /** R10, P5: a deny after next still holds, since the host forgets a read already made (d.ts:9427). */
@@ -471,7 +497,7 @@ export const REFUSED_SPAWN = {
 	deny: "blindfold refused this agent because its task holds a secret value. Refer to the secret by its env variable name, and never write the value itself.",
 };
 
-/** R11: the task is scanned before the agent starts; it has no masked form, so a hit refuses. */
+/** R11: the task is scanned before the agent starts; it has no masked form, so a hit refuses. R15 (Q32): a deny from below stands as `next` gave it, since a deny after next fails the hook (d.ts:450). */
 export async function onAgentSpawn(
 	_$: Args<"agent.spawn">[0],
 	enrollment: Enrollment,
@@ -516,7 +542,11 @@ export async function onSessionSend(
 	next: Args<"session.send">[2],
 ): Promise<SessionSendResult> {
 	const verdict = guardText(e.text, enrollment.knownSet(), clockOf(next));
-	if (verdict.kind === "pass") return next(e);
+	if (verdict.kind === "pass") {
+		// R15 (Q32): the model reads a reason from below as the tool's result.
+		const out = await next(e);
+		return maskBelow(out, "reason", enrollment.knownSet(), clockOf(next));
+	}
 	return verdict.kind === "rewrite"
 		? REFUSED_SEND
 		: {
@@ -550,10 +580,12 @@ export async function onSessionReceive(
 	next: Args<"session.receive">[2],
 ): Promise<SessionReceiveResult> {
 	const verdict = guardText(e.text, enrollment.knownSet(), clockOf(next));
-	if (verdict.kind === "pass") return next(e);
-	return verdict.kind === "rewrite"
-		? next({ ...e, text: verdict.value })
-		: WITHHELD_DELIVERY;
+	if (verdict.kind === "stop") return WITHHELD_DELIVERY;
+	const out = await next(
+		verdict.kind === "rewrite" ? { ...e, text: verdict.value } : e,
+	);
+	// R15 (Q32): the host logs a consumed text from below.
+	return maskBelow(out, "consumed", enrollment.knownSet(), clockOf(next));
 }
 
 /** R12, P5: after next the delivery is queued as next was given it, so that stands. */

@@ -71,7 +71,25 @@ R13. `session.append` (`d.ts:11444`). This is the 2nd scan before a row is store
 
 R14. Config change (enroll R7). On `config.set` for `blindfold.envFiles`, after `next(e)` returns `{ value }`, call `load` with the new value.
 
-R15. No leak. No toast, deny text, drop text, log, `$.state`, or `$.store` holds a value or an env name. A marker holds a name only (P1). The count in a toast is a number.
+R15. No leak (F40, F42, Q32).
+
+- Texts that blindfold writes: no toast, deny, drop, reason, or consumed text that blindfold makes, no log, no `$.state`, and no `$.store` holds a value or an env name. A marker holds a name only (P1). The count in a toast is a number.
+- A refusal text from below (from `next`: core or another mod) is scanned with `guardText` where the host allows a changed text after `next` and the model or a log reads it. A hit returns the masked text. A `stop` returns the fixed text `blindfold withheld a refusal text it could not scan (<reason>).` in the same field. A clean text returns the object from `next` unchanged.
+- An env name in a text from below is not hidden, because a name is not a secret and every marker shows it.
+
+Where a refusal text from below is masked:
+
+- `tool.call` `{ deny }` (R5): a deny after `next` withholds the result (`build/react-to-events.md`, "Handle a hook that fails"). The model reads it. On `stop`, R5's own withheld text stands.
+- `prompt.mention` `{ deny }`: "a read already made is forgotten. The debug log names the reason" (`d.ts:9450`).
+- `session.send` `{ isDelivered: false, reason }`: "the model reads `reason` as the tool's result" (`d.ts:12568`). INFERRED: no type line says a changed reason after `next` fails the hook, and the outcome stays `isDelivered: false`.
+- `session.receive` `{ consumed }`: "The reason is logged, the plugin named" (`d.ts:12391`). INFERRED: no type line says a changed consumed text after `next` fails the hook, and the delivery stays taken.
+
+If the host fails the hook on either INFERRED case, the `.catch` returns `next(e)`, which is the unmasked text from below, as before Q32.
+
+Where a refusal text from below cannot be masked, so it passes as `next` gave it:
+
+- `prompt.submit` `{ drop }`: "After a `next(e)` of the hook's was answered, a drop fails it" (`d.ts:9843`). The drop is shown to the user or logged, not read by the model.
+- `agent.spawn` `{ deny }`: "Returned after a `next(e)` was answered it fails the hook" (`d.ts:450`). When the Agent tool spawns, the deny is that tool's error, and R5 masks it at `tool.call`. A workflow script's `agent()` error is not masked.
 
 ### Not in scope
 
@@ -87,7 +105,7 @@ Same as `SPEC-detect.md`, plus `cd blindfold && bunx tsc -p .` (Q24). Files: `bl
 - 1 handler test per event (R3 to R14), with `claude-code/testing` and the `fakeApi` fake. Each event gets 4 cases: a hit, a clean item, a `stop`, and the `.catch` (before and after `next` where both exist).
 - R4: a fake key in each argument shape (a flat field, a nested object, an MCP argument), and a context rule hit that passes.
 - R5: the returned object has no `ref` and no `text` after a rewrite, and is the same object after `pass`.
-- R15: after each test, the JSON text of every toast, deny, drop, and reason holds no fake value and no env name.
+- R15: after each test, the JSON text of every toast, deny, drop, reason, and consumed text holds no fake value and no env name outside a marker. Each event that masks a refusal text from below has a hit and a `stop` test. Each event that cannot has a test that the text passes unchanged.
 - A speed test: `"pwd=&".repeat(…)` at 2 Mi characters finishes or stops inside the deadline (capability map note).
 
 ## Boundaries
@@ -111,3 +129,4 @@ Same as `SPEC-detect.md`, plus `cd blindfold && bunx tsc -p .` (Q24). Files: `bl
 - Q28. `session.receive` rewrites a message from another session instead of refusing it, because `{ consumed }` drops the whole message without a word to the model. The design said "refuse". Accepted.
 - Q29. A prompt with a pinned slash command and a hit in its text is dropped, because the host does not apply a text rewrite then. Accepted.
 - Q30. A context rule hit alone in tool arguments does not refuse the call. Code such as `password = "…"` in an `Edit` call is common, and the context rules are the least precise detectors (design 1a). Known values, private keys, and vendor prefixes still refuse. Accepted.
+- Q32. R15 covers the texts that blindfold writes. A refusal text from below is masked where the host allows a changed text after next and the model or a log reads it. Env names in text from below are not hidden, because markers show names (F40, F42). Accepted.

@@ -37,6 +37,7 @@ import {
 	REFUSED_SEND,
 	REFUSED_SPAWN,
 	ROTATE_TOAST,
+	unscannedBelow,
 	type Verdict,
 	WITHHELD_CONTENT,
 	WITHHELD_DELIVERY,
@@ -775,6 +776,20 @@ describe("R3 prompt.submit", () => {
 		expect(passed).toEqual([{ text: HIDDEN, wait: false }]);
 	});
 
+	test("R15 (F40, Q32): a drop from below is left as the host requires", async () => {
+		// d.ts:9843: a drop after next fails the hook, so it is not pushed to `answers`.
+		const { enrollment } = await setup();
+		const below = { drop: `Refused ${envValue}` };
+		const { next } = nextOf<SubmitNext>(below);
+		const result = await onPromptSubmit(
+			promptApi(),
+			enrollment,
+			{ text: "clean", wait: false } as unknown as SubmitE,
+			next,
+		);
+		expect(result).toBe(below);
+	});
+
 	test("Q29 (isMeta): a hit in the text of a meta prompt is a drop, because a rewrite may not apply", async () => {
 		const { result, passed } = await submit({ text: envValue, isMeta: true });
 		expect(result).toEqual(PINNED_PROMPT);
@@ -1011,6 +1026,31 @@ describe("R10 prompt.mention", () => {
 		});
 	}
 
+	const mentionBelow = async (answer: unknown) => {
+		const { enrollment } = await setup();
+		const { next } = nextOf<MentionNext>(answer);
+		const e = { mention: "x", path: "/repo/notes.md" } as MentionE;
+		const result = await onPromptMention(promptApi(), enrollment, e, next);
+		answers.push(result);
+		return result;
+	};
+
+	test("R15 (F40, Q32): a deny from below with a value is masked, because the debug log reads it", async () => {
+		const result = await mentionBelow({ deny: `Read refused ${envValue}` });
+		expect(result).toEqual({ deny: `Read refused ${HIDDEN}` });
+	});
+
+	test("R15 (F40, Q32): a clean deny from below is the same object", async () => {
+		const below = { deny: "Read refused" };
+		expect(await mentionBelow(below)).toBe(below);
+	});
+
+	test("R15 (F40, Q32): a deny from below it cannot scan is a fixed blindfold deny", async () => {
+		const result = await mentionBelow({ deny: tooLarge() });
+		expect(Object.keys(result)).toEqual(["deny"]);
+		expect(result.deny).toBe(unscannedBelow("too-large"));
+	});
+
 	test("R10 (Q27): with no list, a .env base name is still a deny", async () => {
 		const { next, passed } = nextOf<MentionNext>(read);
 		const result = await onPromptMention(
@@ -1079,6 +1119,20 @@ describe("R11 agent.spawn", () => {
 		expect(result).toBe(started);
 	});
 
+	test("R15 (F40, Q32): a deny from below is left as the host requires", async () => {
+		// d.ts:450: a deny after next fails the hook, so it is not pushed to `answers`.
+		const { enrollment } = await setup();
+		const below = { deny: `Refused ${envValue}` };
+		const { next } = nextOf<SpawnNext>(below);
+		const result = await onAgentSpawn(
+			promptApi(),
+			enrollment,
+			spawnE({}),
+			next,
+		);
+		expect(result).toBe(below);
+	});
+
 	test("R11 (R2): a task it cannot scan is a deny with the reason, and next never runs", async () => {
 		const { result, passed } = await spawn(spawnE({ prompt: tooLarge() }));
 		expect(Object.keys(result)).toEqual(["deny"]);
@@ -1111,13 +1165,35 @@ describe("R12 session.send", () => {
 	const delivered = { isDelivered: true };
 	const sendE = (text: string) =>
 		({ to: "peer", text, origin: { kind: "model" } }) as unknown as SendE;
-	const send = async (e: SendE) => {
+	const send = async (e: SendE, answer: unknown = delivered) => {
 		const { enrollment } = await setup();
-		const { next, passed } = nextOf<SendNext>(delivered);
+		const { next, passed } = nextOf<SendNext>(answer);
 		const result = await onSessionSend(promptApi(), enrollment, e, next);
 		answers.push(result);
 		return { result, passed };
 	};
+
+	test("R15 (F40, Q32): a reason from below with a value is masked, because the model reads it", async () => {
+		const { result } = await send(sendE("hello"), {
+			isDelivered: false,
+			reason: `No recipient ${envValue}`,
+		});
+		expect(result).toEqual({
+			isDelivered: false,
+			reason: `No recipient ${HIDDEN}`,
+		});
+	});
+
+	test("R15 (F40, Q32): a reason from below it cannot scan is a fixed blindfold reason", async () => {
+		const { result } = await send(sendE("hello"), {
+			isDelivered: false,
+			reason: tooLarge(),
+		});
+		expect(result).toEqual({
+			isDelivered: false,
+			reason: unscannedBelow("too-large"),
+		});
+	});
 
 	test("R12: a hit is isDelivered false with a reason, and next never runs", async () => {
 		const { result, passed } = await send(sendE(`key ${envValue}`));
@@ -1167,13 +1243,29 @@ describe("R12 session.receive", () => {
 	const queued = { text: "queued" };
 	const receiveE = (text: string) =>
 		({ origin: { kind: "peer" }, text }) as unknown as ReceiveE;
-	const receive = async (e: ReceiveE) => {
+	const receive = async (e: ReceiveE, answer: unknown = queued) => {
 		const { enrollment } = await setup();
-		const { next, passed } = nextOf<ReceiveNext>(queued);
+		const { next, passed } = nextOf<ReceiveNext>(answer);
 		const result = await onSessionReceive(promptApi(), enrollment, e, next);
 		answers.push(result);
 		return { result, passed };
 	};
+
+	for (const text of ["hello", `key ${envValue}`]) {
+		test(`R15 (F40, Q32): a consumed text from below with a value is masked after a ${text === "hello" ? "clean" : "masked"} message, because the log reads it`, async () => {
+			const { result } = await receive(receiveE(text), {
+				consumed: `Handled ${envValue}`,
+			});
+			expect(result).toEqual({ consumed: `Handled ${HIDDEN}` });
+		});
+	}
+
+	test("R15 (F40, Q32): a consumed text from below it cannot scan is a fixed blindfold text", async () => {
+		const { result } = await receive(receiveE("hello"), {
+			consumed: tooLarge(),
+		});
+		expect(result).toEqual({ consumed: unscannedBelow("too-large") });
+	});
 
 	test("Q28: a hit is rewritten, and next gets the masked copy", async () => {
 		const { result, passed } = await receive(receiveE(`key ${envValue}`));
@@ -1498,7 +1590,8 @@ describe("R15 no leak", () => {
 			...texts("consumed"),
 			...toasts,
 		]) {
-			const json = JSON.stringify(item);
+			// Q32: a marker in a masked text from below may hold a name, and nothing else may.
+			const json = JSON.stringify(item).replace(/\[secret: \w+\]/g, "");
 			for (const secret of secrets) expect(json.includes(secret)).toBe(false);
 		}
 		for (const toast of toasts) {
