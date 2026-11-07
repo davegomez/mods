@@ -16,6 +16,13 @@
 			"description": "How blindfold asks you for a secret value. auto uses the native dialog of your system. native uses only the native dialog, and asks you to add the value in your editor when there is none. terminal is not available yet and works as auto.",
 			"options": ["auto", "native", "terminal"],
 			"default": "auto"
+		},
+		"saveToEnvFile": {
+			"type": "string",
+			"title": "Save to env file",
+			"description": "Whether blindfold saves a secret value you enter to your env file. ask asks you each time. always saves it without asking. never keeps it out of the file. blindfold saves only to a file inside the project folder, makes git ignore the file first, and gives a new file access for you alone.",
+			"options": ["ask", "always", "never"],
+			"default": "ask"
 		}
 	}
 }

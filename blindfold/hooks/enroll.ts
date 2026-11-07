@@ -162,7 +162,7 @@ const addTo = (bucket: Bucket, known: readonly Known[]) => {
 };
 
 /** The session root as its real path, and its separator. */
-type Root = { real: string; sep: string };
+export type Root = { real: string; sep: string };
 
 const stale = (reason: StaleReason): FileState => ({ kind: "stale", reason });
 const refuse = (reason: RefusedReason): FileState => ({
@@ -171,7 +171,7 @@ const refuse = (reason: RefusedReason): FileState => ({
 });
 
 /** R2: the session root resolved the way a file is, or undefined when it does not resolve. */
-async function rootOf($: EngineInterface): Promise<Root | undefined> {
+export async function rootOf($: EngineInterface): Promise<Root | undefined> {
 	try {
 		const { realPath } = await $.fs.stat(await $.session.root(), {
 			resolve: true,
@@ -187,7 +187,7 @@ async function rootOf($: EngineInterface): Promise<Root | undefined> {
 }
 
 /** R2, R10: where an accepted path lands when it is a regular file under the root, else the state that stops its read. An `$.fs` error becomes a reason. */
-async function locate(
+export async function locate(
 	$: EngineInterface,
 	root: Root,
 	path: string,
@@ -211,7 +211,7 @@ async function locate(
 }
 
 /** R9: the nearest folder that exists above a missing `path` is a folder, and is the root or under it. */
-async function parentInside(
+export async function parentInside(
 	$: EngineInterface,
 	root: Root,
 	path: string,

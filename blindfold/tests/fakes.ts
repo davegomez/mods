@@ -6,6 +6,8 @@ import type {
 	FsReadOptions,
 	On,
 	PluginOptions,
+	ProcessRunInit,
+	ProcessRunResult,
 	Register,
 	ToolSpec,
 } from "claude-code";
@@ -116,25 +118,45 @@ export type FakeFile = {
 
 export type FakeSet = { key: string; value: unknown };
 
+/** 1 recorded `$` call, in the order the fake saw it. */
+export type FakeCall = { noun: string; args: unknown[] };
+
+export type FakeOptions = {
+	realRoot?: string | null;
+	setAnswer?: { deny: string };
+	/** Answers `$.process.run`; a thrown error is a command that does not start. Absent, every run rejects. */
+	run?: (
+		argv: readonly string[],
+		init?: ProcessRunInit,
+	) => Partial<ProcessRunResult>;
+	/** What `$.env.get` answers. */
+	env?: Record<string, string>;
+	/** The text a `$.fs.write` keeps, from the text it was given. Absent, the given text. */
+	onWrite?: (rel: string, text: string) => string;
+};
+
 /**
  * A hand-made `$` over `files`, keyed by their path under the root. The test's own `$` cannot make these calls:
  * the host allows a `$` call only to the module whose source spells it.
  */
 export function fakeApi(
 	files: Record<string, FakeFile>,
-	options: { realRoot?: string | null; setAnswer?: { deny: string } } = {},
+	options: FakeOptions = {},
 ) {
 	const realRoot =
 		options.realRoot === undefined ? REAL_ROOT : options.realRoot;
 	const reads: string[] = [];
 	const sets: FakeSet[] = [];
 	const tools: ToolSpec[] = [];
+	const calls: FakeCall[] = [];
+	const log = (noun: string, ...args: unknown[]) => calls.push({ noun, args });
 	const base = realRoot ?? REAL_ROOT;
 	const under = (path: string) =>
 		path.startsWith(`${base}/`) ? path.slice(base.length + 1) : "";
 	const real = (rel: string, file: FakeFile) =>
 		file.realPath === undefined ? `${base}/${rel}` : file.realPath;
 	const stat = async (path: string, opts?: { resolve: boolean }) => {
+		log("fs.stat", path, opts);
 		const found =
 			path === ROOT
 				? { kind: "dir" as const, isLink: false, size: 0, realPath: realRoot }
@@ -159,8 +181,12 @@ export function fakeApi(
 		session: { root: async () => ROOT },
 		fs: {
 			stat,
-			exists: async (path: string) => under(path) in files,
+			exists: async (path: string) => {
+				log("fs.exists", path);
+				return under(path) in files;
+			},
 			read: async (path: string) => {
+				log("fs.read", path);
 				reads.push(path);
 				const file = Object.entries(files).find(
 					([rel, f]) => real(rel, f) === path,
@@ -170,6 +196,33 @@ export function fakeApi(
 					throw new Error(`EIO: read '${path}'`);
 				}
 				return file.text;
+			},
+			write: async (path: string, text: string) => {
+				log("fs.write", path, text);
+				const rel = under(path);
+				if (rel === "") throw new Error(`EACCES: write '${path}'`);
+				const kept = options.onWrite ? options.onWrite(rel, text) : text;
+				files[rel] = { ...files[rel], text: kept };
+			},
+		},
+		env: {
+			get: async (key: string) => {
+				log("env.get", key);
+				return options.env?.[key];
+			},
+		},
+		process: {
+			run: async (argv: readonly string[], init?: ProcessRunInit) => {
+				log("process.run", argv, init);
+				if (!options.run) throw new Error("spawn failed");
+				return {
+					exitCode: 0,
+					stdout: "",
+					stderr: "",
+					isStdoutTruncated: false,
+					isStderrTruncated: false,
+					...options.run(argv, init),
+				};
 			},
 		},
 		config: {
@@ -185,7 +238,7 @@ export function fakeApi(
 			},
 		},
 	} as unknown as EngineInterface;
-	return { api, reads, sets, tools };
+	return { api, reads, sets, tools, calls };
 }
 
 /** A `$.fs.read` that answers text from `read`. The mod reads text only, so a bytes read fails. */
