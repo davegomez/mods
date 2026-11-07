@@ -289,8 +289,8 @@ Commands, run for every task: the 4 above.
 
 `SPEC-ui.md` R4, R6.
 
-- [ ] The pane draws 1 row per name with words for each state, the git warning, and the count. 59 columns gives 1 column. Forget and Refresh work.
-- [ ] The git state per file is read after each load with the read-only commands from `write` R3, never during a render.
+- [x] The pane draws 1 row per name with words for each state, the git warning, and the count. 59 columns gives 1 column. Forget and Refresh work.
+- [x] The git state per file is read after each load with the read-only commands from `write` R3, never during a render.
 - Files: `blindfold/hooks/ui.ts`, `blindfold/hooks/register.ts`, `blindfold/tests/ui.test.ts`, `blindfold/hooks/write.ts` (export the git probe). Size: M.
 
 ## T23. Flow
