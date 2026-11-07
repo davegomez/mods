@@ -268,6 +268,9 @@ export function createEnrollment() {
 	let generation = 0;
 	let list = "";
 	let adding: Promise<unknown> = Promise.resolve();
+	/** F46: true once a load began or a drop ran; after that no first-use load starts. */
+	let used = false;
+	let firstLoad: Promise<unknown> | undefined;
 
 	const feed = (path: string, known: readonly Known[]) => {
 		const bucket = byFile.get(path) ?? new Map();
@@ -297,8 +300,17 @@ export function createEnrollment() {
 		apply,
 		/** R8: take a new generation for a load of `listed`, and keep the list for `refreshIfNamed` and `addFile`. */
 		begin(listed: string): number {
+			used = true;
 			list = listed;
 			return ++generation;
+		},
+		/** F46: run `start` when no load or drop came yet. Every caller meanwhile waits for that same load. */
+		once(start: () => Promise<unknown>): Promise<unknown> {
+			if (!used) {
+				used = true;
+				firstLoad = start();
+			}
+			return firstLoad ?? Promise.resolve();
 		},
 		/** R8: apply only when no newer load or drop took a generation meanwhile. */
 		finish(mine: number, results: readonly ApplyFile[]): void {
@@ -330,6 +342,7 @@ export function createEnrollment() {
 		},
 		/** R8: takes a generation too, so a load still running adds nothing. Clears the list, so a late refresh reads nothing. */
 		drop(): void {
+			used = true;
 			generation++;
 			list = "";
 			byFile.clear();
@@ -358,6 +371,15 @@ export async function load(
 	);
 	enrollment.finish(mine, results);
 	return enrollment.status();
+}
+
+/** F46: a reload runs `register` again without `session.start`, so a guard loads `list` first when this enrollment never loaded. */
+export async function ensureLoaded(
+	$: EngineInterface,
+	enrollment: Enrollment,
+	list: string,
+): Promise<void> {
+	await enrollment.once(() => load($, enrollment, list));
 }
 
 /** R7: load again when the input names a listed file. */

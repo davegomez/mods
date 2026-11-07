@@ -19,6 +19,7 @@ import { DEFAULT_LIMITS, scanText, scanValue } from "./detect.ts";
 import {
 	ENV_FILES_KEY,
 	type Enrollment,
+	ensureLoaded,
 	load,
 	parseList,
 	refreshIfNamed,
@@ -242,13 +243,15 @@ function guardResult(out: ToolCallResult, set: KnownSet, clock: Clock) {
 		: out;
 }
 
-/** R4, R5: every tool, MCP tools too. `enrollment` is a parameter, because `register.ts` owns it and imports this module. */
+/** R4, R5: every tool, MCP tools too. `enrollment` and `list` are parameters, because `register.ts` owns them and imports this module. */
 export async function onToolCall(
 	$: ToolCall[0],
 	enrollment: Enrollment,
 	e: ToolCall[1],
 	next: ToolCall[2],
+	list: string,
 ): Promise<ToolCallResult> {
+	await ensureLoaded($, enrollment, list);
 	await refreshIfNamed($, enrollment, e);
 	const before = guardArgs(argsOf(e), enrollment.knownSet(), clockOf(next));
 	if (before.kind === "refuse") return { deny: REFUSED_ARGS };
@@ -337,7 +340,9 @@ export async function onPromptSubmit(
 	enrollment: Enrollment,
 	e: Args<"prompt.submit">[1],
 	next: Args<"prompt.submit">[2],
+	list: string,
 ): Promise<PromptSubmitResult> {
+	await ensureLoaded($, enrollment, list);
 	const verdict = guardValue(
 		{ text: e.text, context: e.context },
 		enrollment.knownSet(),
@@ -369,11 +374,13 @@ export const onPromptSubmitCatch: CatchHandler<Hook<"prompt.submit">> = (
  * `claudeMd` text makes the files behind it unknown to the host, so `instructionFiles` is left out.
  */
 export async function onPromptContext(
-	_$: Args<"prompt.context">[0],
+	$: Args<"prompt.context">[0],
 	enrollment: Enrollment,
 	e: Args<"prompt.context">[1],
 	next: Args<"prompt.context">[2],
+	list: string,
 ): Promise<PromptContextResult> {
+	await ensureLoaded($, enrollment, list);
 	const out = await next(e);
 	const set = enrollment.knownSet();
 	const clock = clockOf(next);
@@ -416,11 +423,13 @@ function maskAnswer<R extends { text: string | null }>(
 
 /** R7: the section's text is core's own (d.ts:9643), so the answer of `next` is scanned. */
 export async function onPromptSection(
-	_$: Args<"prompt.section">[0],
+	$: Args<"prompt.section">[0],
 	enrollment: Enrollment,
 	e: Args<"prompt.section">[1],
 	next: Args<"prompt.section">[2],
+	list: string,
 ): Promise<PromptSectionResult> {
+	await ensureLoaded($, enrollment, list);
 	const out = await next(e);
 	return maskAnswer(out, enrollment.knownSet(), clockOf(next), { text: null });
 }
@@ -433,11 +442,13 @@ export const onPromptSectionCatch: CatchHandler<
 
 /** R8: only what goes to the model. R13 covers the stored row. */
 export async function onPromptAttachment(
-	_$: Args<"prompt.attachment">[0],
+	$: Args<"prompt.attachment">[0],
 	enrollment: Enrollment,
 	e: Args<"prompt.attachment">[1],
 	next: Args<"prompt.attachment">[2],
+	list: string,
 ): Promise<PromptAttachmentResult> {
+	await ensureLoaded($, enrollment, list);
 	const out = await next(e);
 	return maskAnswer(out, enrollment.knownSet(), clockOf(next), { text: null });
 }
@@ -450,11 +461,13 @@ const WITHHELD_SKILL = { text: "blindfold withheld this skill text." };
 
 /** R9: the result type allows no null, so a text it cannot scan is replaced. */
 export async function onSkillPrompt(
-	_$: Args<"skill.prompt">[0],
+	$: Args<"skill.prompt">[0],
 	enrollment: Enrollment,
 	e: Args<"skill.prompt">[1],
 	next: Args<"skill.prompt">[2],
+	list: string,
 ): Promise<SkillPromptResult> {
+	await ensureLoaded($, enrollment, list);
 	const out = await next(e);
 	return maskAnswer(out, enrollment.knownSet(), clockOf(next), WITHHELD_SKILL);
 }
@@ -498,11 +511,13 @@ function isEnvFile(path: string, list: string): boolean {
  * R10 (F44, Q33): a context from below cannot be changed (d.ts:9439), so a hit or a stop in it refuses.
  */
 export async function onPromptMention(
-	_$: Args<"prompt.mention">[0],
+	$: Args<"prompt.mention">[0],
 	enrollment: Enrollment,
 	e: Args<"prompt.mention">[1],
 	next: Args<"prompt.mention">[2],
+	list: string,
 ): Promise<PromptMentionResult> {
+	await ensureLoaded($, enrollment, list);
 	if (isEnvFile(e.path, enrollment.listed())) return REFUSED_MENTION;
 	const out = await next(e);
 	const set = enrollment.knownSet();
@@ -526,11 +541,13 @@ export const REFUSED_SPAWN = {
 
 /** R11: the task is scanned before the agent starts; it has no masked form, so a hit refuses. R15 (Q32): a deny from below stands as `next` gave it, since a deny after next fails the hook (d.ts:450). */
 export async function onAgentSpawn(
-	_$: Args<"agent.spawn">[0],
+	$: Args<"agent.spawn">[0],
 	enrollment: Enrollment,
 	e: Args<"agent.spawn">[1],
 	next: Args<"agent.spawn">[2],
+	list: string,
 ): Promise<AgentSpawnResult> {
+	await ensureLoaded($, enrollment, list);
 	const verdict = guardValue(
 		{ prompt: e.prompt, description: e.description },
 		enrollment.knownSet(),
@@ -563,11 +580,13 @@ export const REFUSED_SEND = {
 
 /** R12: a refusal is valid only without next (d.ts:12559). */
 export async function onSessionSend(
-	_$: Args<"session.send">[0],
+	$: Args<"session.send">[0],
 	enrollment: Enrollment,
 	e: Args<"session.send">[1],
 	next: Args<"session.send">[2],
+	list: string,
 ): Promise<SessionSendResult> {
+	await ensureLoaded($, enrollment, list);
 	const verdict = guardText(e.text, enrollment.knownSet(), clockOf(next));
 	if (verdict.kind === "pass") {
 		// R15 (Q32): the model reads a reason from below as the tool's result.
@@ -601,11 +620,13 @@ export const WITHHELD_DELIVERY = {
 
 /** R12 (Q28): a hit is masked, not consumed, so the model still reads the message. */
 export async function onSessionReceive(
-	_$: Args<"session.receive">[0],
+	$: Args<"session.receive">[0],
 	enrollment: Enrollment,
 	e: Args<"session.receive">[1],
 	next: Args<"session.receive">[2],
+	list: string,
 ): Promise<SessionReceiveResult> {
+	await ensureLoaded($, enrollment, list);
 	const verdict = guardText(e.text, enrollment.knownSet(), clockOf(next));
 	if (verdict.kind === "stop") return WITHHELD_DELIVERY;
 	const out = await next(
@@ -688,7 +709,9 @@ export async function onSessionAppend(
 	enrollment: Enrollment,
 	e: Append[1],
 	next: Append[2],
+	list: string,
 ) {
+	await ensureLoaded($, enrollment, list);
 	const set = enrollment.knownSet();
 	const clock = clockOf(next);
 	const verdict = guardEach(e.message.content, (block) =>

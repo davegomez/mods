@@ -389,6 +389,7 @@ async function call(
 		enrollment,
 		e as Parameters<typeof onToolCall>[2],
 		next,
+		".env",
 	);
 	answers.push(result);
 	return { result: result as Record<string, unknown>, passed, answer };
@@ -504,6 +505,7 @@ describe("R4 tool.call before next", () => {
 				command: `grep ${freshValue} .env`,
 			} as Parameters<typeof onToolCall>[2],
 			next,
+			".env",
 		);
 		answers.push(result);
 		expect(result).toEqual({ deny: REFUSED_ARGS });
@@ -724,6 +726,7 @@ describe("R3 prompt.submit", () => {
 			enrollment,
 			{ wait: false, origin: { kind: "user" }, ...e } as unknown as SubmitE,
 			next,
+			".env",
 		);
 		answers.push(result);
 		return { result, passed, shown: toasts.slice(before) };
@@ -767,7 +770,13 @@ describe("R3 prompt.submit", () => {
 			origin: { kind: "user" },
 		} as unknown as SubmitE;
 		const before = toasts.length;
-		const result = await onPromptSubmit(promptApi(), enrollment, e, next);
+		const result = await onPromptSubmit(
+			promptApi(),
+			enrollment,
+			e,
+			next,
+			".env",
+		);
 		expect(passed).toEqual([e]);
 		expect(passed[0]).toBe(e);
 		expect(result).toBe(entered);
@@ -818,6 +827,7 @@ describe("R3 prompt.submit", () => {
 			enrollment,
 			{ text: envValue, wait: false } as unknown as SubmitE,
 			next,
+			".env",
 		);
 		expect(result).toBe(entered);
 		expect(passed).toEqual([{ text: HIDDEN, wait: false }]);
@@ -833,6 +843,7 @@ describe("R3 prompt.submit", () => {
 			enrollment,
 			{ text: "clean", wait: false } as unknown as SubmitE,
 			next,
+			".env",
 		);
 		expect(result).toBe(below);
 	});
@@ -868,7 +879,13 @@ describe("R6 prompt.context", () => {
 	const context = async (answer: unknown) => {
 		const { enrollment } = await setup();
 		const { next, passed } = nextOf<ContextNext>(answer);
-		const result = await onPromptContext(promptApi(), enrollment, e, next);
+		const result = await onPromptContext(
+			promptApi(),
+			enrollment,
+			e,
+			next,
+			".env",
+		);
 		answers.push(result);
 		return { result, passed };
 	};
@@ -1034,7 +1051,7 @@ describe("R10 prompt.mention", () => {
 		await load(api, enrollment, "./config/app.secrets,sub\\creds.txt");
 		const { next, passed } = nextOf<MentionNext>(read);
 		const e = { mention: "x", path } as MentionE;
-		const result = await onPromptMention(api, enrollment, e, next);
+		const result = await onPromptMention(api, enrollment, e, next, ".env");
 		answers.push(result);
 		return { result, passed, e };
 	};
@@ -1077,7 +1094,13 @@ describe("R10 prompt.mention", () => {
 		const { enrollment } = await setup();
 		const { next } = nextOf<MentionNext>(answer);
 		const e = { mention: "x", path: "/repo/notes.md" } as MentionE;
-		const result = await onPromptMention(promptApi(), enrollment, e, next);
+		const result = await onPromptMention(
+			promptApi(),
+			enrollment,
+			e,
+			next,
+			".env",
+		);
 		answers.push(result);
 		return result;
 	};
@@ -1123,6 +1146,7 @@ describe("R10 prompt.mention", () => {
 			createEnrollment(),
 			{ mention: "x", path: "/repo/.env.production" } as MentionE,
 			next,
+			"",
 		);
 		expect(result).toEqual(REFUSED_MENTION);
 		expect(passed).toEqual([]);
@@ -1162,7 +1186,7 @@ describe("R11 agent.spawn", () => {
 	const spawn = async (e: SpawnE) => {
 		const { enrollment } = await setup();
 		const { next, passed } = nextOf<SpawnNext>(started);
-		const result = await onAgentSpawn(promptApi(), enrollment, e, next);
+		const result = await onAgentSpawn(promptApi(), enrollment, e, next, ".env");
 		answers.push(result);
 		return { result, passed };
 	};
@@ -1194,6 +1218,7 @@ describe("R11 agent.spawn", () => {
 			enrollment,
 			spawnE({}),
 			next,
+			".env",
 		);
 		expect(result).toBe(below);
 	});
@@ -1233,7 +1258,13 @@ describe("R12 session.send", () => {
 	const send = async (e: SendE, answer: unknown = delivered) => {
 		const { enrollment } = await setup();
 		const { next, passed } = nextOf<SendNext>(answer);
-		const result = await onSessionSend(promptApi(), enrollment, e, next);
+		const result = await onSessionSend(
+			promptApi(),
+			enrollment,
+			e,
+			next,
+			".env",
+		);
 		answers.push(result);
 		return { result, passed };
 	};
@@ -1311,7 +1342,13 @@ describe("R12 session.receive", () => {
 	const receive = async (e: ReceiveE, answer: unknown = queued) => {
 		const { enrollment } = await setup();
 		const { next, passed } = nextOf<ReceiveNext>(answer);
-		const result = await onSessionReceive(promptApi(), enrollment, e, next);
+		const result = await onSessionReceive(
+			promptApi(),
+			enrollment,
+			e,
+			next,
+			".env",
+		);
 		answers.push(result);
 		return { result, passed };
 	};
@@ -1393,7 +1430,7 @@ describe("R13 session.append", () => {
 		const { enrollment } = await setup();
 		const { next, passed } = nextOf<AppendNext>(stored);
 		const before = toasts.length;
-		const result = await onSessionAppend($, enrollment, e, next);
+		const result = await onSessionAppend($, enrollment, e, next, ".env");
 		answers.push(result);
 		const sent = passed[0] as { message: { content: Block[] } } | undefined;
 		return {
@@ -1612,6 +1649,73 @@ describe("R14 config.set", () => {
 		);
 		expect(result).toBe(answer);
 		expect(enrollment.listed()).toBe(".env");
+	});
+});
+
+describe("R7 (F46) load on first use", () => {
+	/** A new module instance after a reload: an enrollment no load reached, over a listed fake `.env`. */
+	const fresh = () => {
+		const { api, reads } = fakeApi({ ".env": envFile(envValue) });
+		return { api, reads, enrollment: createEnrollment() };
+	};
+	const e = { tool: "Bash", tool_use_id: "t46", command: "cat notes.txt" };
+	const answer = { result: `out ${envValue}`, text: "x" };
+	const toolCall = (api: EngineInterface, enrollment: Enrollment) =>
+		onToolCall(
+			api,
+			enrollment,
+			e as Parameters<typeof onToolCall>[2],
+			nextOf(answer).next,
+			".env",
+		);
+
+	test("R7 (F46): a fresh enrollment with no session.start masks the known value in a tool.call result", async () => {
+		const { api, enrollment } = fresh();
+		expect(await toolCall(api, enrollment)).toEqual({
+			result: `out ${HIDDEN}`,
+		});
+	});
+
+	test("R7 (F46): a fresh enrollment with no session.start masks the known value in prompt.submit text", async () => {
+		const { api, enrollment } = fresh();
+		const { next, passed } = nextOf<SubmitNext>({ text: "entered" });
+		await onPromptSubmit(
+			{ ...api, ui: promptApi().ui } as EngineInterface,
+			enrollment,
+			{ text: `use ${envValue}`, wait: false } as unknown as SubmitE,
+			next,
+			".env",
+		);
+		expect(passed).toEqual([{ text: `use ${HIDDEN}`, wait: false }]);
+	});
+
+	test("R7 (F46, F30): after drop at session end, a tool.call does not load", async () => {
+		const { api, reads, enrollment } = fresh();
+		enrollment.drop();
+		expect(await toolCall(api, enrollment)).toEqual(answer);
+		expect(reads).toEqual([]);
+	});
+
+	test("R7 (F46): session.start then a tool.call reads the file once", async () => {
+		const { api, reads, enrollment } = fresh();
+		await load(api, enrollment, ".env");
+		expect(await toolCall(api, enrollment)).toEqual({
+			result: `out ${HIDDEN}`,
+		});
+		expect(reads.length).toBe(1);
+	});
+
+	test("R7 (F46): 2 hooks at once on a fresh enrollment share 1 load, and both mask", async () => {
+		const { api, reads, enrollment } = fresh();
+		const both = await Promise.all([
+			toolCall(api, enrollment),
+			toolCall(api, enrollment),
+		]);
+		expect(both).toEqual([
+			{ result: `out ${HIDDEN}` },
+			{ result: `out ${HIDDEN}` },
+		]);
+		expect(reads.length).toBe(1);
 	});
 });
 
