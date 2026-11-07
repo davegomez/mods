@@ -188,14 +188,18 @@ describe("R2 native commands", () => {
 		]);
 	});
 
-	test("R2: Linux without a display runs kdialog", () => {
-		expect(nativeCommand("linux", NAME, "why", false)?.argv).toEqual([
+	test("R2 (F63): on Linux, kdialog is the fallback when zenity does not start", () => {
+		expect(nativeCommand("linux", NAME, "why")?.fallback?.argv).toEqual([
 			"kdialog",
 			"--title",
 			"blindfold",
 			"--password",
 			`why\n\n${NAME}`,
 		]);
+		expect(nativeCommand("linux", NAME, "why")?.fallback?.fallback).toBe(
+			undefined,
+		);
+		expect(nativeCommand("macos", NAME, "why")?.fallback).toBe(undefined);
 	});
 
 	test("R2: an unknown platform has no dialog", () => {
@@ -321,7 +325,7 @@ describe("R2 R3 R4 enterNative", () => {
 		});
 	});
 
-	test("R2: Linux reads DISPLAY and WAYLAND_DISPLAY to pick the program", async () => {
+	test("R2: Linux with DISPLAY or WAYLAND_DISPLAY runs zenity", async () => {
 		const programs: string[] = [];
 		const run: Run = (argv) => {
 			programs.push(argv[0] as string);
@@ -339,8 +343,72 @@ describe("R2 R3 R4 enterNative", () => {
 			NAME,
 			"why",
 		);
-		await enterNative(fakeEntryApi({}, run).api, "linux", NAME, "why");
-		expect(programs).toEqual(["zenity", "zenity", "kdialog"]);
+		expect(programs).toEqual(["zenity", "zenity"]);
+	});
+
+	test("R2 (F57): Linux with neither DISPLAY nor WAYLAND_DISPLAY is unavailable and runs no program", async () => {
+		const { api, calls } = fakeEntryApi({}, () => out(0, `${value}\n`));
+		expect(await enterNative(api, "linux", NAME, "why")).toEqual(
+			cancel("unavailable"),
+		);
+		expect(calls.filter((c) => c.noun === "process.run")).toEqual([]);
+	});
+
+	/** Runs Linux with a display; `answers` maps a program to its answer, or to an error for one that does not start. */
+	const linux = async (
+		answers: Record<string, ReturnType<typeof out> | Error>,
+		now: () => number = () => 0,
+	) => {
+		const programs: string[] = [];
+		const { api } = fakeEntryApi({ DISPLAY: ":0" }, (argv) => {
+			const program = argv[0] as string;
+			programs.push(program);
+			const answer = answers[program] ?? new Error(`ENOENT: ${program}`);
+			if (answer instanceof Error) throw answer;
+			return answer;
+		});
+		return {
+			entered: await enterNative(api, "linux", NAME, "why", now),
+			programs,
+		};
+	};
+
+	test("R2 (F63): Linux runs kdialog when zenity does not start, and reads its answer", async () => {
+		expect(await linux({ kdialog: out(0, `${value}\n`) })).toEqual({
+			entered: { kind: "value", value },
+			programs: ["zenity", "kdialog"],
+		});
+	});
+
+	test("R2 (F63): exit code 1 from kdialog is cancelled", async () => {
+		expect(await linux({ kdialog: out(1, "") })).toEqual({
+			entered: cancel("cancelled"),
+			programs: ["zenity", "kdialog"],
+		});
+	});
+
+	test("R2 (F63): a zenity cancel never starts kdialog", async () => {
+		expect(
+			await linux({ zenity: out(1, ""), kdialog: out(0, `${value}\n`) }),
+		).toEqual({ entered: cancel("cancelled"), programs: ["zenity"] });
+	});
+
+	test("R2 (F63): a zenity timeout never starts kdialog", async () => {
+		// The run starts at 0 and rejects at the timeout.
+		const clock = [0, TIMEOUT_MS];
+		expect(
+			await linux(
+				{ zenity: new Error("timed out"), kdialog: out(0, `${value}\n`) },
+				() => clock.shift() ?? TIMEOUT_MS,
+			),
+		).toEqual({ entered: cancel("timeout"), programs: ["zenity"] });
+	});
+
+	test("R2 (F63): when neither zenity nor kdialog starts, Linux is unavailable", async () => {
+		expect(await linux({})).toEqual({
+			entered: cancel("unavailable"),
+			programs: ["zenity", "kdialog"],
+		});
 	});
 
 	test("R2: a timeout reject is cancel with timeout", async () => {
@@ -356,9 +424,9 @@ describe("R2 R3 R4 enterNative", () => {
 
 	test("R2: a program that does not start is unavailable", async () => {
 		const { api } = fakeEntryApi({}, () => {
-			throw new Error("ENOENT: zenity");
+			throw new Error("ENOENT: osascript");
 		});
-		expect(await enterNative(api, "linux", NAME, "why", () => 0)).toEqual(
+		expect(await enterNative(api, "macos", NAME, "why", () => 0)).toEqual(
 			cancel("unavailable"),
 		);
 	});

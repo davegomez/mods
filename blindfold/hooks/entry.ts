@@ -14,6 +14,8 @@ export type Masked = { readonly value: string; readonly shown: string };
 export type NativeCommand = {
 	argv: string[];
 	env?: Record<string, string>;
+	/** R2 (F63): the command to try when this one does not start. */
+	fallback?: NativeCommand;
 };
 type NativeOut = Pick<
 	ProcessRunResult,
@@ -108,13 +110,12 @@ const escapeMarkup = (text: string) =>
 
 /**
  * R2: the fixed command for a platform's dialog; `undefined` when there is none.
- * The name and the reason are data: arguments, or env on Windows. `hasDisplay` picks zenity or kdialog on Linux.
+ * The name and the reason are data: arguments, or env on Windows. Linux needs a display, which the caller checks (F57).
  */
 export function nativeCommand(
 	platform: Platform,
 	name: string,
 	reason: string,
-	hasDisplay = true,
 ): NativeCommand | undefined {
 	const prompt = `${reason}\n\n${name}`;
 	switch (platform) {
@@ -133,19 +134,20 @@ export function nativeCommand(
 				env: { BLINDFOLD_NAME: name, BLINDFOLD_REASON: reason },
 			};
 		case "linux":
-			return hasDisplay
-				? {
-						argv: [
-							"zenity",
-							"--entry",
-							"--hide-text",
-							"--title",
-							TITLE,
-							"--text",
-							escapeMarkup(prompt),
-						],
-					}
-				: { argv: ["kdialog", "--title", TITLE, "--password", prompt] };
+			return {
+				argv: [
+					"zenity",
+					"--entry",
+					"--hide-text",
+					"--title",
+					TITLE,
+					"--text",
+					escapeMarkup(prompt),
+				],
+				fallback: {
+					argv: ["kdialog", "--title", TITLE, "--password", prompt],
+				},
+			};
 		default:
 			return undefined;
 	}
@@ -211,7 +213,7 @@ const isSet = (value: Promise<string | undefined>) =>
 
 /**
  * R2, R3: shows the dialog and returns what it gave. Keeps no copy of the value (R4).
- * A reject at or after the timeout is `timeout`; an earlier one means the program did not start.
+ * A reject at or after the timeout is `timeout`; an earlier one means the program did not start, so its fallback runs (F63).
  */
 export async function enterNative(
 	$: EngineInterface,
@@ -220,20 +222,28 @@ export async function enterNative(
 	reason: string,
 	now: () => number = () => performance.now(),
 ): Promise<Entered> {
-	const hasDisplay =
+	if (
 		platform === "linux" &&
-		((await isSet($.env.get("DISPLAY"))) ||
-			(await isSet($.env.get("WAYLAND_DISPLAY"))));
-	const command = nativeCommand(platform, name, reason, hasDisplay);
-	if (!command) return cancel("unavailable");
-	const startedAt = now();
-	try {
-		const out = await $.process.run(command.argv, {
-			timeoutMs: TIMEOUT_MS,
-			...(command.env ? { env: command.env } : {}),
-		});
-		return readNative(platform, out);
-	} catch {
-		return cancel(now() - startedAt >= TIMEOUT_MS ? "timeout" : "unavailable");
+		!(await isSet($.env.get("DISPLAY"))) &&
+		!(await isSet($.env.get("WAYLAND_DISPLAY")))
+	) {
+		return cancel("unavailable");
 	}
+	for (
+		let command = nativeCommand(platform, name, reason);
+		command;
+		command = command.fallback
+	) {
+		const startedAt = now();
+		try {
+			const out = await $.process.run(command.argv, {
+				timeoutMs: TIMEOUT_MS,
+				...(command.env ? { env: command.env } : {}),
+			});
+			return readNative(platform, out);
+		} catch {
+			if (now() - startedAt >= TIMEOUT_MS) return cancel("timeout");
+		}
+	}
+	return cancel("unavailable");
 }
