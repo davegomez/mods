@@ -12,6 +12,7 @@ import {
 	HIDDEN_NAME,
 	HIDDEN_PATH,
 	load,
+	rootOf,
 	type Status,
 } from "./enroll.ts";
 import {
@@ -20,8 +21,8 @@ import {
 	type Requests,
 	validName,
 } from "./request.ts";
-import { clockFor, guardText } from "./shield.ts";
-import type { Step } from "./write.ts";
+import { clockFor, guardText, rewriteCounts } from "./shield.ts";
+import { type GitProbe, probeGit, type Step, spellingOk } from "./write.ts";
 
 export type Command =
 	| { kind: "open" }
@@ -118,7 +119,7 @@ export function statusLine(
 	return undefined;
 }
 
-/** write R3: what git says of a listed file. T22 fills it after each load. */
+/** write R3: what git says of a listed file, read by `probe` after each load. */
 export type GitState = "not-ignored" | "tracked" | "none";
 
 export type Row = {
@@ -190,6 +191,41 @@ export function targetFile(status: Status): string | undefined {
 
 export const COMMAND = "secrets";
 
+/** R4: the pane's `requestId`. */
+export const PANE_ID = "blindfold";
+
+const STATE_WORDS: Record<Row["state"], string> = {
+	Set: "Set",
+	Requested: "Requested",
+	Empty: "Empty",
+	Missing: "Missing",
+	Stale: "Stale, could not be read",
+	Refused: "Refused, blindfold will not read it",
+};
+
+const GIT_WORDS = {
+	"not-ignored": "not ignored by git",
+	tracked: "tracked by git",
+} as const;
+
+/** R4, R6: 1 row in words. A hidden row says only why (F73). */
+export function rowText(row: Row): string {
+	const label =
+		row.name === ""
+			? row.file
+			: row.file === ""
+				? row.name
+				: `${row.name} in ${row.file}`;
+	if (row.hidden) return `${label}: hidden, because it holds a secret value`;
+	const n = row.rewrites;
+	return [
+		`${label}: ${STATE_WORDS[row.state]}`,
+		...(row.file === "" ? ["in no listed file"] : []),
+		...(row.gitWarning ? [GIT_WORDS[row.gitWarning]] : []),
+		...(n > 0 ? [`${n} ${n === 1 ? "result" : "results"} hidden`] : []),
+	].join(", ");
+}
+
 /** R1. */
 export const COMMAND_SPEC = {
 	name: COMMAND,
@@ -208,6 +244,7 @@ export type Screen = {
 	toast(text: string): void;
 	status(text: string | undefined): void;
 	invalidate(): void;
+	gitStates(paths: readonly string[]): Promise<ReadonlyMap<string, GitState>>;
 };
 
 /** A function declaration, since the host follows `$` past an import only into one. */
@@ -216,7 +253,28 @@ export function screenOf($: EngineInterface): Screen {
 		toast: (text) => $.ui.toast(text),
 		status: (text) => $.ui.status(text),
 		invalidate: () => $.ui.invalidate("ui.render"),
+		gitStates: (paths) => gitStatesOf($, paths),
 	};
+}
+
+const shownState = (probe: GitProbe): GitState =>
+	probe === "tracked" || probe === "not-ignored" ? probe : "none";
+
+/**
+ * R4: each listed path's git state by the read-only write R3 commands, in the session root. A hidden path, or one that
+ * fails the write R2 spelling, gets no command and no state, so no argv holds a value. A failed command is `none`.
+ */
+export async function gitStatesOf(
+	$: EngineInterface,
+	paths: readonly string[],
+): Promise<ReadonlyMap<string, GitState>> {
+	const root = await rootOf($);
+	if (!root) return new Map();
+	const asked = paths.filter((p) => p !== HIDDEN_PATH && spellingOk(p));
+	const probes = await Promise.all(
+		asked.map((p) => probeGit($, root.real, p).catch(() => "failed" as const)),
+	);
+	return new Map(asked.map((p, i) => [p, shownState(probes[i] ?? "failed")]));
 }
 
 /** R3 (F71): the last flow outcome, and the screen that shows a change made where no hook's `$` is at hand (a load, a request change). */
@@ -224,6 +282,16 @@ export function createUi(enrollment: Enrollment, requests: Requests) {
 	let outcome: Outcome | undefined;
 	let screen: Screen | undefined;
 	let toasted: string | undefined;
+	let git: ReadonlyMap<string, GitState> = new Map();
+	let probes = 0;
+	/** F71: a redraw for what the status line does not show (git states, counts). It never throws. */
+	const repaint = (): void => {
+		try {
+			screen?.invalidate();
+		} catch {
+			// The count change or probe that called it goes on.
+		}
+	};
 	const redraw = (): void => {
 		if (!screen) return;
 		try {
@@ -253,6 +321,22 @@ export function createUi(enrollment: Enrollment, requests: Requests) {
 			redraw();
 		},
 		redraw,
+		repaint,
+		/** R4: read the git state of the listed files, after a load and never in a render. A newer probe wins over an older one still running. */
+		probe(): void {
+			const mine = ++probes;
+			if (!screen) return;
+			const paths = enrollment.status().files.map((f) => f.path);
+			screen.gitStates(paths).then(
+				(states) => {
+					if (mine !== probes) return;
+					git = states;
+					repaint();
+				},
+				() => undefined,
+			);
+		},
+		git: (): ReadonlyMap<string, GitState> => git,
 	};
 }
 
@@ -299,7 +383,7 @@ export async function onCommand(
 	await next({ ...e, args: canonicalArgs(command) });
 	switch (command.kind) {
 		case "open":
-			await $.ui.open({ id: "blindfold", title: "blindfold" });
+			await $.ui.open({ id: PANE_ID, title: "blindfold" });
 			return {};
 		case "set":
 			return { text: startFlow(ui, command.name) };
@@ -383,6 +467,107 @@ export async function onBand(
 					...buttons,
 				],
 			}),
+		],
+	});
+}
+
+type PaneInput = RenderInput<"Pane">;
+
+const ACTION_FAILED = "blindfold: that action failed. Run /secrets.";
+
+/**
+ * R4, R6: the rows, the last outcome, Forget per file, Refresh, and Continue when the request is ready. It reads module
+ * state only: the git states come from `ui.probe`, never from a command here. Below 60 columns each row stacks its
+ * actions under its text; from 60 they sit beside it. Letter hotkeys on the terminal only, so none clashes with the
+ * band's 1 to 4, which can show at the same time.
+ */
+export async function onPane(
+	$: EngineInterface,
+	ui: Ui,
+	e: PaneInput,
+	next: (e: PaneInput) => Promise<RenderElement>,
+	list: string,
+): Promise<RenderElement> {
+	if (e.requestId !== PANE_ID) return next(e);
+	const { Box, Button, Text } = $.ui.resolve(e);
+	const request = ui.requests.current();
+	const status = ui.enrollment.status();
+	const rows = rowsOf(status, request, rewriteCounts(), ui.git());
+	const direction = e.props.bodyColumns < 60 ? "column" : "row";
+	const keyed = e.surface === "terminal";
+	const button = (
+		key: string,
+		label: string,
+		onPress: () => unknown,
+		hotkey?: string,
+	) =>
+		Button({
+			key,
+			label,
+			...(keyed && hotkey ? { hotkey, plain: true as const } : {}),
+			onPress: () =>
+				Promise.resolve()
+					.then(onPress)
+					.catch(() => $.ui.toast(ACTION_FAILED)),
+		});
+	let requestedRow = true;
+	const actions = (row: Row) => {
+		if (row.hidden || row.name === "") return [];
+		const requested = requestedRow && row.name === request?.name;
+		if (requested) requestedRow = false;
+		const enter = button(
+			`enter:${row.file}:${row.name}`,
+			"Enter value",
+			() => $.ui.toast(startFlow(ui, row.name)),
+			requested ? "e" : undefined,
+		);
+		if (!requested) return [enter];
+		return [enter, button("dismiss", "Dismiss", () => dismiss(ui), "d")];
+	};
+	const line = (key: string, children: RenderElement[]) =>
+		Box({ key, flexDirection: direction, gap: 1, children });
+	const outcome = ui.outcome();
+	const files = status.files.filter((f) => f.path !== HIDDEN_PATH);
+	return Box({
+		flexDirection: "column",
+		children: [
+			...rows.map((row, i) =>
+				line(`row:${i}`, [Text({ children: rowText(row) }), ...actions(row)]),
+			),
+			...(rows.length === 0
+				? [Text({ children: "No names in the listed env files." })]
+				: []),
+			...(outcome ? [Text({ children: outcomeText(outcome) })] : []),
+			...(files.length > 0
+				? [
+						line(
+							"files",
+							files.map((f) =>
+								button(`forget:${f.path}`, `Forget ${f.path}`, () =>
+									ui.enrollment.forget(f.path),
+								),
+							),
+						),
+					]
+				: []),
+			line("actions", [
+				...(request?.state === "ready"
+					? [
+							button(
+								"continue",
+								"Continue",
+								() => continueRequest($, ui.enrollment, ui.requests),
+								"c",
+							),
+						]
+					: []),
+				button(
+					"refresh",
+					"Refresh",
+					() => load($, ui.enrollment, ui.enrollment.listed() || list),
+					"r",
+				),
+			]),
 		],
 	});
 }

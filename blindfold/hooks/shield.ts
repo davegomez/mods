@@ -236,12 +236,20 @@ export const rewriteCounts = (): ReadonlyMap<string, number> => rewrites;
 /** ui R4: at session end. */
 export const resetRewriteCounts = (): void => rewrites.clear();
 
+let counted = () => {};
+
+/** ui R3 (F71): `listener` runs after each count change and must not throw. 1 listener; a 2nd replaces it. */
+export const watchRewrites = (listener: () => void): void => {
+	counted = listener;
+};
+
 /** ui R4 (F75): 1 per distinct name with a `known` hit, not 1 per hit. */
 function countRewrite(hits: readonly Hit[]): void {
 	const names = new Set(
 		hits.flatMap((h) => (h.kind === "known" ? [h.name] : [])),
 	);
 	for (const name of names) rewrites.set(name, (rewrites.get(name) ?? 0) + 1);
+	if (names.size > 0) counted();
 }
 
 /** R5: scan what `next` returned with the set as it is now. */

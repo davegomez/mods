@@ -1,15 +1,19 @@
 import type { EngineInterface } from "claude-code";
 import { describe, expect, test } from "claude-code/testing";
+import { createEnrollment } from "../hooks/enroll.ts";
 import { enrollment, register, requests, ui } from "../hooks/register.ts";
-import { DROPPED_TOAST } from "../hooks/request.ts";
-import { REFUSED_COMMAND } from "../hooks/ui.ts";
+import { createRequests, DROPPED_TOAST } from "../hooks/request.ts";
+import { resetRewriteCounts } from "../hooks/shield.ts";
+import { createUi, type GitState, REFUSED_COMMAND } from "../hooks/ui.ts";
 import {
 	type FakeCall,
 	type FakeElement,
 	type FakeFile,
+	type FakeOptions,
 	fakeApi,
 	fakes,
 	hooksOf,
+	REAL_ROOT,
 } from "./fakes.ts";
 
 const fake = fakes(21);
@@ -25,11 +29,16 @@ const MANUAL = `Add ${NAME}= to .env in your editor, then press Refresh.`;
 const hooks = (list = ".env") => hooksOf(register, { envFiles: list });
 
 /** A fresh session over `files`: the module state cleared, then session.start. `shown` starts after it. */
-async function start(files: Record<string, FakeFile>, list = ".env") {
+async function start(
+	files: Record<string, FakeFile>,
+	list = ".env",
+	options: FakeOptions = {},
+) {
 	requests.clear();
 	ui.setOutcome(undefined);
+	resetRewriteCounts();
 	enrollment.drop();
-	const made = fakeApi(files);
+	const made = fakeApi(files, options);
 	await hooks(list).get("session.start")?.(made.api, {}, async (e) => e);
 	const before = made.shown.length;
 	return { ...made, after: () => made.shown.slice(before) };
@@ -425,6 +434,337 @@ describe("R7 no value (F76)", () => {
 		const long = `V${fake.secret(39)}`;
 		const a = await everything(short);
 		const b = await everything(long);
+		expect(a).not.toContain(short);
+		expect(b).not.toContain(long);
+		expect(a).toBe(b);
+	});
+});
+
+describe("R4 pane", () => {
+	const PANE = `ui.render ${JSON.stringify({ component: "Pane" })}`;
+
+	/** Draws the pane; another mod's pane beneath answers `OTHER`. */
+	async function pane(
+		$: EngineInterface,
+		bodyColumns = 80,
+		{ requestId = "blindfold", surface = "terminal", list = ".env" } = {},
+	) {
+		const e = {
+			surface,
+			component: "Pane",
+			requestId,
+			props: { title: "blindfold", isFocused: true, bodyColumns },
+		};
+		return (await hooks(list).get(PANE)?.($, e, async () => OTHER)) as
+			| FakeElement
+			| undefined;
+	}
+
+	const texts = (tree: unknown) =>
+		elements(tree)
+			.filter((el) => el.type === "Text")
+			.map((el) => el.props.children);
+	const keys = (tree: unknown) => buttons(tree).map((b) => b.props.key);
+	const settle = async () => {
+		for (let tick = 0; tick < 100; tick++) await Promise.resolve();
+	};
+	const runs = (calls: FakeCall[]) =>
+		calls.filter((c) => c.noun === "process.run").map((c) => c.args);
+
+	/** git in a work tree: `tracked` paths are in the index, `ignored` paths match .gitignore. */
+	const git =
+		(tracked: string[] = [], ignored: string[] = []) =>
+		(argv: readonly string[]) => {
+			const path = (argv.at(-1) ?? "").replace(/^\.\//, "");
+			if (argv.includes("rev-parse")) return { stdout: "true\n" };
+			if (argv.includes("ls-files")) {
+				return { exitCode: tracked.includes(path) ? 0 : 1 };
+			}
+			return { exitCode: ignored.includes(path) ? 0 : 1 };
+		};
+
+	/** A Bash result holding `value`, through the shield, so it counts 1 rewrite. */
+	const rewrite = async ($: EngineInterface, value: string, list = ".env") => {
+		const next = Object.assign(
+			async () => ({ result: `out ${value}` }),
+			budget,
+		);
+		await hooks(list).get("tool.call")?.(
+			$,
+			{ tool: "Bash", command: "ls" },
+			next,
+		);
+	};
+
+	const LIST = ".env,.env.local,.env.prod,.env.link";
+	const KEPT = fake.secret(24);
+	const files = (): Record<string, FakeFile> => ({
+		".env": { text: `API_KEY=${KEPT}\nEMPTY_KEY=\n${NAME}=\n` },
+		".env.prod": { text: "", readFails: true },
+		".env.link": { text: "A=1\n", isLink: true },
+	});
+
+	test("R4: the pane draws only for its requestId, else the tree from next", async () => {
+		const { api } = await start({});
+		expect(await pane(api, 80, { requestId: "ember" })).toBe(OTHER);
+		expect(await pane(api)).not.toBe(OTHER);
+	});
+
+	test("R4, R6: every row state in words, with the git warning and the count", async () => {
+		const { api } = await start(files(), LIST, { run: git([".env.local"]) });
+		await rewrite(api, KEPT, LIST);
+		requests.ask(NAME, "r");
+		await settle();
+		expect(texts(await pane(api, 80, { list: LIST }))).toEqual([
+			"API_KEY in .env: Set, not ignored by git, 1 result hidden",
+			"EMPTY_KEY in .env: Empty, not ignored by git",
+			`${NAME} in .env: Requested, not ignored by git`,
+			".env.local: Missing, tracked by git",
+			".env.prod: Stale, could not be read, not ignored by git",
+			".env.link: Refused, blindfold will not read it, not ignored by git",
+		]);
+	});
+
+	test("R4: a requested name in no listed file reads as Requested, in no listed file", async () => {
+		const { api } = await start({});
+		requests.ask("NEW_KEY", "r");
+		expect(texts(await pane(api))).toEqual([
+			".env: Missing",
+			"NEW_KEY: Requested, in no listed file",
+		]);
+	});
+
+	test("R4: with no row the pane says so in words", async () => {
+		const { api } = await start({ ".env": { text: "" } });
+		expect(texts(await pane(api))).toEqual([
+			"No names in the listed env files.",
+		]);
+	});
+
+	test("R4, R6: per row Enter value, Dismiss for the requested row, per file Forget, 1 Refresh; stable unique keys", async () => {
+		const { api } = await start(files(), LIST);
+		requests.ask(NAME, "r");
+		const tree = await pane(api, 80, { list: LIST });
+		expect(keys(tree)).toEqual([
+			"enter:.env:API_KEY",
+			"enter:.env:EMPTY_KEY",
+			`enter:.env:${NAME}`,
+			"dismiss",
+			"forget:.env",
+			"forget:.env.local",
+			"forget:.env.prod",
+			"forget:.env.link",
+			"refresh",
+		]);
+		expect(keys(await pane(api, 80, { list: LIST }))).toEqual(keys(tree));
+	});
+
+	test("R6 (1h): letter hotkeys c, d, e, r on the terminal, never a band digit; no hotkey elsewhere", async () => {
+		const { api } = await start({
+			".env": { text: `${NAME}=${fake.secret(24)}\nB=\n` },
+		});
+		requests.ask(NAME, "r");
+		requests.sync(enrollment.status());
+		const hot = (tree: unknown) =>
+			buttons(tree).map((b) => [b.props.key, b.props.hotkey, b.props.plain]);
+		expect(hot(await pane(api))).toEqual([
+			[`enter:.env:${NAME}`, "e", true],
+			["dismiss", "d", true],
+			["enter:.env:B", undefined, undefined],
+			["forget:.env", undefined, undefined],
+			["continue", "c", true],
+			["refresh", "r", true],
+		]);
+		expect(
+			buttons(await pane(api, 80, { surface: "vscode" })).every(
+				(b) => b.props.hotkey === undefined,
+			),
+		).toBe(true);
+	});
+
+	test("R4 (F73): a hidden name or path shows why, has no action, and gets no git command", async () => {
+		const value = `V${fake.secret(23)}`;
+		const list = `.env,${value}.env`;
+		const { api, calls } = await start(
+			{ ".env": { text: `API_KEY=${value}\nH_${value}=1\n` } },
+			list,
+			{ run: git() },
+		);
+		await settle();
+		const tree = await pane(api, 80, { list });
+		expect(texts(tree)).toEqual([
+			"API_KEY in .env: Set, not ignored by git",
+			"[hidden name] in .env: hidden, because it holds a secret value",
+			"[hidden path]: hidden, because it holds a secret value",
+		]);
+		expect(keys(tree)).toEqual([
+			"enter:.env:API_KEY",
+			"forget:.env",
+			"refresh",
+		]);
+		expect(JSON.stringify(runs(calls))).not.toContain(value);
+	});
+
+	test("R4: below 60 columns 1 column; from 60 each row's actions beside it", async () => {
+		const { api } = await start(files(), LIST);
+		const rows = (tree: unknown) =>
+			elements(tree)
+				.filter(
+					(el) => el.type === "Box" && String(el.props.key).startsWith("row:"),
+				)
+				.map((el) => el.props.flexDirection);
+		const narrow = rows(await pane(api, 59, { list: LIST }));
+		const wide = rows(await pane(api, 60, { list: LIST }));
+		expect(narrow.length).toBeGreaterThan(0);
+		expect(narrow.every((d) => d === "column")).toBe(true);
+		expect(wide.length).toBe(narrow.length);
+		expect(wide.every((d) => d === "row")).toBe(true);
+	});
+
+	test("R4: Forget drops the file; Refresh reads the list again", async () => {
+		const disk: Record<string, FakeFile> = {
+			".env": { text: "A=1\n" },
+			".env.local": { text: "B=\n" },
+		};
+		const list = ".env,.env.local";
+		const { api } = await start(disk, list);
+		await press(await pane(api, 80, { list }), "forget:.env.local");
+		expect(enrollment.status().files.map((f) => f.path)).toEqual([".env"]);
+		disk[".env"] = { text: "A=1\nC=\n" };
+		await press(await pane(api, 80, { list }), "refresh");
+		expect(texts(await pane(api, 80, { list }))).toContain("C in .env: Empty");
+	});
+
+	test("R4: Enter value starts the flow and Dismiss clears the request", async () => {
+		const { api } = await start({ ".env": { text: `${NAME}=\n` } });
+		requests.ask(NAME, "r");
+		await press(await pane(api), `enter:.env:${NAME}`);
+		expect(ui.outcome()).toEqual({ kind: "manual", name: NAME, file: ".env" });
+		expect(texts(await pane(api))).toContain(MANUAL);
+		await press(await pane(api), "dismiss");
+		expect(requests.current()).toBeUndefined();
+		expect(ui.outcome()).toBeUndefined();
+	});
+
+	test("R4, R5: Continue only when the request is ready, and it continues the request", async () => {
+		const disk: Record<string, FakeFile> = { ".env": { text: `${NAME}=\n` } };
+		const { api, after } = await start(disk);
+		requests.ask(NAME, "r");
+		expect(keys(await pane(api))).not.toContain("continue");
+		disk[".env"] = { text: `${NAME}=${fake.secret(24)}\n` };
+		await press(await pane(api), "refresh");
+		expect(requests.current()?.state).toBe("ready");
+		await press(await pane(api), "continue");
+		expect(of(after(), "prompt.submit")).toEqual([
+			{ text: `${NAME} is now set. Continue the task that needed it.` },
+		]);
+		expect(requests.current()).toBeUndefined();
+	});
+
+	test("R4: the git probe runs the write R3 commands in the root after a load, then redraws; a render runs none", async () => {
+		const { api, calls, after } = await start(
+			{ ".env": { text: "A=1\n" } },
+			".env",
+			{ run: git() },
+		);
+		await settle();
+		const cwd = { cwd: REAL_ROOT };
+		expect(runs(calls)).toEqual([
+			[["git", "rev-parse", "--is-inside-work-tree"], cwd],
+			[
+				[
+					"git",
+					"--literal-pathspecs",
+					"ls-files",
+					"--error-unmatch",
+					"--",
+					".env",
+				],
+				cwd,
+			],
+			[["git", "check-ignore", "-q", "--", "./.env"], cwd],
+		]);
+		expect(of(after(), "ui.invalidate").length).toBeGreaterThan(0);
+		await pane(api);
+		await pane(api, 59);
+		await settle();
+		expect(runs(calls).length).toBe(3);
+		expect(texts(await pane(api))).toEqual([
+			"A in .env: Set, not ignored by git",
+		]);
+	});
+
+	test("R4: outside a work tree, or when git does not start, a file has no git warning", async () => {
+		const { api } = await start({ ".env": { text: "A=1\n" } }, ".env", {
+			run: () => ({ exitCode: 128 }),
+		});
+		await settle();
+		expect(texts(await pane(api))).toEqual(["A in .env: Set"]);
+		const none = await start({ ".env": { text: "A=1\n" } });
+		await settle();
+		expect(texts(await pane(none.api))).toEqual(["A in .env: Set"]);
+	});
+
+	test("R4: a newer load wins over an older probe still running", async () => {
+		const answers: ((states: Map<string, GitState>) => void)[] = [];
+		let redraws = 0;
+		const local = createUi(createEnrollment(), createRequests());
+		local.bind({
+			toast() {},
+			status() {},
+			invalidate: () => redraws++,
+			gitStates: () => new Promise((resolve) => answers.push(resolve)),
+		});
+		local.probe();
+		local.probe();
+		answers[1]?.(new Map([[".env", "tracked"]]));
+		await settle();
+		answers[0]?.(new Map([[".env", "not-ignored"]]));
+		await settle();
+		expect(local.git().get(".env")).toBe("tracked");
+		expect(redraws).toBe(1);
+	});
+
+	test("R3 (F71): a count change redraws; a result with no rewrite does not", async () => {
+		const value = fake.secret(24);
+		const { api, after } = await start({
+			".env": { text: `API_KEY=${value}\n` },
+		});
+		await settle();
+		const before = of(after(), "ui.invalidate").length;
+		const clean = Object.assign(async () => ({ result: "out" }), budget);
+		await hooks().get("tool.call")?.(
+			api,
+			{ tool: "Bash", command: "ls" },
+			clean,
+		);
+		expect(of(after(), "ui.invalidate").length).toBe(before);
+		await rewrite(api, value);
+		expect(of(after(), "ui.invalidate")).toEqual(
+			[...Array(before + 1)].map(() => "ui.render"),
+		);
+	});
+
+	test("R7: with 2 values of different lengths the pane tree is the same and holds neither", async () => {
+		const draw = async (value: string) => {
+			const list = `.env,${value}.env`;
+			const { api } = await start(
+				{ ".env": { text: `API_KEY=${value}\nH_${value}=1\n${NAME}=\n` } },
+				list,
+				{ run: git() },
+			);
+			await rewrite(api, value, list);
+			requests.ask(NAME, "r");
+			await settle();
+			return JSON.stringify([
+				await pane(api, 59, { list }),
+				await pane(api, 60, { list }),
+			]);
+		};
+		const short = `V${fake.secret(19)}`;
+		const long = `V${fake.secret(39)}`;
+		const a = await draw(short);
+		const b = await draw(long);
 		expect(a).not.toContain(short);
 		expect(b).not.toContain(long);
 		expect(a).toBe(b);

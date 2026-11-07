@@ -32,6 +32,7 @@ import {
 	onToolCall,
 	onToolCallCatch,
 	resetRewriteCounts,
+	watchRewrites,
 } from "./shield.ts";
 import {
 	COMMAND,
@@ -40,6 +41,7 @@ import {
 	onBand,
 	onCommand,
 	onCommandCatch,
+	onPane,
 	screenOf,
 } from "./ui.ts";
 
@@ -53,11 +55,15 @@ export const requests = createRequests();
 export const ui = createUi(enrollment, requests);
 
 // request R4, R5: every load, restart, and forget syncs the request, whoever started it. ui R3 (F71): then the status line and a redraw.
+// ui R4: then the git state of the listed files, which redraws again when it comes.
 enrollment.watch(() => {
 	if (requests.current()) requests.sync(enrollment.status());
 	ui.redraw();
+	ui.probe();
 });
 requests.watch(ui.redraw);
+// ui R3 (F71): a rewrite count the pane shows changed.
+watchRewrites(ui.repaint);
 
 const TOOL = `mcp__blindfold__${TOOL_NAME}`;
 
@@ -174,5 +180,10 @@ export const register: Register = (on, options) => {
 	// ui R2: the band, shared with other mods.
 	on("ui.render", { component: "AbovePrompt" }, ($, e, next) =>
 		onBand($, ui, e, next),
+	);
+
+	// ui R4: the pane /secrets opens; another mod's pane passes.
+	on("ui.render", { component: "Pane" }, ($, e, next) =>
+		onPane($, ui, e, next, list),
 	);
 };
