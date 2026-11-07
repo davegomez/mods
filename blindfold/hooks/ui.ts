@@ -7,6 +7,7 @@ import type {
 	RenderInput,
 } from "claude-code";
 import {
+	addFile,
 	type Enrollment,
 	ensureLoaded,
 	HIDDEN_NAME,
@@ -16,13 +17,29 @@ import {
 	type Status,
 } from "./enroll.ts";
 import {
+	detectPlatform,
+	type Entered,
+	enterNative,
+	type Method,
+	type Platform,
+	pickMethod,
+} from "./entry.ts";
+import {
 	continueRequest,
 	type Request,
 	type Requests,
 	validName,
 } from "./request.ts";
 import { clockFor, guardText, rewriteCounts } from "./shield.ts";
-import { type GitProbe, probeGit, type Step, spellingOk } from "./write.ts";
+import {
+	type GitProbe,
+	probeGit,
+	type Saved,
+	type SaveMode,
+	type Step,
+	saveValue,
+	spellingOk,
+} from "./write.ts";
 
 export type Command =
 	| { kind: "open" }
@@ -69,7 +86,7 @@ export function canonicalArgs(command: Command): string {
 /** R3, R5 (F74): the last flow result, kept until the next flow, a Dismiss, or a session end. Each field is a name, a listed file, or a fixed word. */
 export type Outcome =
 	| { kind: "refused" | "added" | "manual"; name: string; file: string }
-	| { kind: "denied" | "cleared" | "repaired"; name: string }
+	| { kind: "denied" | "cleared" | "repaired" | "choose"; name: string }
 	| { kind: "not-saved"; name: string; step: Step; reason: string };
 
 /** R5: 1 fixed text per outcome. */
@@ -89,6 +106,8 @@ export function outcomeText(outcome: Outcome): string {
 			return "Not saved: the request was cleared.";
 		case "repaired":
 			return "Saved. The file was readable by others for a moment.";
+		case "choose":
+			return `No listed env file can take ${outcome.name}. Run /secrets and pick .env or .env.local.`;
 	}
 }
 
@@ -337,24 +356,181 @@ export function createUi(enrollment: Enrollment, requests: Requests) {
 			);
 		},
 		git: (): ReadonlyMap<string, GitState> => git,
+		/** R5: true while a flow runs; 1 at a time. */
+		busy: false,
+		/** R5 (F67): session.end adds 1, so a flow that began before it saves nothing. */
+		sessions: 0,
 	};
 }
 
 export type Ui = ReturnType<typeof createUi>;
 
-/** R5 (`never`, choice 2): the line to add by hand, kept as the outcome. */
+/**
+ * R5 step 1 (Q41, F34): the file choice when no listed file can take a value, else the line to add by hand (`never`,
+ * choice 2). Every caller runs after the first load: the command loads first, and the band and the pane rows exist only after one.
+ */
 export function addByHand(ui: Ui, name: string): string {
-	// shortcut: with no active or missing listed file this names .env; T23 asks for .env or .env.local (R5 step 1).
-	const file = targetFile(ui.enrollment.status()) ?? ".env";
-	const outcome: Outcome = { kind: "manual", name, file };
+	const file = targetFile(ui.enrollment.status());
+	const outcome: Outcome = file
+		? { kind: "manual", name, file }
+		: { kind: "choose", name };
 	ui.setOutcome(outcome);
 	return outcomeText(outcome);
 }
 
-/** R5: the flow for 1 name, from the command and the band. */
-export function startFlow(ui: Ui, name: string): string {
-	// shortcut: shows the line to add by hand, with no dialog and no save; T23 replaces it with the R5 flow.
-	return addByHand(ui, name);
+/** R5 step 1 (Q41): the only files offered; a typed name could hold a value (F66). */
+export const CHOICES = [".env", ".env.local"] as const;
+
+/** R5: what the flow does outside this module, as closures, so a test passes fakes. */
+export type FlowIo = {
+	platform(): Promise<Platform>;
+	enter(platform: Platform, name: string, reason: string): Promise<Entered>;
+	save(path: string, name: string, value: string): Promise<Saved>;
+	addFile(path: string): ReturnType<typeof addFile>;
+	toast(text: string): void;
+};
+
+/** R5: the plugin options the flow reads (entry R1, write R1). */
+export type FlowSettings = { method: Method; save: SaveMode };
+
+/** A function declaration, since the host refuses a `$` kept in a variable and follows it past an import only into one. */
+export function flowIoOf($: EngineInterface, enrollment: Enrollment): FlowIo {
+	return {
+		platform: () => detectPlatform($),
+		enter: (platform, name, reason) => enterNative($, platform, name, reason),
+		save: (path, name, value) => saveValue($, enrollment, path, name, value),
+		addFile: (path) => addFile($, enrollment, path),
+		toast: (text) => $.ui.toast(text),
+	};
+}
+
+/** R5: the text a start answers at once, and the end of the flow, which never rejects. */
+export type Flow = { text: string; done: Promise<void> };
+
+export const BUSY = "blindfold is already asking for a value.";
+
+const UNAVAILABLE: Entered = { kind: "cancel", why: "unavailable" };
+
+/** R5, R3: keep the outcome, and toast it, since the flow ends after the surface that started it answered. */
+function finish(ui: Ui, io: FlowIo, outcome: Outcome | undefined): void {
+	ui.setOutcome(outcome);
+	try {
+		if (outcome) io.toast(outcomeText(outcome));
+	} catch {
+		// The pane and the status line still hold it (R6).
+	}
+}
+
+/** R5 (F67): what must not change while the value is out: the request epoch, the request id, and the session. */
+const fenceOf = (ui: Ui): string =>
+	`${ui.requests.epoch()} ${ui.requests.current()?.id} ${ui.sessions}`;
+
+/**
+ * R5: the flow for 1 name, from the command, the band, and the pane, which do not await `done` (the dialog waits up to
+ * 300 s). With `ask`, the start is the answer "Enter it" (Q43).
+ */
+export function startFlow(
+	ui: Ui,
+	name: string,
+	io: FlowIo,
+	settings: FlowSettings,
+): Flow {
+	if (ui.busy) return { text: BUSY, done: Promise.resolve() };
+	const file = targetFile(ui.enrollment.status());
+	if (!file || settings.save === "never") {
+		return { text: addByHand(ui, name), done: Promise.resolve() };
+	}
+	ui.busy = true;
+	const request = ui.requests.current();
+	const reason =
+		(request?.name === name && request.reason) ||
+		`blindfold saves it to ${file}.`;
+	return {
+		text: `blindfold is asking for ${name}.`,
+		done: enterAndSave(ui, io, settings.method, name, file, reason),
+	};
+}
+
+/** R5 steps 3 and 4. The value lives only in `entered`, never in module state, an outcome, or an error (R7). */
+async function enterAndSave(
+	ui: Ui,
+	io: FlowIo,
+	method: Method,
+	name: string,
+	file: string,
+	reason: string,
+): Promise<void> {
+	const fence = fenceOf(ui);
+	try {
+		const platform = await io.platform();
+		const entered =
+			pickMethod(method, platform) === "native"
+				? await io.enter(platform, name, reason)
+				: UNAVAILABLE;
+		if (entered.kind === "cancel") {
+			// F70: unavailable before the other cancels, which keep the outcome and the open request (design 1g).
+			if (entered.why === "unavailable") {
+				finish(ui, io, { kind: "manual", name, file });
+			}
+			return;
+		}
+		if (fenceOf(ui) !== fence) return finish(ui, io, { kind: "cleared", name });
+		const saved = await io.save(file, name, entered.value);
+		if (fenceOf(ui) !== fence) return;
+		finish(
+			ui,
+			io,
+			!saved.ok
+				? { kind: "not-saved", name, step: saved.step, reason: saved.reason }
+				: saved.warning
+					? { kind: "repaired", name }
+					: undefined,
+		);
+	} catch {
+		// The error is dropped unread: it could hold the value.
+		finish(ui, io, { kind: "manual", name, file });
+	} finally {
+		ui.busy = false;
+	}
+}
+
+/** R5 step 1 (Q42, F68, F69): list the chosen file. `added` reloads the module, so the flow stops there. Never rejects. */
+export async function chooseFile(
+	ui: Ui,
+	name: string,
+	file: (typeof CHOICES)[number],
+	io: FlowIo,
+): Promise<void> {
+	if (ui.busy) {
+		try {
+			io.toast(BUSY);
+		} catch {
+			// Nothing is left to tell the user with.
+		}
+		return;
+	}
+	ui.busy = true;
+	try {
+		const added = await io.addFile(file).catch(() => "denied" as const);
+		finish(
+			ui,
+			io,
+			added === "denied"
+				? { kind: "denied", name }
+				: { kind: added, name, file },
+		);
+	} finally {
+		ui.busy = false;
+	}
+}
+
+/** R5 step 1: the name the pane offers the file choice for, while no listed file can take a value. */
+function choiceFor(ui: Ui): string | undefined {
+	if (targetFile(ui.enrollment.status())) return undefined;
+	const outcome = ui.outcome();
+	return outcome?.kind === "choose"
+		? outcome.name
+		: ui.requests.current()?.name;
 }
 
 /** R1, R2: Dismiss clears the request and the outcome. */
@@ -372,6 +548,7 @@ export async function onCommand(
 	e: CommandRun[1],
 	next: CommandRun[2],
 	list: string,
+	settings: FlowSettings,
 ): Promise<CommandRunResult> {
 	await ensureLoaded($, ui.enrollment, list);
 	const clock = clockFor(next.budget.remainingMs, () => performance.now());
@@ -385,8 +562,10 @@ export async function onCommand(
 		case "open":
 			await $.ui.open({ id: PANE_ID, title: "blindfold" });
 			return {};
-		case "set":
-			return { text: startFlow(ui, command.name) };
+		case "set": {
+			const io = flowIoOf($, ui.enrollment);
+			return { text: startFlow(ui, command.name, io, settings).text };
+		}
 		case "add":
 			return { text: addByHand(ui, command.name) };
 		case "dismiss":
@@ -419,6 +598,7 @@ export async function onBand(
 	ui: Ui,
 	e: Band,
 	next: (e: Band) => Promise<RenderElement>,
+	settings: FlowSettings,
 ): Promise<RenderElement> {
 	const request = ui.requests.current();
 	if (e.props.hasSurvey || !request) return next(e);
@@ -440,6 +620,23 @@ export async function onBand(
 			onPress: () => void onPress(),
 		});
 	const toast = (text: string) => $.ui.toast(text);
+	const file = targetFile(ui.enrollment.status());
+	const enter =
+		settings.save === "ask" && file
+			? `Enter it here (blindfold saves it to ${file})`
+			: "Enter it";
+	const pending = file
+		? [
+				button("enter", "1", enter, () =>
+					toast(startFlow(ui, name, flowIoOf($, ui.enrollment), settings).text),
+				),
+				button("add", "2", "Add it myself", () => toast(addByHand(ui, name))),
+			]
+		: CHOICES.map((choice, i) =>
+				button(`use-${choice}`, `${i + 1}`, `Use ${choice}`, () =>
+					chooseFile(ui, name, choice, flowIoOf($, ui.enrollment)),
+				),
+			);
 	const buttons =
 		state === "ready"
 			? [
@@ -448,11 +645,13 @@ export async function onBand(
 					),
 					button("dismiss", "3", "Dismiss", () => dismiss(ui)),
 				]
-			: [
-					button("enter", "1", "Enter it", () => toast(startFlow(ui, name))),
-					button("add", "2", "Add it myself", () => toast(addByHand(ui, name))),
-					button("dismiss", "3", "Dismiss", () => dismiss(ui)),
-				];
+			: [...pending, button("dismiss", "3", "Dismiss", () => dismiss(ui))];
+	const said =
+		state === "ready"
+			? `${asks} ${name} is set.`
+			: file
+				? asks
+				: `${asks} No listed env file can take it.`;
 	return Box({
 		flexDirection: "column",
 		children: [
@@ -460,12 +659,7 @@ export async function onBand(
 			Box({
 				flexDirection: "row",
 				gap: 1,
-				children: [
-					Text({
-						children: state === "ready" ? `${asks} ${name} is set.` : asks,
-					}),
-					...buttons,
-				],
+				children: [Text({ children: said }), ...buttons],
 			}),
 		],
 	});
@@ -487,6 +681,7 @@ export async function onPane(
 	e: PaneInput,
 	next: (e: PaneInput) => Promise<RenderElement>,
 	list: string,
+	settings: FlowSettings,
 ): Promise<RenderElement> {
 	if (e.requestId !== PANE_ID) return next(e);
 	const { Box, Button, Text } = $.ui.resolve(e);
@@ -518,7 +713,10 @@ export async function onPane(
 		const enter = button(
 			`enter:${row.file}:${row.name}`,
 			"Enter value",
-			() => $.ui.toast(startFlow(ui, row.name)),
+			() =>
+				$.ui.toast(
+					startFlow(ui, row.name, flowIoOf($, ui.enrollment), settings).text,
+				),
 			requested ? "e" : undefined,
 		);
 		if (!requested) return [enter];
@@ -527,6 +725,7 @@ export async function onPane(
 	const line = (key: string, children: RenderElement[]) =>
 		Box({ key, flexDirection: direction, gap: 1, children });
 	const outcome = ui.outcome();
+	const chosen = choiceFor(ui);
 	const files = status.files.filter((f) => f.path !== HIDDEN_PATH);
 	return Box({
 		flexDirection: "column",
@@ -538,6 +737,18 @@ export async function onPane(
 				? [Text({ children: "No names in the listed env files." })]
 				: []),
 			...(outcome ? [Text({ children: outcomeText(outcome) })] : []),
+			...(chosen
+				? [
+						line("choose", [
+							Text({ children: `Pick the env file for ${chosen}:` }),
+							...CHOICES.map((choice) =>
+								button(`use:${choice}`, `Use ${choice}`, () =>
+									chooseFile(ui, chosen, choice, flowIoOf($, ui.enrollment)),
+								),
+							),
+						]),
+					]
+				: []),
 			...(files.length > 0
 				? [
 						line(

@@ -1,19 +1,33 @@
 import { describe, expect, test } from "claude-code/testing";
 import { buildKnownSet } from "../hooks/detect.ts";
-import { type FileStatus, type Status, statusOf } from "../hooks/enroll.ts";
-import type { Request } from "../hooks/request.ts";
 import {
+	createEnrollment,
+	type FileState,
+	type FileStatus,
+	type Status,
+	statusOf,
+} from "../hooks/enroll.ts";
+import type { Entered, Platform } from "../hooks/entry.ts";
+import { createRequests, type Request } from "../hooks/request.ts";
+import {
+	BUSY,
 	type Command,
 	canonicalArgs,
+	chooseFile,
+	createUi,
+	type FlowIo,
+	type FlowSettings,
 	type GitState,
 	type Outcome,
 	outcomeText,
 	parseCommand,
 	rowsOf,
+	startFlow,
 	statusLine,
 	targetFile,
 } from "../hooks/ui.ts";
-import { fakes } from "./fakes.ts";
+import type { Saved } from "../hooks/write.ts";
+import { fakes, gate } from "./fakes.ts";
 
 const fake = fakes(41);
 const noValue = () => false;
@@ -238,6 +252,10 @@ describe("R5 outcomeText (R7)", () => {
 			{ kind: "repaired", name: "API_KEY" },
 			"Saved. The file was readable by others for a moment.",
 		],
+		[
+			{ kind: "choose", name: "API_KEY" },
+			"No listed env file can take API_KEY. Run /secrets and pick .env or .env.local.",
+		],
 	];
 	for (const [outcome, text] of cases) {
 		test(`R5: ${outcome.kind} has its fixed text`, () => {
@@ -437,5 +455,271 @@ describe("R5 step 1 targetFile", () => {
 			file(".env", { kind: "refused", reason: "absolute" }),
 		);
 		expect(targetFile(status)).toBeUndefined();
+	});
+});
+
+describe("R5 the flow, with a fake entry and write", () => {
+	const NAME = "API_KEY";
+	const VALUE = `V${fake.secret(27)}`;
+	const ASK: FlowSettings = { method: "auto", save: "ask" };
+	const SAVED: Saved = { ok: true, created: false, ignoredNow: false };
+
+	/** A ui over `states`, by path, with the request for NAME open. */
+	const setup = (
+		states: Record<string, FileState> = { ".env": { kind: "missing" } },
+	) => {
+		const enrollment = createEnrollment();
+		enrollment.apply(
+			Object.entries(states).map(([path, state]) => ({
+				path,
+				state,
+				feed: [],
+			})),
+		);
+		const requests = createRequests();
+		const ui = createUi(enrollment, requests);
+		const request = requests.ask(NAME, "to charge the card");
+		return { ui, requests, request };
+	};
+
+	type Script = {
+		platform?: Platform;
+		entered?: Entered | Promise<Entered>;
+		saved?: Saved;
+		added?: "added" | "refused" | "denied" | Promise<never>;
+		fails?: boolean;
+	};
+	/** Records each call by its non-value arguments; `values` holds what save got. */
+	const fakeIo = (script: Script = {}) => {
+		const calls: string[] = [];
+		const toasts: string[] = [];
+		const values: string[] = [];
+		const io: FlowIo = {
+			platform: async () => {
+				calls.push("platform");
+				if (script.fails) throw new Error(`boom ${VALUE}`);
+				return script.platform ?? "macos";
+			},
+			enter: async (platform, name, reason) => {
+				calls.push(`enter ${platform} ${name} ${reason}`);
+				return script.entered ?? { kind: "value", value: VALUE };
+			},
+			save: async (path, name, value) => {
+				calls.push(`save ${path} ${name}`);
+				values.push(value);
+				return script.saved ?? SAVED;
+			},
+			addFile: async (path) => {
+				calls.push(`addFile ${path}`);
+				return script.added ?? "added";
+			},
+			toast: (text) => toasts.push(text),
+		};
+		return { io, calls, toasts, values };
+	};
+
+	test("R5 step 1 (Q41, F34): with no listed file that can take a value, the start offers the file choice and opens no dialog", async () => {
+		const { ui } = setup({ ".env": { kind: "refused", reason: "symlink" } });
+		const { io, calls } = fakeIo();
+		const flow = startFlow(ui, NAME, io, ASK);
+		await flow.done;
+		expect(flow.text).toBe(
+			`No listed env file can take ${NAME}. Run /secrets and pick .env or .env.local.`,
+		);
+		expect(ui.outcome()).toEqual({ kind: "choose", name: NAME });
+		expect(calls).toEqual([]);
+	});
+
+	const choices: [Script["added"], Outcome][] = [
+		["added", { kind: "added", name: NAME, file: ".env.local" }],
+		["refused", { kind: "refused", name: NAME, file: ".env.local" }],
+		["denied", { kind: "denied", name: NAME }],
+		[Promise.reject(new Error("no")), { kind: "denied", name: NAME }],
+	];
+	for (const [added, outcome] of choices) {
+		test(`R5 step 1 (Q42, F68, F69): the file choice through addFile, ${typeof added === "string" ? added : "a rejection"}, shows ${outcome.kind} and stops`, async () => {
+			const { ui } = setup({});
+			const { io, calls, toasts } = fakeIo({ added });
+			await chooseFile(ui, NAME, ".env.local", io);
+			expect(calls).toEqual(["addFile .env.local"]);
+			expect(ui.outcome()).toEqual(outcome);
+			expect(toasts).toEqual([outcomeText(outcome)]);
+		});
+	}
+
+	test("R5 step 2: never shows the line to add by hand and opens no dialog", async () => {
+		const { ui } = setup();
+		const { io, calls } = fakeIo();
+		const flow = startFlow(ui, NAME, io, { method: "auto", save: "never" });
+		await flow.done;
+		expect(flow.text).toBe(
+			`Add ${NAME}= to .env in your editor, then press Refresh.`,
+		);
+		expect(ui.outcome()).toEqual({ kind: "manual", name: NAME, file: ".env" });
+		expect(calls).toEqual([]);
+	});
+
+	for (const save of ["ask", "always"] as const) {
+		test(`R5 step 2 (Q43): with ${save}, a start enters the value and saves it to the target`, async () => {
+			const { ui } = setup();
+			const { io, calls, values } = fakeIo();
+			const flow = startFlow(ui, NAME, io, { method: "auto", save });
+			expect(flow.text).toBe(`blindfold is asking for ${NAME}.`);
+			await flow.done;
+			expect(calls).toEqual([
+				"platform",
+				`enter macos ${NAME} to charge the card`,
+				`save .env ${NAME}`,
+			]);
+			expect(values).toEqual([VALUE]);
+		});
+	}
+
+	test("R5 step 3: with no request for the name, the dialog says where the value goes", async () => {
+		const { ui, requests } = setup();
+		requests.clear();
+		const { io, calls } = fakeIo();
+		await startFlow(ui, NAME, io, ASK).done;
+		expect(calls[1]).toBe(`enter macos ${NAME} blindfold saves it to .env.`);
+	});
+
+	test("R5 step 3 (F70): the route unavailable shows the line to add by hand, with no dialog", async () => {
+		const { ui } = setup();
+		const { io, calls, toasts } = fakeIo({ platform: "unknown" });
+		await startFlow(ui, NAME, io, ASK).done;
+		const manual: Outcome = { kind: "manual", name: NAME, file: ".env" };
+		expect(ui.outcome()).toEqual(manual);
+		expect(toasts).toEqual([outcomeText(manual)]);
+		expect(calls).toEqual(["platform"]);
+	});
+
+	test("R5 step 3 (F70): a cancel with why unavailable shows the line to add by hand", async () => {
+		const { ui } = setup();
+		const { io, calls } = fakeIo({
+			entered: { kind: "cancel", why: "unavailable" },
+		});
+		await startFlow(ui, NAME, io, ASK).done;
+		expect(ui.outcome()).toEqual({ kind: "manual", name: NAME, file: ".env" });
+		expect(calls.some((c) => c.startsWith("save"))).toBe(false);
+	});
+
+	for (const why of ["cancelled", "timeout", "failed"] as const) {
+		test(`R5 step 3: a cancel (${why}) stops with the outcome unchanged and the request open`, async () => {
+			const { ui, requests, request } = setup();
+			const before: Outcome = { kind: "cleared", name: NAME };
+			ui.setOutcome(before);
+			const { io, calls, toasts } = fakeIo({
+				entered: { kind: "cancel", why },
+			});
+			await startFlow(ui, NAME, io, ASK).done;
+			expect(ui.outcome()).toEqual(before);
+			expect(requests.current()).toEqual(request);
+			expect(calls.some((c) => c.startsWith("save"))).toBe(false);
+			expect(toasts).toEqual([]);
+		});
+	}
+
+	const saves: [Saved, Outcome | undefined][] = [
+		[SAVED, undefined],
+		[
+			{ ...SAVED, warning: "mode-repaired" },
+			{ kind: "repaired", name: NAME },
+		],
+		[
+			{ ok: false, step: "git", reason: "tracked" },
+			{ kind: "not-saved", name: NAME, step: "git", reason: "tracked" },
+		],
+	];
+	for (const [saved, outcome] of saves) {
+		test(`R5 step 4: a save that is ${saved.ok ? (saved.warning ?? "ok") : "not ok"} sets the outcome ${outcome?.kind ?? "undefined"}`, async () => {
+			const { ui } = setup();
+			ui.setOutcome({ kind: "cleared", name: NAME });
+			const { io, toasts } = fakeIo({ saved });
+			await startFlow(ui, NAME, io, ASK).done;
+			expect(ui.outcome()).toEqual(outcome);
+			expect(toasts).toEqual(outcome ? [outcomeText(outcome)] : []);
+		});
+	}
+
+	test("R5: 1 flow at a time; a 2nd start and a file choice say busy; the busy flag resets after the flow", async () => {
+		const { ui } = setup();
+		const dialog = gate();
+		const entered = dialog.wait.then(
+			(): Entered => ({ kind: "cancel", why: "cancelled" }),
+		);
+		const first = fakeIo({ entered });
+		const flow = startFlow(ui, NAME, first.io, ASK);
+		const second = fakeIo();
+		expect(startFlow(ui, NAME, second.io, ASK).text).toBe(BUSY);
+		expect(BUSY).toBe("blindfold is already asking for a value.");
+		await chooseFile(ui, NAME, ".env", second.io);
+		expect(second.toasts).toEqual([BUSY]);
+		expect(second.calls).toEqual([]);
+		dialog.open();
+		await flow.done;
+		const third = fakeIo();
+		await startFlow(ui, NAME, third.io, ASK).done;
+		expect(third.calls.at(-1)).toBe(`save .env ${NAME}`);
+	});
+
+	test("R5: the flow never rejects; a failure becomes the line to add by hand, names no value, and frees the flow", async () => {
+		const { ui } = setup();
+		const { io, toasts } = fakeIo({ fails: true });
+		await startFlow(ui, NAME, io, ASK).done;
+		expect(ui.outcome()).toEqual({ kind: "manual", name: NAME, file: ".env" });
+		expect(JSON.stringify([ui.outcome(), toasts])).not.toContain(VALUE);
+		const again = fakeIo();
+		await startFlow(ui, NAME, again.io, ASK).done;
+		expect(again.calls.at(-1)).toBe(`save .env ${NAME}`);
+	});
+
+	const changes: [string, (s: ReturnType<typeof setup>) => void][] = [
+		["a clear (Dismiss, a user prompt)", ({ requests }) => requests.clear()],
+		["a new request", ({ requests }) => void requests.ask("OTHER_KEY", "r")],
+		["a session end alone", ({ ui }) => void ui.sessions++],
+	];
+	for (const [label, change] of changes) {
+		test(`R5 (F67): ${label} during entry drops the value before saveValue, and the outcome is cleared`, async () => {
+			const s = setup();
+			const dialog = gate();
+			const entered = dialog.wait.then(
+				(): Entered => ({ kind: "value", value: VALUE }),
+			);
+			const { io, calls } = fakeIo({ entered });
+			const flow = startFlow(s.ui, NAME, io, ASK);
+			await Promise.resolve();
+			change(s);
+			dialog.open();
+			await flow.done;
+			expect(calls.some((c) => c.startsWith("save"))).toBe(false);
+			expect(s.ui.outcome()).toEqual({ kind: "cleared", name: NAME });
+		});
+
+		test(`R5 (F67): ${label} during saveValue leaves the outcome as it is`, async () => {
+			const s = setup();
+			const { io } = fakeIo({
+				saved: { ok: false, step: "git", reason: "tracked" },
+			});
+			const save = io.save;
+			io.save = async (...args) => {
+				change(s);
+				s.ui.setOutcome(undefined);
+				return save(...args);
+			};
+			await startFlow(s.ui, NAME, io, ASK).done;
+			expect(s.ui.outcome()).toBeUndefined();
+		});
+	}
+
+	test("R7: the start text, the outcome, and every toast hold no value", async () => {
+		const texts: unknown[] = [];
+		for (const saved of saves.map(([s]) => s)) {
+			const { ui } = setup();
+			const { io, toasts } = fakeIo({ saved });
+			const flow = startFlow(ui, NAME, io, ASK);
+			await flow.done;
+			texts.push(flow.text, ui.outcome(), toasts);
+		}
+		expect(JSON.stringify(texts)).not.toContain(VALUE);
 	});
 });

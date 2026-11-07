@@ -124,11 +124,11 @@ export type FakeCall = { noun: string; args: unknown[] };
 export type FakeOptions = {
 	realRoot?: string | null;
 	setAnswer?: { deny: string };
-	/** Answers `$.process.run`; a thrown error is a command that does not start. Absent, every run rejects. */
+	/** Answers `$.process.run`, at once or later; a thrown error is a command that does not start. Absent, every run rejects. */
 	run?: (
 		argv: readonly string[],
 		init?: ProcessRunInit,
-	) => Partial<ProcessRunResult>;
+	) => Partial<ProcessRunResult> | Promise<Partial<ProcessRunResult>>;
 	/** What `$.env.get` answers. */
 	env?: Record<string, string>;
 	/** The text a `$.fs.write` keeps, from the text it was given. Absent, the given text. */
@@ -179,6 +179,10 @@ export function fakeApi(
 	};
 	const shown: FakeCall[] = [];
 	const show = (noun: string, ...args: unknown[]) => shown.push({ noun, args });
+	/** Each `$.store` and `$.state` write, so a test can check that none holds a value. */
+	const stored: FakeCall[] = [];
+	const keep = (noun: string, ...args: unknown[]) =>
+		stored.push({ noun, args });
 	const element =
 		(type: string) =>
 		(props: Record<string, unknown>): FakeElement => ({ type, props });
@@ -253,7 +257,7 @@ export function fakeApi(
 					stderr: "",
 					isStdoutTruncated: false,
 					isStderrTruncated: false,
-					...options.run(argv, init),
+					...(await options.run(argv, init)),
 				};
 			},
 		},
@@ -263,6 +267,19 @@ export function fakeApi(
 				return options.setAnswer ?? { value };
 			},
 		},
+		store: {
+			get: async () => undefined,
+			set: async (key: string, value: unknown) => keep("store.set", key, value),
+			delete: async (key: string) => keep("store.delete", key),
+			keys: async () => [],
+		},
+		state: {
+			get: async () => ({ value: undefined, version: 0 }),
+			set: async (ref: unknown, value: unknown) => {
+				keep("state.set", ref, value);
+				return { isSet: true, version: 1 };
+			},
+		},
 		tool: {
 			register: async (tool: ToolSpec) => {
 				tools.push(tool);
@@ -270,7 +287,7 @@ export function fakeApi(
 			},
 		},
 	} as unknown as EngineInterface;
-	return { api, reads, sets, tools, calls, shown };
+	return { api, reads, sets, tools, calls, shown, stored };
 }
 
 /** 1 element the fake `$.ui.resolve` table builds: its type and its props, children included. */

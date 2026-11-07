@@ -12,6 +12,7 @@ import {
 	type FakeOptions,
 	fakeApi,
 	fakes,
+	gate,
 	hooksOf,
 	REAL_ROOT,
 } from "./fakes.ts";
@@ -26,7 +27,28 @@ const NEXT_TEXT =
 const OPEN_TOAST = `blindfold: Claude asks for ${NAME}. Run /secrets or use the band.`;
 const MANUAL = `Add ${NAME}= to .env in your editor, then press Refresh.`;
 
-const hooks = (list = ".env") => hooksOf(register, { envFiles: list });
+const hooks = (list = ".env", options: Record<string, string> = {}) =>
+	hooksOf(register, { envFiles: list, ...options });
+
+/** Waits for the running flow to end, then for what it started. */
+const idle = async () => {
+	for (let tick = 0; tick < 10_000 && ui.busy; tick++) await Promise.resolve();
+	for (let tick = 0; tick < 100; tick++) await Promise.resolve();
+};
+
+/** macOS with git, where every path is ignored: the dialog answers `value` once `dialog` settles. */
+const mac =
+	(value: string, dialog: Promise<void> = Promise.resolve()) =>
+	async (argv: readonly string[]) => {
+		if (argv[0] === "uname") return { stdout: "Darwin\n" };
+		if (argv[0] === "osascript") {
+			await dialog;
+			return { stdout: `${value}\n` };
+		}
+		if (argv.includes("--show-toplevel")) return { stdout: `${REAL_ROOT}\n` };
+		if (argv.includes("rev-parse")) return { stdout: "true\n" };
+		return { exitCode: argv.includes("ls-files") ? 1 : 0 };
+	};
 
 /** A fresh session over `files`: the module state cleared, then session.start. `shown` starts after it. */
 async function start(
@@ -64,14 +86,41 @@ async function secrets($: EngineInterface, args: string, list = ".env") {
 const OTHER: FakeElement = { type: "Text", props: { children: "other mod" } };
 
 /** Draws the band; the mods beneath answer `OTHER`. */
-async function band($: EngineInterface, hasSurvey = false) {
+async function band(
+	$: EngineInterface,
+	hasSurvey = false,
+	options: Record<string, string> = {},
+) {
 	const e = {
 		surface: "terminal",
 		component: "AbovePrompt",
 		requestId: "band",
 		props: { hasSurvey, isWorking: false, maxRows: 10, bodyColumns: 80 },
 	};
-	return (await hooks().get(BAND)?.($, e, async () => OTHER)) as FakeElement;
+	return (await hooks(".env", options).get(BAND)?.(
+		$,
+		e,
+		async () => OTHER,
+	)) as FakeElement;
+}
+
+const PANE = `ui.render ${JSON.stringify({ component: "Pane" })}`;
+
+/** Draws the pane; another mod's pane beneath answers `OTHER`. */
+async function pane(
+	$: EngineInterface,
+	bodyColumns = 80,
+	{ requestId = "blindfold", surface = "terminal", list = ".env" } = {},
+) {
+	const e = {
+		surface,
+		component: "Pane",
+		requestId,
+		props: { title: "blindfold", isFocused: true, bodyColumns },
+	};
+	return (await hooks(list).get(PANE)?.($, e, async () => OTHER)) as
+		| FakeElement
+		| undefined;
 }
 
 /** Every element of a tree, depth first. */
@@ -162,12 +211,14 @@ describe("R1 /secrets", () => {
 		});
 	});
 
-	test("R1: set NAME starts the flow, which until T23 shows the same line as add", async () => {
-		const { api } = await start({});
+	test("R1, R5: set NAME starts the flow and answers at once; with no dialog on the system the outcome is the line to add by hand", async () => {
+		const { api, after } = await start({});
 		expect(await secrets(api, `set ${NAME}`)).toMatchObject({
-			answer: { text: MANUAL },
+			answer: { text: `blindfold is asking for ${NAME}.` },
 		});
+		await idle();
 		expect(ui.outcome()?.kind).toBe("manual");
+		expect(of(after(), "ui.toast")).toEqual([MANUAL]);
 	});
 
 	test("R1: dismiss clears the request and the outcome", async () => {
@@ -251,7 +302,7 @@ describe("R2 band", () => {
 		expect(await band(api, true)).toBe(OTHER);
 	});
 
-	test("R2, R6: a pending request adds 1 line after the other mods' tree: the reason as Text, then 1 Enter it, 2 Add it myself, 3 Dismiss", async () => {
+	test("R2, R6: a pending request adds 1 line after the other mods' tree: the reason as Text, then 1 Enter it (ask, the default), 2 Add it myself, 3 Dismiss", async () => {
 		const { api } = await start({});
 		requests.ask(NAME, "to charge the card.");
 		const tree = await band(api);
@@ -266,7 +317,7 @@ describe("R2 band", () => {
 		expect(
 			buttons(line).map((b) => [b.props.key, b.props.hotkey, b.props.label]),
 		).toEqual([
-			["blindfold-enter", "1", "Enter it"],
+			["blindfold-enter", "1", "Enter it here (blindfold saves it to .env)"],
 			["blindfold-add", "2", "Add it myself"],
 			["blindfold-dismiss", "3", "Dismiss"],
 		]);
@@ -313,10 +364,11 @@ describe("R2 band", () => {
 	});
 
 	for (const key of ["blindfold-enter", "blindfold-add"]) {
-		test(`R2: ${key} sets the manual outcome and toasts its line`, async () => {
+		test(`R2: ${key} with no dialog on the system sets the manual outcome and toasts its line`, async () => {
 			const { api, after } = await start({});
 			requests.ask(NAME, "r");
 			await press(await band(api), key);
+			await idle();
 			expect(ui.outcome()).toEqual({
 				kind: "manual",
 				name: NAME,
@@ -426,6 +478,7 @@ describe("R7 no value (F76)", () => {
 		answers.push(await band(api));
 		await press(await band(api), "blindfold-add");
 		answers.push((await secrets(api, "dismiss")).answer);
+		await idle();
 		return JSON.stringify([answers, shown]);
 	};
 
@@ -441,25 +494,6 @@ describe("R7 no value (F76)", () => {
 });
 
 describe("R4 pane", () => {
-	const PANE = `ui.render ${JSON.stringify({ component: "Pane" })}`;
-
-	/** Draws the pane; another mod's pane beneath answers `OTHER`. */
-	async function pane(
-		$: EngineInterface,
-		bodyColumns = 80,
-		{ requestId = "blindfold", surface = "terminal", list = ".env" } = {},
-	) {
-		const e = {
-			surface,
-			component: "Pane",
-			requestId,
-			props: { title: "blindfold", isFocused: true, bodyColumns },
-		};
-		return (await hooks(list).get(PANE)?.($, e, async () => OTHER)) as
-			| FakeElement
-			| undefined;
-	}
-
 	const texts = (tree: unknown) =>
 		elements(tree)
 			.filter((el) => el.type === "Text")
@@ -621,6 +655,22 @@ describe("R4 pane", () => {
 		expect(wide.every((d) => d === "row")).toBe(true);
 	});
 
+	test("R4, R5 step 1 (Q41): with no listed file that can take a value, the pane offers .env and .env.local for the requested name", async () => {
+		const { api } = await start({ ".env": { text: "A=1\n", isLink: true } });
+		expect(keys(await pane(api))).not.toContain("use:.env");
+		requests.ask(NAME, "r");
+		const tree = await pane(api);
+		expect(texts(tree)).toContain(`Pick the env file for ${NAME}:`);
+		expect(
+			buttons(tree)
+				.filter((b) => String(b.props.key).startsWith("use:"))
+				.map((b) => [b.props.key, b.props.label]),
+		).toEqual([
+			["use:.env", "Use .env"],
+			["use:.env.local", "Use .env.local"],
+		]);
+	});
+
 	test("R4: Forget drops the file; Refresh reads the list again", async () => {
 		const disk: Record<string, FakeFile> = {
 			".env": { text: "A=1\n" },
@@ -639,6 +689,7 @@ describe("R4 pane", () => {
 		const { api } = await start({ ".env": { text: `${NAME}=\n` } });
 		requests.ask(NAME, "r");
 		await press(await pane(api), `enter:.env:${NAME}`);
+		await idle();
 		expect(ui.outcome()).toEqual({ kind: "manual", name: NAME, file: ".env" });
 		expect(texts(await pane(api))).toContain(MANUAL);
 		await press(await pane(api), "dismiss");
@@ -768,5 +819,170 @@ describe("R4 pane", () => {
 		expect(a).not.toContain(short);
 		expect(b).not.toContain(long);
 		expect(a).toBe(b);
+	});
+});
+
+describe("R5 the flow through the hooks", () => {
+	const VALUE = `V${fake.secret(25)}`;
+	const env = (): Record<string, FakeFile> => ({
+		".env": { text: `${NAME}=\n` },
+	});
+	const wrote = (calls: FakeCall[]) =>
+		calls.filter((c) => c.noun === "fs.write");
+
+	test("R5: /secrets set NAME answers before the dialog closes; then the value is saved and the request turns ready", async () => {
+		const files = env();
+		const dialog = gate();
+		const { api, calls } = await start(files, ".env", {
+			run: mac(VALUE, dialog.wait),
+		});
+		requests.ask(NAME, "to charge the card");
+		const { answer } = await secrets(api, `set ${NAME}`);
+		expect(answer).toEqual({ text: `blindfold is asking for ${NAME}.` });
+		expect(ui.busy).toBe(true);
+		expect(wrote(calls)).toEqual([]);
+		dialog.open();
+		await idle();
+		expect(files[".env"]?.text).toBe(`${NAME}='${VALUE}'\n`);
+		expect(requests.current()?.state).toBe("ready");
+		expect(ui.outcome()).toBeUndefined();
+	});
+
+	const labels: [string, string][] = [
+		["ask", "Enter it here (blindfold saves it to .env)"],
+		["always", "Enter it"],
+		["never", "Enter it"],
+	];
+	for (const [save, label] of labels) {
+		test(`R2, R5 step 2: with saveToEnvFile ${save} the band's 1 reads "${label}"`, async () => {
+			const { api } = await start(env());
+			requests.ask(NAME, "r");
+			const [enter] = buttons(await band(api, false, { saveToEnvFile: save }));
+			expect([enter?.props.hotkey, enter?.props.label]).toEqual(["1", label]);
+		});
+	}
+
+	test("R5 step 2 (Q43): with ask, pressing the band's 1 is the answer: the dialog opens and the value is saved", async () => {
+		const files = env();
+		const { api, calls } = await start(files, ".env", { run: mac(VALUE) });
+		requests.ask(NAME, "r");
+		await press(
+			await band(api, false, { saveToEnvFile: "ask" }),
+			"blindfold-enter",
+		);
+		await idle();
+		expect(
+			calls.some(
+				(c) =>
+					c.noun === "process.run" &&
+					(c.args[0] as string[])[0] === "osascript",
+			),
+		).toBe(true);
+		expect(files[".env"]?.text).toBe(`${NAME}='${VALUE}'\n`);
+	});
+
+	test("R2, R5 step 1 (Q41, Q42): with no listed file that can take a value, the band offers 1 Use .env, 2 Use .env.local, 3 Dismiss; a choice lists the file and stops", async () => {
+		const { api, sets, after } = await start({
+			".env": { text: "A=1\n", isLink: true },
+		});
+		requests.ask(NAME, "r");
+		const tree = await band(api);
+		expect(
+			buttons(tree).map((b) => [b.props.key, b.props.hotkey, b.props.label]),
+		).toEqual([
+			["blindfold-use-.env", "1", "Use .env"],
+			["blindfold-use-.env.local", "2", "Use .env.local"],
+			["blindfold-dismiss", "3", "Dismiss"],
+		]);
+		expect(elements(tree).at(-4)?.props.children).toBe(
+			`Claude asks for ${NAME}: r. No listed env file can take it.`,
+		);
+		await press(tree, "blindfold-use-.env.local");
+		await idle();
+		expect(sets).toEqual([
+			{ key: "blindfold.envFiles", value: ".env,.env.local" },
+		]);
+		const added = `.env.local added. Run /secrets set ${NAME}, or ask Claude again.`;
+		expect(ui.outcome()).toEqual({
+			kind: "added",
+			name: NAME,
+			file: ".env.local",
+		});
+		expect(of(after(), "ui.toast")).toContain(added);
+	});
+
+	const stops: [string, ($: EngineInterface) => Promise<unknown>][] = [
+		["a Dismiss", async ($) => press(await band($), "blindfold-dismiss")],
+		[
+			"a user prompt",
+			async ($) =>
+				hooks().get("prompt.submit")?.(
+					$,
+					{ text: "hello" },
+					Object.assign(async (e: unknown) => e, budget),
+				),
+		],
+		[
+			"a session end",
+			async ($) => hooks().get("session.end")?.($, {}, async (e) => e),
+		],
+	];
+	for (const [label, stop] of stops) {
+		test(`R5 (F67): ${label} during entry stops the flow before saveValue`, async () => {
+			const files = env();
+			const dialog = gate();
+			const { api, calls } = await start(files, ".env", {
+				run: mac(VALUE, dialog.wait),
+			});
+			requests.ask(NAME, "r");
+			await secrets(api, `set ${NAME}`);
+			await stop(api);
+			dialog.open();
+			await idle();
+			expect(wrote(calls)).toEqual([]);
+			expect(files[".env"]?.text).toBe(`${NAME}=\n`);
+			expect(ui.outcome()).toEqual({ kind: "cleared", name: NAME });
+			expect(ui.busy).toBe(false);
+		});
+	}
+});
+
+describe("R7 no value through the whole flow (F76)", () => {
+	/** A request, the band, a busy start, the dialog, the save, the pane, and Continue, over `value`. Returns all the user could see, and every store and state write. */
+	const whole = async (value: string) => {
+		const dialog = gate();
+		const { api, shown, stored } = await start(
+			{ ".env": { text: `${NAME}=\n` } },
+			".env",
+			{ run: mac(value, dialog.wait) },
+		);
+		const seen: unknown[] = [];
+		requests.ask(NAME, "to charge the card");
+		seen.push(await band(api));
+		await press(await band(api), "blindfold-enter");
+		seen.push((await secrets(api, `set ${NAME}`)).answer, await pane(api));
+		dialog.open();
+		await idle();
+		seen.push(ui.outcome(), await band(api), await pane(api));
+		await press(await band(api), "blindfold-continue");
+		await idle();
+		seen.push(await pane(api));
+		return {
+			seen: JSON.stringify([seen, shown]),
+			stored: JSON.stringify(stored),
+		};
+	};
+
+	test("R7: every tree, toast, status line, command answer, and outcome is the same for 2 values of different lengths and holds neither; no store or state write holds one", async () => {
+		const short = `V${fake.secret(19)}`;
+		const long = `V${fake.secret(39)}`;
+		const a = await whole(short);
+		const b = await whole(long);
+		expect(a.seen).toContain(`${NAME} is set.`);
+		expect(a.seen).not.toContain(short);
+		expect(b.seen).not.toContain(long);
+		expect(a.seen).toBe(b.seen);
+		expect(a.stored).not.toContain(short);
+		expect(b.stored).not.toContain(long);
 	});
 });

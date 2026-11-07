@@ -38,6 +38,7 @@ import {
 	COMMAND,
 	COMMAND_SPEC,
 	createUi,
+	type FlowSettings,
 	onBand,
 	onCommand,
 	onCommandCatch,
@@ -73,8 +74,20 @@ const startedIn = new Map<unknown, number>();
 /** R7: the `classic.SessionStart` sources that begin another conversation in the same process. */
 const RESTARTS: readonly string[] = ["clear", "resume", "fork"];
 
+/** An option the user set, or `fallback` when it is none of `allowed`. */
+const oneOf = <T extends string>(
+	value: unknown,
+	allowed: readonly T[],
+	fallback: T,
+): T => allowed.find((a) => a === value) ?? fallback;
+
 export const register: Register = (on, options) => {
 	const list = typeof options.envFiles === "string" ? options.envFiles : ".env";
+	/** ui R5: the defaults are the manifest's. */
+	const settings: FlowSettings = {
+		method: oneOf(options.inputMethod, ["auto", "native", "terminal"], "auto"),
+		save: oneOf(options.saveToEnvFile, ["ask", "always", "never"], "ask"),
+	};
 	/** The list `session.end` dropped, since `/clear`, `/resume`, and `/branch` end the session before `classic.SessionStart`. */
 	let ended = list;
 
@@ -100,6 +113,8 @@ export const register: Register = (on, options) => {
 	on("session.end", (_$, e, next) => {
 		requests.clear();
 		ui.setOutcome(undefined);
+		// ui R5 (F67): a flow that began in this session saves nothing after it.
+		ui.sessions++;
 		resetRewriteCounts();
 		ended = enrollment.listed();
 		enrollment.drop();
@@ -174,16 +189,16 @@ export const register: Register = (on, options) => {
 
 	// ui R1 (F64): the .catch masks the arguments too, since a skipped hook lets the command run as typed.
 	on("command.run", { command: COMMAND }, ($, e, next) =>
-		onCommand($, ui, e, next, list),
+		onCommand($, ui, e, next, list, settings),
 	).catch(onCommandCatch);
 
 	// ui R2: the band, shared with other mods.
 	on("ui.render", { component: "AbovePrompt" }, ($, e, next) =>
-		onBand($, ui, e, next),
+		onBand($, ui, e, next, settings),
 	);
 
 	// ui R4: the pane /secrets opens; another mod's pane passes.
 	on("ui.render", { component: "Pane" }, ($, e, next) =>
-		onPane($, ui, e, next, list),
+		onPane($, ui, e, next, list, settings),
 	);
 };
