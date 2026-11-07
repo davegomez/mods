@@ -3,6 +3,7 @@ import { describe, expect, test } from "claude-code/testing";
 import { DEFAULT_LIMITS, scanText } from "../hooks/detect.ts";
 import { addFile } from "../hooks/enroll.ts";
 import { enrollment, register } from "../hooks/register.ts";
+import { rewriteCounts } from "../hooks/shield.ts";
 import {
 	type FakeFile,
 	fakeApi,
@@ -215,6 +216,21 @@ describe("R7 lifecycle wiring", () => {
 		expect(passed[0]).toBe(e);
 		expect(hides(value)).toBe(false);
 		expect(enrollment.status()).toEqual({ files: [], shield: "active" });
+	});
+
+	test("R7 (ui R4): session.end resets the rewrite counts of the session", async () => {
+		enrollment.drop();
+		const value = fake.secret(24);
+		const { api } = fakeApi({ ".env": secretFile(value) });
+		const hooks = hooksOf({ envFiles: ".env" });
+		await run(hooks.get("session.start"), api, {});
+		const next = Object.assign(async () => ({ result: `out ${value}` }), {
+			budget: { ms: 10_000, remainingMs: 10_000 },
+		});
+		await hooks.get("tool.call")?.(api, { tool: "Bash", command: "ls" }, next);
+		expect(rewriteCounts().get("API_KEY")).toBe(1);
+		await run(hooks.get("session.end"), api, { reason: "clear" });
+		expect(rewriteCounts().size).toBe(0);
 	});
 });
 

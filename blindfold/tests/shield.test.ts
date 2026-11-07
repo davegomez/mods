@@ -38,6 +38,8 @@ import {
 	REFUSED_SEND,
 	REFUSED_SPAWN,
 	ROTATE_TOAST,
+	resetRewriteCounts,
+	rewriteCounts,
 	unscannedBelow,
 	type Verdict,
 	WITHHELD_CONTENT,
@@ -1799,5 +1801,101 @@ describe("R15 no leak", () => {
 			);
 			for (const secret of secrets) expect(json.includes(secret)).toBe(false);
 		}
+	});
+});
+
+describe("ui R4 (F75) rewrite counts", () => {
+	const e = { tool: "Bash", tool_use_id: "t75", command: "cat notes.txt" };
+	const counts = () => Object.fromEntries(rewriteCounts());
+
+	test("ui R4 (F75): 2 hits of 1 name in 1 rewritten result add 1", async () => {
+		resetRewriteCounts();
+		await call(e, { result: `a ${envValue} b ${envValue}` });
+		expect(counts()).toEqual({ [ENV_NAME]: 1 });
+		await call(e, { result: { stdout: envValue }, text: envValue });
+		expect(counts()).toEqual({ [ENV_NAME]: 2 });
+	});
+
+	test("ui R4 (F75): each distinct name in 1 rewritten result adds 1, and the map holds numbers only", async () => {
+		resetRewriteCounts();
+		const other = fake.secret(26);
+		const { api } = fakeApi({
+			".env": { text: `${ENV_NAME}=${envValue}\nOTHER_KEY=${other}\n` },
+		});
+		const enrollment = createEnrollment();
+		await load(api, enrollment, ".env");
+		const { next } = nextOf({ result: `${envValue} ${other} ${envValue}` });
+		await onToolCall(
+			api,
+			enrollment,
+			e as Parameters<typeof onToolCall>[2],
+			next,
+			".env",
+		);
+		expect(counts()).toEqual({ [ENV_NAME]: 1, OTHER_KEY: 1 });
+		for (const n of rewriteCounts().values()) expect(typeof n).toBe("number");
+	});
+
+	test("ui R4 (F75): a masked deny from below and a masked error each add 1", async () => {
+		resetRewriteCounts();
+		await call(e, { deny: `no: ${envValue}` });
+		await call(e, { result: "x", text: `err ${envValue}`, isError: true });
+		expect(counts()).toEqual({ [ENV_NAME]: 2 });
+	});
+
+	test("ui R4 (F75): a scan with no rewrite adds 0", async () => {
+		resetRewriteCounts();
+		await call(e, { result: "clean" });
+		await call(e, { deny: "not allowed" });
+		expect(counts()).toEqual({});
+	});
+
+	test("ui R4 (F75): a rewrite with no known hit adds 0", async () => {
+		resetRewriteCounts();
+		const { result } = await call(e, { result: `token ${vendorToken}` });
+		expect(result).toEqual({ result: "token [secret hidden]" });
+		expect(counts()).toEqual({});
+	});
+
+	test("ui R4 (F75): a withheld result adds 0", async () => {
+		resetRewriteCounts();
+		await call(e, { result: `${envValue} ${tooLarge()}` });
+		expect(counts()).toEqual({});
+	});
+
+	test("ui R4 (F75): an argument scan adds 0", async () => {
+		resetRewriteCounts();
+		const { result, passed } = await call({
+			...e,
+			command: `echo ${envValue}`,
+		});
+		expect(result).toEqual({ deny: REFUSED_ARGS });
+		expect(passed).toEqual([]);
+		expect(counts()).toEqual({});
+	});
+
+	test("ui R4 (F75): a rewrite on another shield path, such as a prompt, adds 0", async () => {
+		resetRewriteCounts();
+		const { enrollment } = await setup();
+		const { next } = nextOf<SubmitNext>({ text: "entered" });
+		await onPromptSubmit(
+			promptApi(),
+			enrollment,
+			{
+				wait: false,
+				origin: { kind: "user" },
+				text: `use ${envValue}`,
+			} as unknown as SubmitE,
+			next,
+			".env",
+		);
+		expect(counts()).toEqual({});
+	});
+
+	test("ui R4: resetRewriteCounts empties the counts", async () => {
+		await call(e, { result: envValue });
+		expect(rewriteCounts().size).toBeGreaterThan(0);
+		resetRewriteCounts();
+		expect(rewriteCounts().size).toBe(0);
 	});
 });

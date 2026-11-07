@@ -130,14 +130,18 @@ function scanPlain(value: unknown, set: KnownSet, clock: Clock): Scan<unknown> {
 		: { status: "found", value: copy.value, hits: keys.hits };
 }
 
+function scanTimed(text: string, set: KnownSet, clock: Clock): Scan<string> {
+	// A short text never reads the clock in the scan, so it is read here.
+	if (expired(clock)) return unscannable("deadline");
+	return scanText(text, set, DEFAULT_LIMITS, clock);
+}
+
 export function guardText(
 	text: string,
 	set: KnownSet,
 	clock: Clock,
 ): Verdict<string> {
-	// A short text never reads the clock in the scan, so it is read here.
-	if (expired(clock)) return stop("deadline");
-	return verdict(scanText(text, set, DEFAULT_LIMITS, clock));
+	return verdict(scanTimed(text, set, clock));
 }
 
 export function guardValue(
@@ -223,24 +227,41 @@ function rewritten(
 	} as ToolCallResult;
 }
 
+/** ui R4: per known name, the tool results the shield rewrote in this session. Numbers only, in memory. */
+const rewrites = new Map<string, number>();
+
+/** ui R4: a read-only view for the pane. */
+export const rewriteCounts = (): ReadonlyMap<string, number> => rewrites;
+
+/** ui R4: at session end. */
+export const resetRewriteCounts = (): void => rewrites.clear();
+
+/** ui R4 (F75): 1 per distinct name with a `known` hit, not 1 per hit. */
+function countRewrite(hits: readonly Hit[]): void {
+	const names = new Set(
+		hits.flatMap((h) => (h.kind === "known" ? [h.name] : [])),
+	);
+	for (const name of names) rewrites.set(name, (rewrites.get(name) ?? 0) + 1);
+}
+
 /** R5: scan what `next` returned with the set as it is now. */
 function guardResult(out: ToolCallResult, set: KnownSet, clock: Clock) {
-	if (out.deny !== undefined) {
-		const verdict = guardText(out.deny, set, clock);
-		if (verdict.kind === "stop") return withheld(verdict.reason);
-		return verdict.kind === "rewrite" ? { deny: verdict.value } : out;
-	}
-	// F37: `text` is what the model reads, so a hit there alone must rewrite too.
-	const verdict = guardValue(
-		{ result: out.result, context: out.context, text: out.text },
-		set,
-		clock,
-	);
-	if (verdict.kind === "stop") return withheld(verdict.reason);
+	const scan: Scan<unknown> =
+		out.deny !== undefined
+			? scanTimed(out.deny, set, clock)
+			: // F37: `text` is what the model reads, so a hit there alone must rewrite too.
+				scanPlain(
+					{ result: out.result, context: out.context, text: out.text },
+					set,
+					clock,
+				);
+	if (scan.status === "unscannable") return withheld(scan.reason);
 	// pass keeps the same object, so core keeps `ref`.
-	return verdict.kind === "rewrite"
-		? rewritten(out, verdict.value as Scanned)
-		: out;
+	if (scan.status === "clean") return out;
+	countRewrite(scan.hits);
+	return out.deny !== undefined
+		? { deny: scan.value as string }
+		: rewritten(out, scan.value as Scanned);
 }
 
 /** R4, R5: every tool, MCP tools too. `enrollment` and `list` are parameters, because `register.ts` owns them and imports this module. */

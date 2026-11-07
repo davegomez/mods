@@ -31,6 +31,7 @@ import {
 	onSkillPromptCatch,
 	onToolCall,
 	onToolCallCatch,
+	resetRewriteCounts,
 } from "./shield.ts";
 
 /** The session's env files and known values, shared by every hook of this module instance. */
@@ -75,6 +76,7 @@ export const register: Register = (on, options) => {
 
 	on("session.end", (_$, e, next) => {
 		requests.clear();
+		resetRewriteCounts();
 		ended = enrollment.listed();
 		enrollment.drop();
 		return next(e);
