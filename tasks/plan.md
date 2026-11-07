@@ -93,9 +93,27 @@ Specs: `SPEC-request.md`, `SPEC-entry.md`, `SPEC-write.md` (Q34 to Q38 accepted 
 
 - [x] T16. F46: load on first use after a reload.
 - [x] T17. `request`: the tool, the lifecycle, Continue, and the `"empty"` name state.
-- [ ] T18. `entry`: platform, the native dialogs, `readNative`, `maskStep`, `inputMethod`.
+- [x] T18. `entry`: platform, the native dialogs, `readNative`, `maskStep`, `inputMethod`.
 - [x] T19. `write`: the save order and `saveToEnvFile`.
 
 ### Checkpoint F: step 4 done
 
 The 4 commands pass. 1 Pi review of the 3 modules. High findings are fixed at once. The live gates G1 to G3 run at milestone 5, when `ui` can start entry and write.
+
+# Step 5: `ui`
+
+Spec: `docs/specs/blindfold/SPEC-ui.md` (Q39, Q40 accepted as agent decisions). Tasks: `tasks/todo.md`, T20 to T23. Pi reviews the spec before T20 starts. 1 `worker-high` per task, in sequence, because T21 to T23 all change `ui.ts` and `register.ts`. T20 builds the pure part and the shield counts.
+
+- [ ] T20. Pure part: `rowsOf`, `parseCommand`, `statusLine`, and the rewrite count per known name in `shield`.
+- [ ] T21. `/secrets`, the status line, and the band.
+- [ ] T22. The pane, with the git state per file read after each load.
+- [ ] T23. The flow in R5: file choice, `saveToEnvFile`, entry, save, Continue.
+
+### Checkpoint G: step 5 done (milestone 5)
+
+The 4 commands pass. 1 Pi review of `ui.ts` and its wiring. High findings are fixed. Then the live run with the owner on macOS: G1 (the owner types in the dialog once), G2, G3, and F58. Then the README, the LICENSE, and the icon.
+
+| Risk | Impact | Mitigation |
+|---|---|---|
+| G3 shows that `$.fs.write` drops mode `600` (F49) | High: the value is readable by others | Release blocker. The value write moves to a writer that keeps the mode. |
+| The band or the pane props differ from the declarations at run time | Medium | The live run at milestone 5 opens both. |

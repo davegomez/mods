@@ -241,7 +241,7 @@ Commands, run for every task: the 4 above.
 
 `SPEC-entry.md` R1 to R6.
 
-- [ ] `nativeCommand`, `readNative`, `maskStep`, `detectPlatform`, `enterNative` with tests for each rule. `plugin.json` has `inputMethod`.
+- [x] `nativeCommand`, `readNative`, `maskStep`, `detectPlatform`, `enterNative` with tests for each rule. `plugin.json` has `inputMethod`.
 - Files: `blindfold/hooks/entry.ts`, `blindfold/tests/entry.test.ts`, `blindfold/.claude-plugin/plugin.json`. Size: M.
 
 ## T19. `write`
@@ -255,3 +255,46 @@ Commands, run for every task: the 4 above.
 
 - [ ] The 4 commands pass.
 - [ ] Pi reviews `request.ts`, `entry.ts`, and `write.ts`. High findings are fixed.
+- [ ] F59 to F63 and F57 are fixed with a test each.
+
+# Step 5: `ui`
+
+Commands, run for every task: the 4 above.
+
+## T20. Pure part and shield counts
+
+`SPEC-ui.md` R3, R4 (rows), R1 (parse), R7.
+
+- [ ] `parseCommand` for each form and each refusal (Q39). `rowsOf` for each state, the requested name in no file, and a stale file that never reads Set. `statusLine` puts a degraded shield first (Q40).
+- [ ] `shield` adds 1 to the count of a name for each hit of kind `known`. The count map holds numbers only.
+- Files: `blindfold/hooks/ui.ts`, `blindfold/tests/ui.test.ts`, `blindfold/hooks/shield.ts`, `blindfold/tests/shield.test.ts`. Size: M.
+
+## T21. Command, status line, band
+
+`SPEC-ui.md` R1, R2, R3, R6.
+
+- [ ] `/secrets` registers at `session.start`. Each form runs its action, and a refused argument shows only the toast.
+- [ ] The status line updates after each load and each request change. The band adds 1 line to the tree from `next` and keeps the children of other mods. The toast shows when a request opens.
+- Files: `blindfold/hooks/ui.ts`, `blindfold/hooks/register.ts`, `blindfold/tests/ui.test.ts`. Size: M.
+
+## T22. Pane
+
+`SPEC-ui.md` R4, R6.
+
+- [ ] The pane draws 1 row per name with words for each state, the git warning, and the count. 59 columns gives 1 column. Forget and Refresh work.
+- [ ] The git state per file is read after each load with the read-only commands from `write` R3, never during a render.
+- Files: `blindfold/hooks/ui.ts`, `blindfold/hooks/register.ts`, `blindfold/tests/ui.test.ts`, `blindfold/hooks/write.ts` (export the git probe). Size: M.
+
+## T23. Flow
+
+`SPEC-ui.md` R5, R7.
+
+- [ ] Each R5 branch has a test with a fake `entry` and `write`. A 2nd start while a flow runs shows the busy text.
+- [ ] R7: the JSON text of every tree, toast, and status line in the tests holds no fake value.
+- Files: `blindfold/hooks/ui.ts`, `blindfold/hooks/register.ts`, `blindfold/tests/ui.test.ts`. Size: M.
+
+## Checkpoint G
+
+- [ ] The 4 commands pass. Pi reviews `ui.ts`. High findings are fixed.
+- [ ] Live run with the owner: G1, G2, G3, F58.
+- [ ] README, LICENSE, icon.
