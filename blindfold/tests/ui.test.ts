@@ -59,6 +59,10 @@ describe("R1 parseCommand (Q39)", () => {
 		expect(parseCommand(" refresh ", noValue)).toEqual({ kind: "refresh" });
 	});
 
+	test("R1 (F85): continue takes no name", () => {
+		expect(parseCommand(" continue ", noValue)).toEqual({ kind: "continue" });
+	});
+
 	for (const args of [
 		"set",
 		"add",
@@ -66,6 +70,7 @@ describe("R1 parseCommand (Q39)", () => {
 		`set API_KEY ${fake.secret(20)}`,
 		"dismiss now",
 		"refresh API_KEY",
+		"continue API_KEY",
 		"open",
 		"SET API_KEY",
 		"set 1BAD",
@@ -107,6 +112,7 @@ describe("R1 canonicalArgs (F64)", () => {
 		[{ kind: "add", name: "API_KEY" }, "add API_KEY"],
 		[{ kind: "dismiss" }, "dismiss"],
 		[{ kind: "refresh" }, "refresh"],
+		[{ kind: "continue" }, "continue"],
 		[{ kind: "open" }, ""],
 		[{ kind: "refused" }, ""],
 	];
@@ -168,7 +174,7 @@ describe("R3 statusLine (Q40, F74)", () => {
 
 	test("R3 (Q40): a degraded shield comes first, before a failed outcome and a request", () => {
 		expect(statusLine(degraded, request("DB_PASSWORD"), failed)).toBe(
-			"blindfold: degraded, config/.env.local could not be read. New values may not be hidden.",
+			"degraded, config/.env.local could not be read. New values may not be hidden.",
 		);
 	});
 
@@ -177,7 +183,7 @@ describe("R3 statusLine (Q40, F74)", () => {
 			file("/abs/.env", { kind: "refused", reason: "absolute" }),
 		]);
 		expect(statusLine(status, undefined, undefined)).toBe(
-			"blindfold: degraded, /abs/.env could not be read. New values may not be hidden.",
+			"degraded, /abs/.env could not be read. New values may not be hidden.",
 		);
 	});
 
@@ -190,7 +196,7 @@ describe("R3 statusLine (Q40, F74)", () => {
 	for (const outcome of failures) {
 		test(`R3 (F74): a failed outcome ${outcome.kind} comes before an open request`, () => {
 			expect(statusLine(healthy(), request("DB_PASSWORD"), outcome)).toBe(
-				"blindfold: API_KEY not saved, run /secrets",
+				"API_KEY not saved, run /secrets",
 			);
 		});
 	}
@@ -203,7 +209,7 @@ describe("R3 statusLine (Q40, F74)", () => {
 	for (const outcome of others) {
 		test(`R3: outcome ${outcome.kind} is not a failure, so the request shows, else nothing`, () => {
 			expect(statusLine(healthy(), request("DB_PASSWORD"), outcome)).toBe(
-				"blindfold: DB_PASSWORD requested, run /secrets",
+				"DB_PASSWORD requested, run /secrets",
 			);
 			expect(statusLine(healthy(), undefined, outcome)).toBeUndefined();
 		});
@@ -213,8 +219,18 @@ describe("R3 statusLine (Q40, F74)", () => {
 		for (const state of ["pending", "ready"] as const) {
 			expect(
 				statusLine(healthy(), request("DB_PASSWORD", state), undefined),
-			).toBe("blindfold: DB_PASSWORD requested, run /secrets");
+			).toBe("DB_PASSWORD requested, run /secrets");
 		}
+	});
+
+	test("F83: no line repeats the mod name, which the host draws before it", () => {
+		const lines = [
+			statusLine(degraded, undefined, undefined),
+			statusLine(healthy(), undefined, failed),
+			statusLine(healthy(), request("DB_PASSWORD"), undefined),
+		];
+		for (const line of lines)
+			expect(line?.startsWith("blindfold:")).toBe(false);
 	});
 
 	test("R3: nothing to tell is undefined", () => {

@@ -45,7 +45,7 @@ import {
 export type Command =
 	| { kind: "open" }
 	| { kind: "set" | "add"; name: string }
-	| { kind: "dismiss" | "refresh" }
+	| { kind: "dismiss" | "refresh" | "continue" }
 	| { kind: "refused" };
 
 /** R1 (Q39, F64): a name or nothing. `holdsValue` tells whether a name holds a known value; a value must not pass as a name. */
@@ -56,7 +56,10 @@ export function parseCommand(
 	const words = args.split(/\s+/).filter((w) => w !== "");
 	const [verb, name] = words;
 	if (verb === undefined) return { kind: "open" };
-	if ((verb === "dismiss" || verb === "refresh") && words.length === 1) {
+	if (
+		(verb === "dismiss" || verb === "refresh" || verb === "continue") &&
+		words.length === 1
+	) {
 		return { kind: verb };
 	}
 	if (
@@ -78,6 +81,7 @@ export function canonicalArgs(command: Command): string {
 			return `${command.kind} ${command.name}`;
 		case "dismiss":
 		case "refresh":
+		case "continue":
 			return command.kind;
 		default:
 			return "";
@@ -130,12 +134,12 @@ export function statusLine(
 		(f) => f.state.kind === "stale" || f.state.kind === "refused",
 	);
 	if (unread) {
-		return `blindfold: degraded, ${unread.path} could not be read. New values may not be hidden.`;
+		return `degraded, ${unread.path} could not be read. New values may not be hidden.`;
 	}
 	if (outcome && FAILED.has(outcome.kind)) {
-		return `blindfold: ${outcome.name} not saved, run /secrets`;
+		return `${outcome.name} not saved, run /secrets`;
 	}
-	if (request) return `blindfold: ${request.name} requested, run /secrets`;
+	if (request) return `${request.name} requested, run /secrets`;
 	return undefined;
 }
 
@@ -250,14 +254,16 @@ export function rowText(row: Row): string {
 export const COMMAND_SPEC = {
 	name: COMMAND,
 	description: "Enter a secret Claude asked for, or see your env files.",
-	argumentHint: "[set NAME | add NAME | dismiss | refresh]",
+	argumentHint: "[set NAME | add NAME | continue | dismiss | refresh]",
 };
 
-/** R1 (Q39, F74): the toast and the command's own answer. */
-export const REFUSED_COMMAND =
-	"blindfold: /secrets takes a name, never a value.";
+/** R1 (Q39, F74): the toast and the command's own answer. F83: the host draws the mod name before each. */
+export const REFUSED_COMMAND = "/secrets takes a name, never a value.";
 
-const FAILED_COMMAND = "blindfold: /secrets failed. Run it again.";
+const FAILED_COMMAND = "/secrets failed. Run it again.";
+
+/** R1 (F85): `/secrets continue` with no ready request. */
+export const CONTINUE_NOTHING = "Nothing is ready to continue.";
 
 /** What a redraw calls: closures over a hook's `$`, since the host refuses a `$` kept in a variable. */
 export type Screen = {
@@ -318,7 +324,7 @@ export function createUi(enrollment: Enrollment, requests: Requests) {
 			const request = requests.current();
 			if (request && request.id !== toasted) {
 				screen.toast(
-					`blindfold: Claude asks for ${request.name}. Run /secrets or use the band.`,
+					`Claude asks for ${request.name}. Run /secrets or use the band.`,
 				);
 			}
 			toasted = request?.id;
@@ -592,8 +598,10 @@ export async function onCommand(
 	await next({ ...e, args: canonicalArgs(command) });
 	switch (command.kind) {
 		case "open":
-			await $.ui.open({ id: PANE_ID, title: "blindfold" });
-			return {};
+			// F86: the pane takes the keys when the prompt is empty, so its hotkeys work at once.
+			await $.ui.open({ id: PANE_ID, title: "blindfold", focus: true });
+			// F84: an empty answer lets next's "no hook answered it" through.
+			return { text: "blindfold opened the pane." };
 		case "set": {
 			const io = flowIoOf($, ui.enrollment);
 			return { text: startFlow(ui, command.name, io, settings).text };
@@ -602,7 +610,17 @@ export async function onCommand(
 			return { text: addByHand(ui, command.name) };
 		case "dismiss":
 			dismiss(ui);
-			return { text: "blindfold: nothing is requested now." };
+			return { text: "Nothing is requested now." };
+		case "continue": {
+			ui.requests.sync(ui.enrollment.status());
+			const request = shownRequest(ui);
+			if (request?.state !== "ready") return { text: CONTINUE_NOTHING };
+			// Not awaited: the submit waits for an idle session, and this command keeps it busy.
+			void continueRequest($, ui.enrollment, ui.requests, request.id);
+			return {
+				text: `blindfold continues the task that needed ${request.name}.`,
+			};
+		}
 		case "refresh":
 			await load($, ui.enrollment, ui.enrollment.listed() || list);
 			return { text: "blindfold read the env files again." };
@@ -704,7 +722,7 @@ export async function onBand(
 
 type PaneInput = RenderInput<"Pane">;
 
-const ACTION_FAILED = "blindfold: that action failed. Run /secrets.";
+const ACTION_FAILED = "That action failed. Run /secrets.";
 
 /**
  * R4, R6: the rows, the last outcome, Forget per file, Refresh, and Continue when the request is ready. It reads module

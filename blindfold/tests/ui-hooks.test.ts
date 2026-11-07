@@ -8,7 +8,12 @@ import {
 	REASON_HIDDEN,
 } from "../hooks/request.ts";
 import { resetRewriteCounts } from "../hooks/shield.ts";
-import { createUi, type GitState, REFUSED_COMMAND } from "../hooks/ui.ts";
+import {
+	CONTINUE_NOTHING,
+	createUi,
+	type GitState,
+	REFUSED_COMMAND,
+} from "../hooks/ui.ts";
 import {
 	type FakeCall,
 	type FakeElement,
@@ -28,7 +33,7 @@ const BAND = `ui.render ${JSON.stringify({ component: "AbovePrompt" })}`;
 const budget = { budget: { ms: 10_000, remainingMs: 10_000 } };
 const NEXT_TEXT =
 	"blindfold registered /secrets but no command.run hook answered it";
-const OPEN_TOAST = `blindfold: Claude asks for ${NAME}. Run /secrets or use the band.`;
+const OPEN_TOAST = `Claude asks for ${NAME}. Run /secrets or use the band.`;
 const MANUAL = `Add ${NAME}= to .env in your editor, then press Refresh.`;
 
 const hooks = (list = ".env", options: Record<string, string> = {}) =>
@@ -162,7 +167,7 @@ describe("R1 /secrets", () => {
 			{
 				name: "secrets",
 				description: expect.any(String),
-				argumentHint: "[set NAME | add NAME | dismiss | refresh]",
+				argumentHint: "[set NAME | add NAME | continue | dismiss | refresh]",
 			},
 		]);
 	});
@@ -173,6 +178,7 @@ describe("R1 /secrets", () => {
 		["add STRIPE_API_KEY", `add ${NAME}`],
 		["dismiss", "dismiss"],
 		[" refresh", "refresh"],
+		["continue", "continue"],
 		["set", ""],
 	];
 	for (const [args, canonical] of forms) {
@@ -183,15 +189,98 @@ describe("R1 /secrets", () => {
 			expect(answer).not.toHaveProperty("ref");
 			expect(JSON.stringify(answer)).not.toContain(NEXT_TEXT);
 		});
+
+		test(`F84: "${args}" answers its own text, so the host prints none of its own`, async () => {
+			const { api } = await start({ ".env": { text: "OTHER=1\n" } });
+			const { answer } = await secrets(api, args);
+			const text = (answer as { text?: unknown }).text;
+			expect(typeof text).toBe("string");
+			expect(text).not.toBe("");
+		});
 	}
 
-	test("R1: no argument opens the pane and prints nothing", async () => {
+	test("R1, F84: no argument opens the pane and says so", async () => {
 		const { api, after } = await start({});
 		const { answer } = await secrets(api, "");
+		expect(of(after(), "ui.open")).toHaveLength(1);
+		expect(answer).toEqual({ text: "blindfold opened the pane." });
+	});
+
+	test("F86: no argument asks for the keyboard for the pane, so its hotkeys work at once", async () => {
+		const { api, after } = await start({});
+		await secrets(api, "");
 		expect(of(after(), "ui.open")).toEqual([
-			{ id: "blindfold", title: "blindfold" },
+			{ id: "blindfold", title: "blindfold", focus: true },
 		]);
-		expect(answer).toEqual({});
+	});
+
+	test("F85: continue submits for the ready request without waiting for the submit, and consumes it", async () => {
+		const { api, after } = await start({
+			".env": { text: `${NAME}=${fake.secret(24)}\n` },
+		});
+		requests.ask(NAME, "r");
+		requests.sync(enrollment.status());
+		const submitted: unknown[] = [];
+		// The submit waits for an idle session, which the running command holds busy.
+		const $ = {
+			...api,
+			prompt: {
+				submit: (args: unknown) => {
+					submitted.push(args);
+					return new Promise(() => {});
+				},
+			},
+		} as unknown as EngineInterface;
+		const { answer, passed } = await secrets($, "continue");
+		expect(passed.map((e) => e.args)).toEqual(["continue"]);
+		expect(submitted).toEqual([
+			{ text: `${NAME} is now set. Continue the task that needed it.` },
+		]);
+		expect(answer).toEqual({
+			text: `blindfold continues the task that needed ${NAME}.`,
+		});
+		expect(requests.current()).toBeUndefined();
+		expect(of(after(), "ui.toast")).not.toContain(DROPPED_TOAST);
+	});
+
+	test("F85: continue with no request, or a pending one, submits nothing and says so", async () => {
+		const { api, after } = await start({});
+		expect((await secrets(api, "continue")).answer).toEqual({
+			text: CONTINUE_NOTHING,
+		});
+		requests.ask(NAME, "r");
+		expect((await secrets(api, "continue")).answer).toEqual({
+			text: CONTINUE_NOTHING,
+		});
+		expect(of(after(), "prompt.submit")).toEqual([]);
+		expect(requests.current()?.name).toBe(NAME);
+	});
+
+	test("F83: no toast, status line, or command answer repeats the mod name, which the host draws before it", async () => {
+		const { api, shown } = await start({
+			".env": { readFails: true, text: "" },
+		});
+		requests.ask(NAME, "r");
+		const answers = [];
+		for (const args of [
+			"",
+			"dismiss",
+			"continue",
+			`set ${NAME} x`,
+			"refresh",
+		]) {
+			answers.push((await secrets(api, args)).answer);
+		}
+		const handler = hooks().get(`${COMMAND}.catch`);
+		const next = Object.assign(async () => ({}), { ...budget, called: true });
+		answers.push(await handler?.(api, { command: "secrets", args: "" }, next));
+		const texts = [
+			...of(shown, "ui.toast"),
+			...of(shown, "ui.status"),
+			...answers.map((a) => (a as { text?: unknown }).text),
+		].filter((t) => typeof t === "string");
+		expect(texts.length).toBeGreaterThan(6);
+		for (const text of texts) expect(text).not.toMatch(/^blindfold:/);
 	});
 
 	test("R1, R5 step 1: add NAME shows the line to add by hand for the first active file", async () => {
@@ -232,7 +321,7 @@ describe("R1 /secrets", () => {
 		const { answer } = await secrets(api, "dismiss");
 		expect(requests.current()).toBeUndefined();
 		expect(ui.outcome()).toBeUndefined();
-		expect(answer).toEqual({ text: "blindfold: nothing is requested now." });
+		expect(answer).toEqual({ text: "Nothing is requested now." });
 	});
 
 	test("R1: refresh loads the current list again", async () => {
@@ -251,9 +340,7 @@ describe("R1 /secrets", () => {
 		const value = fake.secret(24);
 		const { api, after } = await start({});
 		const { answer, passed } = await secrets(api, `set ${NAME} ${value}`);
-		expect(REFUSED_COMMAND).toBe(
-			"blindfold: /secrets takes a name, never a value.",
-		);
+		expect(REFUSED_COMMAND).toBe("/secrets takes a name, never a value.");
 		expect(answer).toEqual({ text: REFUSED_COMMAND });
 		expect(of(after(), "ui.toast")).toEqual([REFUSED_COMMAND]);
 		expect(passed).toEqual([expect.objectContaining({ args: "" })]);
@@ -288,7 +375,7 @@ describe("R1 /secrets", () => {
 			);
 			expect(passed.map((e) => e.args)).toEqual(called ? [] : [""]);
 			expect(answer).toEqual({
-				text: "blindfold: /secrets failed. Run it again.",
+				text: "/secrets failed. Run it again.",
 			});
 		}
 	});
@@ -396,7 +483,7 @@ describe("R3 status line and redraw (F71)", () => {
 		const { shown } = await start({ ".env": { readFails: true, text: "" } });
 		const lines = of(shown, "ui.status");
 		expect(lines.at(-1)).toBe(
-			"blindfold: degraded, .env could not be read. New values may not be hidden.",
+			"degraded, .env could not be read. New values may not be hidden.",
 		);
 		expect(redrawsAfterEachStatus(shown)).toBe(true);
 	});
@@ -405,7 +492,7 @@ describe("R3 status line and redraw (F71)", () => {
 		const files: Record<string, FakeFile> = { ".env": { text: "A=1\n" } };
 		const { api, after } = await start(files);
 		const last = () => of(after(), "ui.status").at(-1);
-		const requested = `blindfold: ${NAME} requested, run /secrets`;
+		const requested = `${NAME} requested, run /secrets`;
 
 		requests.ask(NAME, "r");
 		expect(last()).toBe(requested);
@@ -419,7 +506,7 @@ describe("R3 status line and redraw (F71)", () => {
 			step: "git",
 			reason: "tracked",
 		});
-		expect(last()).toBe(`blindfold: ${NAME} not saved, run /secrets`);
+		expect(last()).toBe(`${NAME} not saved, run /secrets`);
 		ui.setOutcome(undefined);
 		expect(last()).toBe(requested);
 
@@ -439,7 +526,7 @@ describe("R3 status line and redraw (F71)", () => {
 		const { after } = await start({ ".env": { readFails: true, text: "" } });
 		requests.ask(NAME, "r");
 		expect(of(after(), "ui.status")).toEqual([
-			"blindfold: degraded, .env could not be read. New values may not be hidden.",
+			"degraded, .env could not be read. New values may not be hidden.",
 		]);
 	});
 

@@ -33,24 +33,24 @@ R1. Command. At `session.start`, `$.command.register({ name: "secrets", descript
 - `dismiss`: clear the open request,
 - `refresh`: `load` with the current list.
 
-`NAME` must pass `request.validName`, and `NAME` with a known-value hit from `detect` is refused (F64). Any other argument is refused, because the command line is stored in the transcript (Q39). A refusal shows the toast "blindfold: /secrets takes a name, never a value." and the same text as the command's own `{ text }` answer, so it is not only a toast (F74).
+`NAME` must pass `request.validName`, and `NAME` with a known-value hit from `detect` is refused (F64). Any other argument is refused, because the command line is stored in the transcript (Q39). A refusal shows the toast "/secrets takes a name, never a value." and the same text as the command's own `{ text }` answer, so it is not only a toast (F74).
 
 The hook rewrites `e.args` to `canonicalArgs(command)` before anything else: the parsed form (`set NAME`) or `""` for a refusal. It passes that through `next({ ...e, args })`, then answers with its own `{ text }`. The declarations name `command.run` as the place to mask arguments (`d.ts:9741`). Whether the stored command line then holds only the canonical form is checked live in G2. A value that the shield does not know and that passes as a name cannot be told from a name. The README states this limit (F64).
 
-R2. Band. While a request is open and `e.props.hasSurvey` is false (`d.ts:11064`, F72), a `ui.render` hook on `{ component: "AbovePrompt" }` adds 1 line to the tree that `next` returns (the band is shared with other mods): "Claude asks for NAME: <reason>." and buttons with hotkeys (`d.ts:1093`). Pending: `1` Enter it (or Save it, per R5), `2` Add it myself, `3` Dismiss. Ready: `4` Continue, `3` Dismiss. The reason is drawn as plain `Text`, after the request R2 scan (F65). While `hasSurvey` is true, the hook returns `next(e)` unchanged, and the pane and the status line still show the request. When the request opens, `$.ui.toast("blindfold: Claude asks for NAME. Run /secrets or use the band.")`.
+R2. Band. While a request is open and `e.props.hasSurvey` is false (`d.ts:11064`, F72), a `ui.render` hook on `{ component: "AbovePrompt" }` adds 1 line to the tree that `next` returns (the band is shared with other mods): "Claude asks for NAME: <reason>." and buttons with hotkeys (`d.ts:1093`). Pending: `1` Enter it (or Save it, per R5), `2` Add it myself, `3` Dismiss. Ready: `4` Continue, `3` Dismiss. The reason is drawn as plain `Text`, after the request R2 scan (F65). While `hasSurvey` is true, the hook returns `next(e)` unchanged, and the pane and the status line still show the request. When the request opens, `$.ui.toast("Claude asks for NAME. Run /secrets or use the band.")`.
 
 R3. Status line. `$.ui.status(statusLine(...))` after each load, each request change, and each flow outcome (`d.ts:2506`). The order:
 
-1. A degraded shield: "blindfold: degraded, <file> could not be read. New values may not be hidden."
-2. A failed flow outcome (F74): "blindfold: NAME not saved, run /secrets".
-3. An open request: "blindfold: NAME requested, run /secrets".
+1. A degraded shield: "degraded, <file> could not be read. New values may not be hidden."
+2. A failed flow outcome (F74): "NAME not saved, run /secrets".
+3. An open request: "NAME requested, run /secrets".
 4. Otherwise `undefined`.
 
 A stale file never reads as Set (design 1g). The outcome is 1 fixed, value-free text per R5 result, kept in module state until the next flow, a Dismiss, or a session end. The pane shows it too.
 
 Redraw (F71). The host does not see module state. After each load, request change, flow outcome, and count change, call `$.ui.invalidate("ui.render")` (`d.ts:2398`). The host limits the rate.
 
-R4. Pane. `/secrets` calls `$.ui.open({ id: "blindfold", title: "blindfold" })` and a `ui.render` hook on `{ component: "Pane" }` with `e.requestId === "blindfold"` draws:
+R4. Pane. `/secrets` calls `$.ui.open({ id: "blindfold", title: "blindfold", focus: true })` and a `ui.render` hook on `{ component: "Pane" }` with `e.requestId === "blindfold"` draws:
 
 - 1 row per name in each listed file, and the requested name when it is in no file: the name, the file, the state in words, a git warning in words, and the count of results the shield rewrote for that name in this session. No value and no value length.
 - A row whose name or file `enroll` shows as `[hidden name]` or `[hidden path]` has `hidden: true`. It shows "hidden, because it holds a secret value" and has no action, because the hidden text is not an identity (F73).
