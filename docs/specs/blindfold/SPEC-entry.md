@@ -41,7 +41,7 @@ R2. Native dialogs. 1 fixed script per platform. The name and the reason go in a
 
 - macOS: `["osascript", "-e", SCRIPT, "--", name, reason]`. `SCRIPT` is a fixed `on run argv` handler that shows `display dialog … default answer "" with hidden answer` and returns `text returned`.
 - Windows: `powershell -NoProfile -NonInteractive -Command SCRIPT` with a fixed WinForms dialog that has `UseSystemPasswordChar`. The name and the reason come from 2 environment variables in `ProcessRunInit.env` (`d.ts:8385`). Not tested (Q13).
-- Linux: when `$.env.get("DISPLAY")` or `$.env.get("WAYLAND_DISPLAY")` is set, `zenity --entry --hide-text --title blindfold --text <reason>`, else `kdialog --password <reason>`. A program that does not start is `unavailable`. Not tested (Q13).
+- Linux: without `$.env.get("DISPLAY")` and `$.env.get("WAYLAND_DISPLAY")`, `unavailable` (F57). With a display: `zenity --entry --hide-text --title blindfold --text <reason>`, else `kdialog --password <reason>`. Exit code 1 from either is `cancelled`, because both use it for Cancel. A program that does not start is `unavailable`. Not tested (Q13).
 
 `timeoutMs` is 300,000. A timeout kills the dialog and the call rejects (`d.ts:8385`), which is `cancel` with `timeout`.
 

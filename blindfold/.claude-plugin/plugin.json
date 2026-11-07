@@ -9,6 +9,13 @@
 			"title": "Env files",
 			"description": "The env files whose secret values blindfold keeps out of the conversation, separated by commas, such as .env,config/.env.local. Each path is relative to the project folder. Leave it at .env to protect only that file. blindfold reads up to 10 files of 1 MiB or less each, and does not read a file that is a symbolic link or that is outside the project folder.",
 			"default": ".env"
+		},
+		"inputMethod": {
+			"type": "string",
+			"title": "Input method",
+			"description": "How blindfold asks you for a secret value. auto uses the native dialog of your system. native uses only the native dialog, and asks you to add the value in your editor when there is none. terminal is not available yet and works as auto.",
+			"options": ["auto", "native", "terminal"],
+			"default": "auto"
 		}
 	}
 }
