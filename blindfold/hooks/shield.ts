@@ -51,25 +51,62 @@ function verdict<T>(scan: Scan<T>): Verdict<T> {
 	return { kind: "rewrite", value: scan.value, count: scan.hits.length };
 }
 
-/** JSON would write a Map, a typed array, or a class as `{}`, which hides its data from the scan while `pass` forwards the original. */
+const isIndex = (key: string, length: number) =>
+	/^(?:0|[1-9]\d*)$/.test(key) && Number(key) < length;
+
+/**
+ * F41: whatever JSON would lose from the copy while `pass` forwards the original is not plain:
+ * a Map, a typed array, or a class (written as `{}`), a symbol key, an array property that is not
+ * an index, a key that is not enumerable, a function or a symbol value, and an own `toJSON`.
+ * A getter is not plain either, since it may answer the scan and the host differently.
+ */
 function isPlain(object: object): boolean {
 	if (Object.getOwnPropertySymbols(object).length > 0) return false;
 	const proto = Object.getPrototypeOf(object);
-	return Array.isArray(object)
-		? proto === Array.prototype
-		: proto === Object.prototype || proto === null;
+	const isArray = Array.isArray(object);
+	if (
+		isArray
+			? proto !== Array.prototype
+			: proto !== Object.prototype && proto !== null
+	) {
+		return false;
+	}
+	const length = isArray ? (object as unknown[]).length : 0;
+	return Object.entries(Object.getOwnPropertyDescriptors(object)).every(
+		([key, field]) =>
+			(isArray && key === "length") ||
+			(field.enumerable === true &&
+				"value" in field &&
+				typeof field.value !== "function" &&
+				typeof field.value !== "symbol" &&
+				(!isArray || isIndex(key, length))),
+	);
 }
 
-/** R1: a JSON round trip. A cycle, a BigInt, a throwing `toJSON`, or an object that is not plain gives undefined. */
-function plainCopy(value: unknown): { value: unknown } | undefined {
+/**
+ * R1: a JSON round trip, and the keys whose value is undefined, which JSON leaves out of an object.
+ * A cycle, a BigInt, a throwing `toJSON`, or an object that is not plain gives undefined.
+ */
+function plainCopy(
+	value: unknown,
+): { value: unknown; dropped: string[] } | undefined {
+	const dropped: string[] = [];
 	try {
-		const json = JSON.stringify(value, (_key, field: unknown) => {
-			if (typeof field === "object" && field !== null && !isPlain(field)) {
-				throw new TypeError("not plain");
-			}
-			return field;
-		});
-		return json === undefined ? undefined : { value: JSON.parse(json) };
+		const json = JSON.stringify(
+			value,
+			function (this: Record<string, unknown>, key, field: unknown) {
+				// The holder is plain, so this reads data. `field` is what toJSON gave, so the object itself is checked.
+				const raw = this[key];
+				if (typeof raw === "object" && raw !== null && !isPlain(raw)) {
+					throw new TypeError("not plain");
+				}
+				if (raw === undefined && !Array.isArray(this)) dropped.push(key);
+				return field;
+			},
+		);
+		return json === undefined
+			? undefined
+			: { value: JSON.parse(json), dropped };
 	} catch {
 		// The error may hold a value, so it is dropped.
 		return undefined;
@@ -78,11 +115,18 @@ function plainCopy(value: unknown): { value: unknown } | undefined {
 
 function scanPlain(value: unknown, set: KnownSet, clock: Clock): Scan<unknown> {
 	// JSON writes nothing for undefined, and undefined holds no text, so it is scanned as it is.
-	const copy = value === undefined ? { value } : plainCopy(value);
+	const copy = value === undefined ? { value, dropped: [] } : plainCopy(value);
 	if (copy === undefined) return unscannable("unsupported");
 	// The copy is not timed, so the clock is read after it.
 	if (expired(clock)) return unscannable("deadline");
-	return scanValue(copy.value, set, DEFAULT_LIMITS, clock);
+	const scan = scanValue(copy.value, set, DEFAULT_LIMITS, clock);
+	if (scan.status === "unscannable" || copy.dropped.length === 0) return scan;
+	// F41: the original still holds these keys, so they are scanned too. They stay out of a rewrite copy, as their values are undefined.
+	const keys = scanValue(copy.dropped, set, DEFAULT_LIMITS, clock);
+	if (keys.status !== "found") return keys.status === "clean" ? scan : keys;
+	return scan.status === "found"
+		? { ...scan, hits: [...scan.hits, ...keys.hits] }
+		: { status: "found", value: copy.value, hits: keys.hits };
 }
 
 export function guardText(
@@ -294,10 +338,13 @@ export async function onPromptContext(
 	const clock = clockOf(next);
 	let changed = false;
 	const blocks = out.blocks.flatMap((block) => {
-		const verdict = guardText(block.text, set, clock);
+		// F39: the name renders as `# name` (d.ts:8916) but routes the block, so it is not rewritten: a hit or a stop leaves the block out.
+		const name = guardText(block.name, set, clock);
+		const verdict =
+			name.kind === "pass" ? guardText(block.text, set, clock) : name;
 		if (verdict.kind === "pass") return [block];
 		changed = true;
-		return verdict.kind === "rewrite"
+		return verdict.kind === "rewrite" && name.kind === "pass"
 			? [{ ...block, text: verdict.value }]
 			: [];
 	});

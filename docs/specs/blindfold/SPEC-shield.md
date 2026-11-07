@@ -35,7 +35,7 @@ export function onToolCall($, e, next) ... // and so on for R3 to R13
 
 ### Requirements
 
-R1. Plain copy (capability map notes, F17, F18). `guardValue` scans a plain copy of the value (a JSON round trip). A copy that fails, for example a cycle or a `BigInt`, is `stop` with `unsupported`. `rewrite` returns the scanned copy, never the original. `pass` returns nothing, so the handler passes on the object it got from the host. INFERRED: hook events reach the mod worker as message data, so they hold no getters or proxies.
+R1. Plain copy (capability map notes, F17, F18, F41). `guardValue` scans a plain copy of the value (a JSON round trip). A copy that fails, for example a cycle or a `BigInt`, is `stop` with `unsupported`. The copy must hold everything the original holds, because `pass` forwards the original. So data that JSON would lose or replace is `stop` with `unsupported`: an object that is not a plain object or array (a `Map`, a `Date`, a class), a symbol key, an array property that is not an index, a key that is not enumerable, a getter, a function or symbol value, and an own `toJSON`. An object key whose value is undefined is scanned with the copy and stays out of a `rewrite` copy, so an optional field set to undefined still passes. A top-level undefined is `pass`. `rewrite` returns the scanned copy, never the original. `pass` returns nothing, so the handler passes on the object it got from the host. INFERRED: hook events reach the mod worker as message data, so they hold no getters or proxies.
 
 R2. Time. A hook has 10 s, and the clock stops while `next` or a `$` call runs (`d.ts:5343`, reference.md "Limits"). `clockFor` sets the scan deadline to `remainingMs` minus 1,000 ms, read from `next.budget.remainingMs` (`d.ts:6947`). A scan that reaches the deadline returns `deadline`, which is `stop`. The `.catch` handler has 1 s (`d.ts:5351`), so it does no scan (P5).
 
@@ -49,7 +49,7 @@ R5. `tool.call` after `next` (`d.ts:13876`). Call `refreshIfNamed` with `e` agai
 - success or error: scan `result`, `context`, and `text` together (F37). On `pass`, return the object from `next` unchanged, so core keeps `ref`. On `rewrite`, return a new object with the scanned `result` and `context`, the same `isError` and `isReadOnly`, and no `ref` and no `text`, so core maps the new `result` for the model (Q26). On `stop`, return `{ deny: "blindfold withheld this result (<reason>). Narrow the call." }`.
 - `.catch`: `next.called ? { deny: "blindfold withheld this result." } : { deny: "blindfold refused this call." }`.
 
-R6. `prompt.context` (`d.ts:8945`). Scan each block `text`. Rewrite a block with a hit. Leave out a block on `stop`. There is no refuse shape. `.catch`: return `{ blocks: [] }`.
+R6. `prompt.context` (`d.ts:8945`). Scan each block `name` and `text`. The name renders as `# name` (`d.ts:8916`), but it also routes the block, so it is never rewritten: leave out a block whose name has a hit or a `stop` (F39). Rewrite the text of a block with a hit in its text, and keep its name. Leave out a block on `stop`. There is no refuse shape. `.catch`: return `{ blocks: [] }`.
 
 R7. `prompt.section` (`d.ts:9643`). Scan `text`. Rewrite on a hit. Return `{ text: null }` on `stop` and in `.catch`.
 

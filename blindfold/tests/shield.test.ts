@@ -1,7 +1,7 @@
 import type { EngineInterface } from "claude-code";
 import { describe, expect, test } from "claude-code/testing";
 import { buildKnownSet, DEFAULT_LIMITS } from "../hooks/detect.ts";
-import { createEnrollment, load } from "../hooks/enroll.ts";
+import { createEnrollment, type Enrollment, load } from "../hooks/enroll.ts";
 import {
 	type ArgsVerdict,
 	clockFor,
@@ -130,6 +130,66 @@ describe("R1 plain copy", () => {
 
 	test("R1: undefined is pass", () => {
 		expect(value(undefined)).toEqual({ kind: "pass" });
+	});
+
+	const unsupported = { kind: "stop", reason: "unsupported" };
+
+	test("R1 (F41): an array with a property that is not an index is stop with unsupported", () => {
+		const input = [] as string[] & { note?: string };
+		input.note = known;
+		// Frozen, not cloned: the runner's structuredClone drops the property, while Bun's keeps it.
+		const payload = Object.freeze(input);
+		expect(value(payload)).toEqual(unsupported);
+		expect(args({ payload })).toEqual(unsupported);
+	});
+
+	test("R1 (F41): a key whose value is undefined is scanned, and stays out of the copy", () => {
+		expect(value({ [known]: undefined, note: "plain" })).toEqual({
+			kind: "rewrite",
+			value: { note: "plain" },
+			count: 1,
+		});
+		expect(args({ [known]: undefined })).toEqual({ kind: "refuse" });
+	});
+
+	test("R1 (F41): an optional field set to undefined still passes", () => {
+		const input = {
+			file_path: "notes.txt",
+			offset: undefined,
+			list: [undefined],
+		};
+		expect(value(input)).toEqual({ kind: "pass" });
+		expect(args(input)).toEqual({ kind: "pass" });
+	});
+
+	test("R1 (F41): a function or a symbol value is stop with unsupported", () => {
+		expect(value({ run: () => known })).toEqual(unsupported);
+		expect(value({ tag: Symbol(known) })).toEqual(unsupported);
+		expect(args({ list: [() => known] })).toEqual(unsupported);
+	});
+
+	test("R1 (F41): a toJSON that stands in for its object is stop with unsupported", () => {
+		expect(value({ toJSON: () => "plain", note: known })).toEqual(unsupported);
+		class Box {
+			note = known;
+			toJSON() {
+				return "plain";
+			}
+		}
+		expect(args({ box: new Box() })).toEqual(unsupported);
+	});
+
+	test("R1 (F41): a property that is not enumerable, or a getter, is stop with unsupported", () => {
+		const hidden = Object.defineProperty({}, "note", { value: known });
+		expect(value(hidden)).toEqual(unsupported);
+		let reads = 0;
+		const getter = {
+			get note() {
+				reads += 1;
+				return reads === 1 ? "plain" : known;
+			},
+		};
+		expect(args(getter)).toEqual(unsupported);
 	});
 
 	test("R1: guardText rewrites a hit, passes clean text, and stops on too-large", () => {
@@ -376,6 +436,27 @@ describe("R4 tool.call before next", () => {
 			tool_use_id: "t4",
 			new_string: `password = "${contextValue}"`,
 		};
+		const { result, passed, answer } = await call(e);
+		expect(passed.length).toBe(1);
+		expect(passed[0]).toBe(e);
+		expect(result).toBe(answer);
+	});
+
+	test("R4 (F41): data the JSON copy would drop is a deny, and next never runs", async () => {
+		const payload = [] as string[] & { note?: string };
+		payload.note = envValue;
+		for (const e of [
+			{ tool: "mcp__fake__send", payload },
+			{ tool: "mcp__fake__send", body: { [envValue]: undefined } },
+		]) {
+			const { result, passed } = await call(e);
+			expect(isDeny(result)).toBe(true);
+			expect(passed).toEqual([]);
+		}
+	});
+
+	test("R4 (F41): an ordinary input with an optional field set to undefined goes on as the same e", async () => {
+		const e = { tool: "Read", file_path: "notes.txt", offset: undefined };
 		const { result, passed, answer } = await call(e);
 		expect(passed.length).toBe(1);
 		expect(passed[0]).toBe(e);
@@ -749,6 +830,29 @@ describe("R6 prompt.context", () => {
 		const answer = { blocks: [{ name: "claudeMd", text: "plain" }] };
 		const { result } = await context(answer);
 		expect(result).toBe(answer);
+	});
+
+	test("R6 (F39): a block whose name holds a hit is left out, with clean text or a hit in it", async () => {
+		const date = { name: "currentDate", text: "today" };
+		const { result } = await context({
+			blocks: [
+				{ name: envValue, text: "ordinary context" },
+				{ name: `ctx ${vendorToken}`, text: `key ${envValue}` },
+				date,
+			],
+		});
+		expect(result).toEqual({ blocks: [date] });
+		expect(result.blocks[0]).toBe(date);
+	});
+
+	test("R6 (F39, R2): a block whose name it cannot scan is left out", async () => {
+		const date = { name: "currentDate", text: "today" };
+		const { result } = await context({
+			blocks: [{ name: tooLarge(), text: "ordinary context" }, date],
+		});
+		// Not toEqual: a failed diff of the long name is too large to report.
+		expect(result.blocks.length).toBe(1);
+		expect(result.blocks[0]).toBe(date);
 	});
 
 	test("R6 (R2): a block it cannot scan is left out", async () => {
@@ -1290,13 +1394,22 @@ type ConfigNext = Parameters<typeof onConfigSet>[3];
 
 describe("R14 config.set", () => {
 	const newValue = fake.secret(24);
-	const configSet = async (key: string, answer: unknown) => {
+	const requestedValue = fake.secret(24);
+	/** e asks for requested.env, and next answers the list it wrote, changed.env in the tests, so the two are told apart. */
+	const configSet = async (
+		key: string,
+		answer: unknown,
+		atNext: (enrollment: Enrollment) => void = () => {},
+	) => {
 		const { api, enrollment, files } = await setup();
-		files["other.env"] = envFile(newValue);
-		const { next, passed } = nextOf<ConfigNext>(answer);
+		files["requested.env"] = envFile(requestedValue);
+		files["changed.env"] = envFile(newValue);
+		const { next, passed } = nextOf<ConfigNext>(answer, () =>
+			atNext(enrollment),
+		);
 		const e = {
 			key,
-			value: "other.env",
+			value: "requested.env",
 			previous: ".env",
 		} as unknown as ConfigE;
 		const result = await onConfigSet(api, enrollment, e, next);
@@ -1304,20 +1417,30 @@ describe("R14 config.set", () => {
 		return { result, passed, e, enrollment, hidden };
 	};
 
-	test("R14 (enroll R7): blindfold.envFiles loads the value next wrote, after next", async () => {
-		const answer = { value: "other.env" };
+	test("R14 (enroll R7, F43): blindfold.envFiles loads the list next returned, not e.value, after next", async () => {
+		const answer = { value: "changed.env" };
+		let gated = 0;
 		const { result, passed, e, enrollment, hidden } = await configSet(
 			"blindfold.envFiles",
 			answer,
+			(during) => {
+				gated += 1;
+				expect(during.listed()).toBe(".env");
+				expect(guardText(newValue, during.knownSet(), never).kind).toBe("pass");
+			},
 		);
+		expect(gated).toBe(1);
 		expect(passed[0]).toBe(e);
 		expect(result).toBe(answer);
-		expect(enrollment.listed()).toBe("other.env");
+		expect(enrollment.listed()).toBe("changed.env");
 		expect(hidden.kind).toBe("rewrite");
+		expect(guardText(requestedValue, enrollment.knownSet(), never).kind).toBe(
+			"pass",
+		);
 	});
 
 	test("R14: another key loads nothing", async () => {
-		const answer = { value: "other.env" };
+		const answer = { value: "changed.env" };
 		const { result, enrollment, hidden } = await configSet("theme", answer);
 		expect(result).toBe(answer);
 		expect(enrollment.listed()).toBe(".env");
