@@ -1,7 +1,7 @@
-import type { ProcessRunResult } from "claude-code";
+import type { ProcessRunInit, ProcessRunResult } from "claude-code";
 import { describe, expect, test } from "claude-code/testing";
 import { DEFAULT_LIMITS, scanText } from "../hooks/detect.ts";
-import { createEnrollment } from "../hooks/enroll.ts";
+import { createEnrollment, load } from "../hooks/enroll.ts";
 import { type Saved, saveValue } from "../hooks/write.ts";
 import {
 	type FakeCall,
@@ -22,15 +22,27 @@ type Cmd =
 	| "ls-files"
 	| "check-ignore"
 	| "chmod"
-	| "stat";
-type Answer = (argv: readonly string[]) => Partial<ProcessRunResult>;
+	| "stat"
+	| "mktemp"
+	| "ln"
+	| "rm";
+type Answer = (
+	argv: readonly string[],
+	init?: ProcessRunInit,
+) => Partial<ProcessRunResult>;
 
 const cmdOf = (argv: readonly string[]): Cmd =>
 	(argv[0] === "git"
 		? argv.find((a) => ["rev-parse", "ls-files", "check-ignore"].includes(a))
 		: argv[0]) as Cmd;
 
-/** A fake `$` whose commands act like macOS with git: chmod sets the mode `stat` reads, check-ignore reads the root `.gitignore`. */
+const relOf = (path: string) => path.slice(REAL_ROOT.length + 1);
+const TEMP = `${REAL_ROOT}/.blindfold-AbC123`;
+
+/**
+ * A fake `$` whose commands act like macOS with git: chmod sets the mode `stat` reads, check-ignore reads the root `.gitignore`,
+ * the root is its own work tree, and mktemp, ln, and rm act on `files` as tested on macOS.
+ */
 function setup(
 	files: Record<string, FakeFile>,
 	over: Partial<Record<Cmd, Answer>> = {},
@@ -43,7 +55,9 @@ function setup(
 			.includes(`/${(argv.at(-1) ?? "").slice(2)}`);
 	const defaults: Record<Cmd, Answer> = {
 		uname: () => ({ stdout: "Darwin\n" }),
-		"rev-parse": () => ({ stdout: "true\n" }),
+		"rev-parse": (argv) => ({
+			stdout: argv.includes("--show-toplevel") ? `${REAL_ROOT}\n` : "true\n",
+		}),
 		"ls-files": () => ({ exitCode: 1 }),
 		"check-ignore": (argv) => ({ exitCode: ignored(argv) ? 0 : 1 }),
 		chmod: () => {
@@ -51,11 +65,31 @@ function setup(
 			return {};
 		},
 		stat: () => ({ stdout: `${mode}\n` }),
+		mktemp: (argv) => {
+			const temp = (argv[1] ?? "").replace(/X+$/, "AbC123");
+			const folder = relOf(temp.slice(0, temp.lastIndexOf("/")));
+			if (folder !== "" && files[folder]?.kind !== "dir")
+				return { exitCode: 1 };
+			files[relOf(temp)] = { text: "" };
+			return { stdout: `${temp}\n` };
+		},
+		ln: (argv) => {
+			const [from, to] = [relOf(argv[1] ?? ""), relOf(argv[2] ?? "")];
+			if (to in files || !(from in files)) return { exitCode: 1 };
+			files[to] = { ...files[from] };
+			return {};
+		},
+		rm: (argv) => {
+			const rel = relOf(argv[1] ?? "");
+			if (!(rel in files)) return { exitCode: 1 };
+			delete files[rel];
+			return {};
+		},
 	};
 	const fake = fakeApi(files, {
-		run: (argv) => {
+		run: (argv, init) => {
 			const cmd = cmdOf(argv);
-			return (over[cmd] ?? defaults[cmd])(argv);
+			return (over[cmd] ?? defaults[cmd])(argv, init);
 		},
 		...options,
 	});
@@ -98,7 +132,15 @@ const refused = (
 	reason,
 });
 
-const ignoredRepo = () => ({ ".gitignore": { text: "/.env\n" } });
+const ignoredRepo = (): Record<string, FakeFile> => ({
+	".gitignore": { text: "/.env\n" },
+});
+/** The names the status shows as set in `.env`. */
+const namesIn = (enrollment: ReturnType<typeof createEnrollment>) =>
+	enrollment
+		.status()
+		.files.flatMap((f) => ("names" in f.state ? f.state.names : []))
+		.map((n) => n.name);
 
 describe("write R2: the path step", () => {
 	const spellings = [
@@ -174,6 +216,8 @@ describe("write R2: the path step", () => {
 		expect(s.files[".env"]?.text).toBe(`A=1\n# note\nAPI_KEY='${VALUE}'\n`);
 		expect(runs(s.calls).map(cmdOf)).toEqual([
 			"rev-parse",
+			"rev-parse",
+			"rev-parse",
 			"ls-files",
 			"check-ignore",
 		]);
@@ -191,6 +235,8 @@ describe("write R3: the git step", () => {
 				s.calls.filter(isRun("check-ignore")),
 			);
 		expect(git.map((c) => c.args)).toEqual([
+			[["git", "rev-parse", "--show-toplevel"], { cwd: REAL_ROOT }],
+			[["git", "rev-parse", "--show-toplevel"], { cwd: REAL_ROOT }],
 			[["git", "rev-parse", "--is-inside-work-tree"], { cwd: REAL_ROOT }],
 			[
 				[
@@ -205,6 +251,88 @@ describe("write R3: the git step", () => {
 			],
 			[["git", "check-ignore", "-q", "--", "./.env"], { cwd: REAL_ROOT }],
 		]);
+	});
+
+	const CHILD = `${REAL_ROOT}/child`;
+	/** `--show-toplevel` answers per cwd, as git does: `tops[cwd]`, else the root. `null` is no work tree. */
+	const tops =
+		(answers: Record<string, string | null>): Answer =>
+		(argv, init) => {
+			const cwd = init?.cwd ?? "";
+			const top = cwd in answers ? answers[cwd] : REAL_ROOT;
+			if (top === null) return { exitCode: 128 };
+			return {
+				stdout: argv.includes("--show-toplevel") ? `${top}\n` : "true\n",
+			};
+		};
+	const noChange = (s: ReturnType<typeof setup>) => {
+		expect(writes(s.calls)).toEqual([]);
+		expect(runs(s.calls).map(cmdOf)).toEqual(["rev-parse", "rev-parse"]);
+	};
+
+	test("F59, R3: show-toplevel runs in the nearest existing folder of the target, then in the root", async () => {
+		const s = setup({ ...ignoredRepo(), sub: { kind: "dir" } });
+		await s.save("sub/deep/.env");
+		expect(
+			s.calls
+				.filter(isRun("rev-parse"))
+				.slice(0, 2)
+				.map((c) => c.args),
+		).toEqual([
+			[["git", "rev-parse", "--show-toplevel"], { cwd: `${REAL_ROOT}/sub` }],
+			[["git", "rev-parse", "--show-toplevel"], { cwd: REAL_ROOT }],
+		]);
+	});
+
+	test("F59, R3: a target in a nested repository is refused before any change", async () => {
+		const s = setup(
+			{ child: { kind: "dir" } },
+			{ "rev-parse": tops({ [CHILD]: CHILD }) },
+		);
+		expect(await s.save("child/.env")).toEqual(
+			refused("git", "nested-repository"),
+		);
+		noChange(s);
+	});
+
+	test("F59, R3: an existing tracked file in a nested repository is refused, though the root index does not list it", async () => {
+		const s = setup(
+			{ child: { kind: "dir" }, "child/.env": { text: "A=1\n" } },
+			{ "rev-parse": tops({ [CHILD]: CHILD }) },
+		);
+		expect(await s.save("child/.env")).toEqual(
+			refused("git", "nested-repository"),
+		);
+		expect(s.files["child/.env"]?.text).toBe("A=1\n");
+		noChange(s);
+	});
+
+	test("F59, R3: the root in no work tree and the target folder in one is refused", async () => {
+		const s = setup(
+			{ child: { kind: "dir" } },
+			{ "rev-parse": tops({ [REAL_ROOT]: null, [CHILD]: CHILD }) },
+		);
+		expect(await s.save("child/.env")).toEqual(
+			refused("git", "nested-repository"),
+		);
+		noChange(s);
+	});
+
+	test("F59, R3: the target folder in no work tree while the root is in one is refused (fail closed)", async () => {
+		const s = setup(
+			{ child: { kind: "dir" } },
+			{ "rev-parse": tops({ [CHILD]: null }) },
+		);
+		expect(await s.save("child/.env")).toEqual(
+			refused("git", "nested-repository"),
+		);
+		noChange(s);
+	});
+
+	test("F59, R3: a plain subfolder of the root's work tree passes", async () => {
+		const s = setup({ ...ignoredRepo(), sub: { kind: "dir" } });
+		s.files[".gitignore"] = { text: "/sub/.env\n" };
+		expect((await s.save("sub/.env")).ok).toBe(true);
 	});
 
 	test("R3: a tracked file is refused before any write", async () => {
@@ -304,10 +432,73 @@ describe("write R3: the git step", () => {
 });
 
 describe("write R4: the create step", () => {
-	test("R4: chmod non-zero refuses, after only the empty write, and the value is not learned", async () => {
+	test("F60, R4: on macOS a new file is made by mktemp, ln without -f, and rm, then chmod, and no $.fs.write truncates it", async () => {
+		const s = setup(ignoredRepo());
+		expect((await s.save()).ok).toBe(true);
+		expect(
+			runs(s.calls).filter((a) =>
+				["mktemp", "ln", "rm", "chmod"].includes(a[0] ?? ""),
+			),
+		).toEqual([
+			["mktemp", `${REAL_ROOT}/.blindfold-XXXXXX`],
+			["ln", TEMP, TARGET],
+			["rm", TEMP],
+			["chmod", "600", TARGET],
+		]);
+		expect(writes(s.calls).filter((c) => c.args[1] === "")).toEqual([]);
+		expect(relOf(TEMP) in s.files).toBe(false);
+	});
+
+	test("F60, R4: a file created during the git step is kept: ln refuses with exists, and rm still runs", async () => {
+		const files: Record<string, FakeFile> = ignoredRepo();
+		const s = setup(files, {
+			"ls-files": () => {
+				files[".env"] = { text: "OTHER=keep-me\n" };
+				return { exitCode: 1 };
+			},
+		});
+		expect(await s.save()).toEqual(refused("create", "exists"));
+		expect(files[".env"]?.text).toBe("OTHER=keep-me\n");
+		expect(writes(s.calls)).toEqual([]);
+		expect(runs(s.calls).at(-1)).toEqual(["rm", TEMP]);
+		expect(relOf(TEMP) in files).toBe(false);
+		expect(s.calls.some(isRun("chmod"))).toBe(false);
+		expect(known(s.enrollment)).toBe("clean");
+	});
+
+	test("F60, R4: ln that does not start refuses with exists, and rm still runs", async () => {
+		const s = setup(ignoredRepo(), {
+			ln: () => {
+				throw new Error("ENOENT ln");
+			},
+		});
+		expect(await s.save()).toEqual(refused("create", "exists"));
+		expect(runs(s.calls).at(-1)).toEqual(["rm", TEMP]);
+	});
+
+	test("F60, R4: mktemp non-zero refuses before ln, for example when the target's folder is missing", async () => {
+		const s = setup({ ...ignoredRepo(), sub: { kind: "dir" } });
+		expect(await s.save("sub/deep/.env")).toEqual(
+			refused("create", "mktemp-failed"),
+		);
+		expect(s.calls.some(isRun("ln"))).toBe(false);
+		expect(
+			writes(s.calls).filter((c) => String(c.args[0]).endsWith(".env")),
+		).toEqual([]);
+	});
+
+	test("F60, R4: a failed rm refuses before the value write, so the value never reaches a second name", async () => {
+		const s = setup(ignoredRepo(), { rm: () => ({ exitCode: 1 }) });
+		expect(await s.save()).toEqual(refused("create", "temp-left"));
+		expect(s.calls.some(holdsValue)).toBe(false);
+		expect(known(s.enrollment)).toBe("clean");
+	});
+
+	test("R4: chmod non-zero refuses, after only the empty create, and the value is not learned", async () => {
 		const s = setup(ignoredRepo(), { chmod: () => ({ exitCode: 1 }) });
 		expect(await s.save()).toEqual(refused("create", "chmod-failed"));
-		expect(writes(s.calls).map((c) => c.args)).toEqual([[TARGET, ""]]);
+		expect(writes(s.calls)).toEqual([]);
+		expect(s.files[".env"]?.text).toBe("");
 		expect(known(s.enrollment)).toBe("clean");
 	});
 
@@ -320,15 +511,37 @@ describe("write R4: the create step", () => {
 		});
 		expect(runs(s.calls).map(cmdOf)).toEqual([
 			"rev-parse",
+			"rev-parse",
+			"rev-parse",
 			"ls-files",
 			"check-ignore",
 		]);
+		expect(writes(s.calls)[0]?.args).toEqual([TARGET, ""]);
+	});
+
+	test("F60, R4: on Windows a file that appears before the empty write is refused with exists, and kept", async () => {
+		const files: Record<string, FakeFile> = ignoredRepo();
+		const s = setup(
+			files,
+			{
+				"ls-files": () => {
+					files[".env"] = { text: "OTHER=keep-me\n" };
+					return { exitCode: 1 };
+				},
+			},
+			{ env: { OS: "Windows_NT" } },
+		);
+		expect(await s.save()).toEqual(refused("create", "exists"));
+		expect(files[".env"]?.text).toBe("OTHER=keep-me\n");
+		expect(writes(s.calls)).toEqual([]);
 	});
 
 	test("R4: an unknown platform refuses before the file is created", async () => {
 		const s = setup(ignoredRepo(), { uname: () => ({ stdout: "SunOS\n" }) });
 		expect(await s.save()).toEqual(refused("create", "unknown-platform"));
 		expect(writes(s.calls)).toEqual([]);
+		expect(s.calls.some(isRun("mktemp"))).toBe(false);
+		expect(".env" in s.files).toBe(false);
 	});
 });
 
@@ -394,15 +607,17 @@ describe("write R7, R8: the write and verify steps", () => {
 		expect(known(s.enrollment)).toBe("found");
 	});
 
-	test("R8: a failed verify refuses, the name is not marked set, and the value stays learned (F47)", async () => {
+	test("R8, F61: a failed verify refuses, an already-set name is no longer marked set, and the value stays learned (F47)", async () => {
 		const s = setup(
-			{ ...ignoredRepo(), ".env": { text: "" } },
+			{ ...ignoredRepo(), ".env": { text: "API_KEY=madeup-old-orchard\n" } },
 			{},
-			{ onWrite: (_rel, text) => text.replace(VALUE, "other-value-1234") },
+			{ onWrite: () => "" },
 		);
+		await load(s.api, s.enrollment, s.enrollment.listed());
+		expect(namesIn(s.enrollment)).toEqual(["API_KEY"]);
 		expect(await s.save()).toEqual(refused("verify", "mismatch"));
 		expect(known(s.enrollment)).toBe("found");
-		expect(s.enrollment.status().files).toEqual([]);
+		expect(namesIn(s.enrollment)).toEqual([]);
 	});
 
 	test("R8: verify reads the last entry for the name", async () => {
@@ -473,14 +688,10 @@ describe("write R9, F49, F50: the mode step", () => {
 });
 
 describe("write: the order", () => {
-	test("R3, R4, F47, F51: git before any write, chmod and learn before the value write, the absolute target everywhere", async () => {
+	test("R3, R4, F47, F51, F60: git before any write, the create before chmod, chmod and learn before the value write, the absolute target everywhere", async () => {
 		const s = setup({ ".gitignore": { text: "" } });
 		expect((await s.save()).ok).toBe(true);
 		const { calls } = s;
-		const firstTargetWrite = indexOf(
-			calls,
-			(c) => c.noun === "fs.write" && c.args[0] === TARGET,
-		);
 		const valueWrite = indexOf(calls, holdsValue);
 		const lastGit = calls.findLastIndex(
 			(c) => c.noun === "process.run" && (c.args[0] as string[])[0] === "git",
@@ -490,7 +701,7 @@ describe("write: the order", () => {
 			indexOf(calls, isRun("ls-files")),
 			indexOf(calls, (c) => c.noun === "fs.write"),
 			lastGit,
-			firstTargetWrite,
+			indexOf(calls, isRun("ln")),
 			indexOf(calls, isRun("chmod")),
 			indexOf(calls, (c) => c.noun === "learn"),
 			valueWrite,
@@ -521,6 +732,41 @@ describe("write R10: the status", () => {
 				state: { kind: "active", names: [{ name: "API_KEY", hidden: true }] },
 			},
 		]);
+	});
+});
+
+describe("write R10, F61: the status after a failure from the write step on", () => {
+	test("R10, F61: a failed write that emptied the file reloads, so the old name is no longer marked set", async () => {
+		const s = setup({
+			...ignoredRepo(),
+			".env": { text: "API_KEY=madeup-old-orchard\n" },
+		});
+		await load(s.api, s.enrollment, s.enrollment.listed());
+		expect(namesIn(s.enrollment)).toEqual(["API_KEY"]);
+		s.api.fs.write = async () => {
+			s.files[".env"] = { text: "" };
+			throw new Error("EIO");
+		};
+		expect(await s.save()).toEqual(refused("write", "failed"));
+		expect(namesIn(s.enrollment)).toEqual([]);
+		expect(known(s.enrollment)).toBe("found");
+	});
+
+	test("R10, F61: a failed mode step reloads, so the status shows the value on disk", async () => {
+		const s = setup(ignoredRepo(), { stat: () => ({ exitCode: 1 }) });
+		expect(await s.save()).toEqual(refused("mode", "stat-failed"));
+		expect(namesIn(s.enrollment)).toEqual(["API_KEY"]);
+	});
+
+	test("R10: a failure before the write step does not reload", async () => {
+		const s = setup({
+			...ignoredRepo(),
+			".env": { text: "API_KEY=madeup-old-orchard\n" },
+		});
+		await load(s.api, s.enrollment, s.enrollment.listed());
+		s.files[".env"] = { text: "" };
+		expect(await s.save(".env", "1BAD")).toEqual(refused("value", "bad-name"));
+		expect(namesIn(s.enrollment)).toEqual(["API_KEY"]);
 	});
 });
 

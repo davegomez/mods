@@ -210,27 +210,27 @@ export async function locate(
 	return { realPath, size: stat.size };
 }
 
-/** R9: the nearest folder that exists above a missing `path` is a folder, and is the root or under it. */
+/** R9: the nearest folder that exists above `path`, when it is a folder at or under the root; else undefined. */
 export async function parentInside(
 	$: EngineInterface,
 	root: Root,
 	path: string,
-): Promise<boolean> {
+): Promise<string | undefined> {
 	const parts = path.split(root.sep === "/" ? "/" : /[/\\]/);
 	for (let n = parts.length - 1; n > 0; n--) {
 		const dir = `${root.real}${root.sep}${parts.slice(0, n).join(root.sep)}`;
 		try {
 			const { kind, realPath } = await $.fs.stat(dir, { resolve: true });
-			return (
+			const inside =
 				kind === "dir" &&
 				realPath !== undefined &&
-				(realPath === root.real || realPath.startsWith(root.real + root.sep))
-			);
+				(realPath === root.real || realPath.startsWith(root.real + root.sep));
+			return inside ? dir : undefined;
 		} catch {
-			if (await $.fs.exists(dir).catch(() => true)) return false;
+			if (await $.fs.exists(dir).catch(() => true)) return undefined;
 		}
 	}
-	return true;
+	return root.real;
 }
 
 /** R2, R3: 1 listed entry's state and the values it feeds. Only an active file feeds; a stale one keeps its old values (R6). */
@@ -451,7 +451,7 @@ async function addOne(
 	const place = await locate($, root, wanted);
 	if ("state" in place) {
 		if (place.state.kind !== "missing") return "refused";
-		if (!(await parentInside($, root, wanted))) return "refused";
+		if ((await parentInside($, root, wanted)) === undefined) return "refused";
 	}
 	// Read the list after the awaits, so a load that came meanwhile is kept.
 	const current = parseList(enrollment.listed()).map((entry) => entry.path);
