@@ -96,6 +96,10 @@ export function classify(entries: readonly Entry[]): {
 	return { names: [...states.values()], feed };
 }
 
+/** R10: what `statusOf` shows for a path or a name that holds a kept value. */
+export const HIDDEN_PATH = "[hidden path]";
+export const HIDDEN_NAME = "[hidden name]";
+
 /** R10: `text`, or `placeholder` when `known` finds a kept value in it or cannot scan it. */
 function shown(text: string, known: KnownSet, placeholder: string): string {
 	const scan = scanText(text, known, DEFAULT_LIMITS, NO_DEADLINE);
@@ -115,14 +119,14 @@ export function statusOf(
 	);
 	return {
 		files: files.map(({ path, state }) => ({
-			path: shown(path, known, "[hidden path]"),
+			path: shown(path, known, HIDDEN_PATH),
 			state:
 				state.kind === "active"
 					? {
 							kind: "active",
 							names: state.names.map((n) => ({
 								...n,
-								name: shown(n.name, known, "[hidden name]"),
+								name: shown(n.name, known, HIDDEN_NAME),
 							})),
 						}
 					: state,
