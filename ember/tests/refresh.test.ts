@@ -26,6 +26,7 @@ import {
 	LOG_LIMIT,
 	leadMs,
 	maxRefreshes,
+	nextRefreshAtMs,
 	openPause,
 	parseIdleSeen,
 	parseRefresh,
@@ -778,5 +779,60 @@ describe("the log ring buffer", () => {
 		expect(parseRefresh(JSON.parse(JSON.stringify(state)))).toEqual(state);
 		expect(parseRefresh("junk")).toBeUndefined();
 		expect(parseRefresh({ pause: { startMs: "x" } })).toEqual(emptyRefresh);
+	});
+});
+
+describe("next refresh time", () => {
+	const p = pauseAt();
+	const idle = pauseAt(60, { isIdleCompaction: true });
+	const late = T0 + 60 * MIN - LATE_MARGIN_MS;
+
+	test("a refreshable pause refreshes at the lead before expiry, when planRefresh fires", () => {
+		expect(nextRefreshAtMs(p)).toBe(T0 + 55 * MIN);
+		expect(planRefresh(p, T0 + 55 * MIN - 1).kind).toBe("wait");
+		expect(planRefresh(p, T0 + 55 * MIN).kind).toBe("fire");
+	});
+
+	test("a retry later than the lead moves it; an earlier one does not", () => {
+		const retry = { ...p, retryAtMs: T0 + 56 * MIN };
+		expect(nextRefreshAtMs(retry)).toBe(T0 + 56 * MIN);
+		expect(planRefresh(retry, T0 + 56 * MIN - 1).kind).toBe("wait");
+		expect(planRefresh(retry, T0 + 56 * MIN).kind).toBe("fire");
+		expect(nextRefreshAtMs({ ...p, retryAtMs: T0 + MIN })).toBe(T0 + 55 * MIN);
+	});
+
+	test("a retry at the late limit never fires, so none is due", () => {
+		const retry = { ...p, retryAtMs: late };
+		expect(planRefresh(retry, late).kind).toBe("stop");
+		expect(nextRefreshAtMs(retry)).toBeUndefined();
+	});
+
+	test("a pause awaiting idle compaction is due at the rescue; none once it was seen", () => {
+		expect(nextRefreshAtMs(idle)).toBe(rescueAtMs(idle));
+		expect(planRefresh(idle, rescueAtMs(idle)).kind).toBe("rescue");
+		expect(
+			nextRefreshAtMs({ ...idle, idleCompactMs: T0 + 54 * MIN }),
+		).toBeUndefined();
+		expect(
+			nextRefreshAtMs({ ...idle, refreshes: maxRefreshes(60) }),
+		).toBeUndefined();
+	});
+
+	test("none at the cap, with refresh off, with the breaker paused, after a return, or with no pause", () => {
+		expect(
+			nextRefreshAtMs({ ...p, refreshes: maxRefreshes(60) }),
+		).toBeUndefined();
+		expect(nextRefreshAtMs({ ...p, skip: skipCode("capped") })).toBeUndefined();
+		expect(
+			nextRefreshAtMs(
+				pauseAt(60, {
+					config: { isOn: false, leadSeconds: 0, isShortTtlOn: true },
+				}),
+			),
+		).toBeUndefined();
+		expect(nextRefreshAtMs(pauseAt(60, { isPaused: true }))).toBeUndefined();
+		expect(nextRefreshAtMs({ ...p, returnMs: T0 + MIN })).toBeUndefined();
+		expect(nextRefreshAtMs({ ...idle, returnMs: T0 + MIN })).toBeUndefined();
+		expect(nextRefreshAtMs(undefined)).toBeUndefined();
 	});
 });

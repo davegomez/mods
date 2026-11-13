@@ -1055,6 +1055,11 @@ type StoredRefresh = {
 	missStreak: number;
 	isPaused: boolean;
 };
+type LiveRefresh = {
+	lastStartMs: number;
+	nextRefreshMs?: number;
+	refreshSkip?: number;
+};
 const refreshOf = (w: World, id = "S1") =>
 	(w.store.get(`session:${id}`) as { refresh: StoredRefresh }).refresh;
 const recs = (w: World) => refreshOf(w).log.map(decodeRec);
@@ -1453,6 +1458,98 @@ describe("cache refresh", () => {
 		await start($, w);
 		expect(refreshOf(w).pause).toBeUndefined();
 		expect(recs(w)[0]).toMatchObject({ kind: "pause", end: 2, ageMs: 2 * MIN });
+	});
+
+	test("live carries the next refresh time, moves it after a refresh, and drops it on a return", async ($, on) => {
+		const w = world(on);
+		await start($, w);
+		await turn($, w, "t1");
+		const first = stored(w).live as LiveRefresh;
+		expect(first.nextRefreshMs).toBe(first.lastStartMs + 55 * MIN);
+		expect(first.refreshSkip).toBeUndefined();
+		await w.clock.advance(55 * MIN);
+		await w.clock.settle();
+		expect(stored(w).live).toMatchObject({
+			lastStartMs: T0 + 55 * MIN,
+			nextRefreshMs: T0 + 110 * MIN,
+		});
+		await $.turn.start({ text: "back", turnId: "t2" });
+		await w.clock.settle();
+		expect(stored(w).live).not.toHaveProperty("nextRefreshMs");
+		expect(stored(w).live).not.toHaveProperty("refreshSkip");
+	});
+
+	test(
+		"with refresh off live carries skip 1 and no refresh time",
+		{ options: { refresh: false } },
+		async ($, on) => {
+			const w = world(on);
+			await start($, w);
+			await turn($, w, "t1");
+			expect(stored(w).live).toMatchObject({ refreshSkip: 1 });
+			expect(stored(w).live).not.toHaveProperty("nextRefreshMs");
+		},
+	);
+
+	test("a compaction in the pause sets live skip 6 and drops the refresh time", async ($, on) => {
+		const w = world(on);
+		await start($, w);
+		await turn($, w, "t1");
+		await w.clock.advance(30 * MIN);
+		await $.session.compact({ trigger: "auto", messages: SUMMARY });
+		await w.clock.settle();
+		expect(stored(w).live).toMatchObject({ refreshSkip: 6 });
+		expect(stored(w).live).not.toHaveProperty("nextRefreshMs");
+	});
+
+	test("a pause left to idle compaction carries skip 3 and the rescue time", async ($, on) => {
+		const w = world(on, { entries: { idleCompactionSeenMs: T0 - DAY } });
+		await start($, w);
+		await turn($, w, "t1", { usage: prefixUsage(0, 250_000) });
+		const live = stored(w).live as LiveRefresh;
+		expect(live.refreshSkip).toBe(3);
+		expect(live.nextRefreshMs).toBe(live.lastStartMs + 57.5 * MIN);
+	});
+
+	test("a pause a dead process left open drops its live refresh fields on resume", async ($, on) => {
+		const live = {
+			lastStartMs: T0 - 3 * MIN,
+			ttlMinutes: 60,
+			prefix: 100,
+			hit: 1,
+			refreshes: 1,
+			nextRefreshMs: T0 + 52 * MIN,
+			refreshSkip: 3,
+		};
+		const pause = {
+			startMs: T0 - 2 * MIN,
+			anchorMs: T0 - 3 * MIN,
+			readMs: T0 - 3 * MIN,
+			ttlMinutes: 60,
+			source: 0,
+			leadMs: 5 * MIN,
+			prefix: 100,
+			refreshes: 1,
+			tries: 0,
+			cost: 0,
+			skip: 0,
+		};
+		const w = world(on, {
+			entries: {
+				"session:S1": {
+					updatedAt: T0 - MIN,
+					live,
+					refresh: { log: [], missStreak: 0, isPaused: false, saved: 0, pause },
+				},
+			},
+		});
+		await start($, w);
+		expect(stored(w).live).toEqual({
+			lastStartMs: T0 - 3 * MIN,
+			ttlMinutes: 60,
+			prefix: 100,
+			hit: 1,
+		});
 	});
 
 	test("/ember-refresh opens a pane with the analysis", async ($, on) => {

@@ -1,6 +1,6 @@
 import type { TurnUsage } from "claude-code";
 import type { RefreshState } from "./refresh";
-import { parseRefresh } from "./refresh";
+import { nextRefreshAtMs, parseRefresh } from "./refresh";
 import type { Block, Line, Section, Tone } from "./sections";
 import { bold, dim, line, plain } from "./sections";
 
@@ -59,7 +59,9 @@ export type Agg = {
 /**
  * `hit` is 0 to 1; `prefix` is cache read + cache creation tokens. `refreshes`: refreshes in the current
  * pause; `savedTokens`: the session's net saving from them. Each is left out while 0. `savedPct`: the
- * session's cache saving as a cost share, left out before any token.
+ * session's cache saving as a cost share, left out before any token. `nextRefreshMs`: when the open pause's
+ * next refresh is due, left out when none will run; `refreshSkip`: its `SKIPS` index, left out while 0. Both
+ * are left out with no open pause or after a return.
  */
 export type CacheLive = {
 	lastStartMs: number;
@@ -69,6 +71,8 @@ export type CacheLive = {
 	refreshes?: number;
 	savedTokens?: number;
 	savedPct?: number;
+	nextRefreshMs?: number;
+	refreshSkip?: number;
 };
 
 /** The main thread's last measured request, which the next one is classified against. */
@@ -292,24 +296,37 @@ export function withLive(agg: Agg, main: Main, ttlMinutes: number): Agg {
 	};
 }
 
-/** Sets the live refresh count and saving, each left out while 0; the same aggregate when unchanged. */
-export function withRefreshLive(
-	agg: Agg,
-	refreshes: number,
-	savedTokens: number,
-): Agg {
+/** Sets the live refresh fields from `agg.refresh`, each left out when it does not apply; the same aggregate when unchanged. */
+export function withRefreshLive(agg: Agg): Agg {
 	const live = agg.live;
 	if (live === undefined) return agg;
-	const saved = Math.round(savedTokens);
-	if ((live.refreshes ?? 0) === refreshes && (live.savedTokens ?? 0) === saved)
+	const pause = agg.refresh?.pause;
+	const refreshes = pause?.refreshes ?? 0;
+	const saved = Math.round(agg.refresh?.saved ?? 0);
+	const nextRefreshMs = nextRefreshAtMs(pause);
+	const skip = pause?.returnMs === undefined ? (pause?.skip ?? 0) : 0;
+	if (
+		(live.refreshes ?? 0) === refreshes &&
+		(live.savedTokens ?? 0) === saved &&
+		live.nextRefreshMs === nextRefreshMs &&
+		(live.refreshSkip ?? 0) === skip
+	)
 		return agg;
-	const { refreshes: _r, savedTokens: _s, ...base } = live;
+	const {
+		refreshes: _r,
+		savedTokens: _s,
+		nextRefreshMs: _n,
+		refreshSkip: _k,
+		...base
+	} = live;
 	return {
 		...agg,
 		live: {
 			...base,
 			...(refreshes === 0 ? {} : { refreshes }),
 			...(saved === 0 ? {} : { savedTokens: saved }),
+			...(nextRefreshMs === undefined ? {} : { nextRefreshMs }),
+			...(skip === 0 ? {} : { refreshSkip: skip }),
 		},
 	};
 }
@@ -374,6 +391,8 @@ function parseLive(v: unknown): CacheLive | undefined {
 	)
 		return undefined;
 	const refreshes = optMs(v.refreshes);
+	const nextRefreshMs = optMs(v.nextRefreshMs);
+	const refreshSkip = optMs(v.refreshSkip);
 	const savedTokens =
 		typeof v.savedTokens === "number" && Number.isFinite(v.savedTokens)
 			? v.savedTokens
@@ -390,6 +409,8 @@ function parseLive(v: unknown): CacheLive | undefined {
 		...(refreshes ? { refreshes } : {}),
 		...(savedTokens ? { savedTokens } : {}),
 		...(savedPct === undefined ? {} : { savedPct }),
+		...(nextRefreshMs === undefined ? {} : { nextRefreshMs }),
+		...(refreshSkip ? { refreshSkip } : {}),
 	};
 }
 

@@ -383,6 +383,19 @@ export const isRefreshPlanned = (p: Pause | undefined): boolean =>
 	(awaitsIdleCompaction(p) ||
 		(p.skip === 0 && p.refreshes < maxRefreshes(p.ttlMinutes)));
 
+/** When `planRefresh` first fires or rescues in this pause; undefined when it never will. Depends on the pause alone. */
+export function nextRefreshAtMs(p: Pause | undefined): number | undefined {
+	if (p === undefined || !isRefreshPlanned(p)) return undefined;
+	// The rescue also stops at the cap, which isRefreshPlanned does not check.
+	if (p.refreshes >= maxRefreshes(p.ttlMinutes)) return undefined;
+	const expiresMs = p.readMs + p.ttlMinutes * MIN;
+	const dueMs = awaitsIdleCompaction(p)
+		? rescueAtMs(p)
+		: Math.max(expiresMs - p.leadMs, p.retryAtMs ?? 0);
+	// At or past the late limit planRefresh stops instead of firing.
+	return dueMs < expiresMs - LATE_MARGIN_MS ? dueMs : undefined;
+}
+
 export type Judged = {
 	outcome: Outcome | "none";
 	read: number;

@@ -172,7 +172,7 @@ async function bind($: EngineInterface, live: Live): Promise<void> {
 		live.agg =
 			open === undefined || stored.refresh === undefined
 				? stored
-				: {
+				: withRefreshLive({
 						...stored,
 						refresh: close(
 							$,
@@ -181,7 +181,7 @@ async function bind($: EngineInterface, live: Live): Promise<void> {
 							"exit",
 							Math.max(open.startMs, stored.updatedAt),
 						),
-					};
+					});
 		if (live.agg !== stored) save($, live);
 	} catch {
 		$.ui.log("ember: could not load its stats", { to: "debug" });
@@ -277,15 +277,11 @@ function setRefresh(
 	state: RefreshState,
 	nowMs: number,
 ): void {
-	const agg = withRefreshLive(
-		{
-			...live.agg,
-			updatedAt: Math.max(live.agg.updatedAt, nowMs),
-			refresh: state,
-		},
-		state.pause?.refreshes ?? 0,
-		state.saved,
-	);
+	const agg = withRefreshLive({
+		...live.agg,
+		updatedAt: Math.max(live.agg.updatedAt, nowMs),
+		refresh: state,
+	});
 	live.agg = withTtl(agg, ttlOf(live, state).minutes);
 	save($, live);
 }
@@ -346,9 +342,7 @@ async function record(
 			state = close($, live, state, end, endedMs);
 			live.agg = { ...live.agg, refresh: state };
 		}
-		live.agg = withSavedPct(
-			withRefreshLive(live.agg, state.pause?.refreshes ?? 0, state.saved),
-		);
+		live.agg = withSavedPct(withRefreshLive(live.agg));
 		if (live.agg !== before) {
 			save($, live);
 			$.ui.invalidate("ui.render");
@@ -376,13 +370,13 @@ async function compacted(
 			(p.skip !== skipCode("idle compaction") ||
 				(!isIdle && p.returnMs === undefined))
 		)
-			live.agg = {
+			live.agg = withRefreshLive({
 				...live.agg,
 				refresh: {
 					...stateOf(live),
 					pause: { ...p, skip: skipCode("compacted") },
 				},
-			};
+			});
 		save($, live);
 	} catch {
 		$.ui.log("ember: could not record a compaction", { to: "debug" });
@@ -701,11 +695,13 @@ export const register: Register = (on, options) => {
 			try {
 				const nowMs = await $.clock.now();
 				const s = stateOf(live);
-				if (s.pause !== undefined && s.pause.returnMs === undefined)
-					live.agg = {
+				if (s.pause !== undefined && s.pause.returnMs === undefined) {
+					live.agg = withRefreshLive({
 						...live.agg,
 						refresh: { ...s, pause: { ...s.pause, returnMs: nowMs } },
-					};
+					});
+					save($, live);
+				}
 			} catch {
 				$.ui.log("ember: could not note a return", { to: "debug" });
 			}

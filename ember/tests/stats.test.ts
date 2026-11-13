@@ -1,5 +1,7 @@
 import { describe, expect, test } from "claude-code/testing";
-import type { Agg, Main, Step } from "../hooks/stats";
+import type { Pause } from "../hooks/refresh";
+import { emptyRefresh, rescueAtMs, skipCode } from "../hooks/refresh";
+import type { Agg, CacheLive, Main, Step } from "../hooks/stats";
 import {
 	band,
 	cacheTokens,
@@ -25,6 +27,7 @@ import {
 	validTtlMinutes,
 	warning,
 	withLive,
+	withRefreshLive,
 	withSavedPct,
 	withTtl,
 } from "../hooks/stats";
@@ -896,5 +899,81 @@ describe("live cache state", () => {
 	test("mergeAggs ignores it", () => {
 		const a = { ...emptyAgg(0), live: LIVE };
 		expect(mergeAggs([a, a])).not.toHaveProperty("live");
+	});
+});
+
+describe("live refresh state", () => {
+	const LIVE = { lastStartMs: 0, ttlMinutes: 60, prefix: 100, hit: 0.9 };
+	const PAUSE: Pause = {
+		startMs: 10_000,
+		anchorMs: 0,
+		readMs: 0,
+		ttlMinutes: 60,
+		source: 0,
+		leadMs: 5 * MIN,
+		prefix: 100,
+		refreshes: 0,
+		tries: 0,
+		cost: 0,
+		skip: 0,
+	};
+	const withPause = (pause?: Pause, live: CacheLive = LIVE): Agg => ({
+		...emptyAgg(0),
+		live,
+		refresh: { ...emptyRefresh, ...(pause === undefined ? {} : { pause }) },
+	});
+
+	test("a refreshable pause sets the next refresh time and no skip", () => {
+		expect(withRefreshLive(withPause(PAUSE)).live).toEqual({
+			...LIVE,
+			nextRefreshMs: 55 * MIN,
+		});
+	});
+
+	test("a pause awaiting idle compaction sets skip 3 and the rescue time", () => {
+		const pause = { ...PAUSE, skip: skipCode("idle compaction") };
+		expect(withRefreshLive(withPause(pause)).live).toEqual({
+			...LIVE,
+			nextRefreshMs: rescueAtMs(pause),
+			refreshSkip: 3,
+		});
+	});
+
+	test("refresh off, the cap and the breaker set the skip alone", () => {
+		for (const skip of ["off", "capped", "paused"] as const) {
+			expect(
+				withRefreshLive(withPause({ ...PAUSE, skip: skipCode(skip) })).live,
+			).toEqual({ ...LIVE, refreshSkip: skipCode(skip) });
+		}
+	});
+
+	test("a return or no open pause drops both", () => {
+		const set = { ...LIVE, nextRefreshMs: 55 * MIN, refreshSkip: 4 };
+		const returned = { ...PAUSE, skip: 4, returnMs: MIN };
+		expect(withRefreshLive(withPause(returned, set)).live).toEqual(LIVE);
+		expect(withRefreshLive(withPause(undefined, set)).live).toEqual(LIVE);
+		expect(withRefreshLive({ ...emptyAgg(0), live: set }).live).toEqual(LIVE);
+	});
+
+	test("the same aggregate when unchanged or with no live", () => {
+		const once = withRefreshLive(withPause(PAUSE));
+		expect(withRefreshLive(once)).toBe(once);
+		const none = { ...withPause(PAUSE), live: undefined };
+		expect(withRefreshLive(none)).toBe(none);
+	});
+
+	test("parseAgg keeps both and drops a bad one alone", () => {
+		const set = { ...LIVE, nextRefreshMs: 55 * MIN, refreshSkip: 3 };
+		expect(
+			parseAgg(JSON.parse(JSON.stringify({ updatedAt: 1, live: set })))?.live,
+		).toEqual(set);
+		for (const bad of [-1, "x", null, Number.NaN, Number.POSITIVE_INFINITY]) {
+			expect(
+				parseAgg({
+					updatedAt: 1,
+					live: { ...LIVE, nextRefreshMs: bad, refreshSkip: bad },
+				})?.live,
+			).toEqual(LIVE);
+		}
 	});
 });

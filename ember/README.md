@@ -391,13 +391,15 @@ Each gap band holds `{ n, read, total }`, like the gap-type totals: the request 
 | `refreshes` | Refreshes in the current pause. Absent when 0. |
 | `savedTokens` | The net saving of the session's refreshes, in input-token units. Absent when 0. |
 | `savedPct` | The session's cache saving as a share of the uncached cost, in percent, rounded. A cache read costs 0.1 and a cache write 1.25 (5-minute TTL) or 2 (1-hour TTL) input tokens. Below 0 when the writes cost more than the reads saved. Absent before the first token. |
+| `nextRefreshMs` | When the next refresh of the open pause is due, in epoch milliseconds. For a pause left to idle compaction, the time of the rescue. Absent when no refresh will run in the pause, when no pause is open, or after you return. |
+| `refreshSkip` | The `skip` code of the open pause. Absent when the code is 0, when no pause is open, or after you return. |
 
 `refresh.log` keeps the newest 32 records of the session as number arrays:
 
 - Pause: `[0, startMs, lenMs, ageMs, ttlMinutes, source, leadMs, prefix, refreshes, end, skip, cost, saved, idleCompacted]`
 - Refresh: `[1, startMs, ageMs, ttlMinutes, source, leadMs, prefix, read, creation, input, output, outcome, steps, agentSteps, isProbe]`
 
-`end` is 0 warm, 1 cold, 2 exit, or 3 unknown. `outcome` is 0 hit, 1 miss, or 2 refused. `source` and `skip` are indexes into the lists in `hooks/refresh.ts`. `idleCompacted` is 1 when idle compaction was seen in the pause, else 0. Records written before this field existed read as 0. The open pause, `refresh.pause`, holds the same as `idleCompactMs`, the time it was seen. A pause that ember left to idle compaction keeps the skip reason `idle compaction` when idle compaction runs in it. A rescued pause records the skip reason `none`, or a later stop reason, and its refreshes.
+`end` is 0 warm, 1 cold, 2 exit, or 3 unknown. `outcome` is 0 hit, 1 miss, or 2 refused. `source` and `skip` are indexes into the lists in `hooks/refresh.ts`, and `live.refreshSkip` uses the same `skip` codes: 0 `none`, 1 `off`, 2 `no prefix`, 3 `idle compaction`, 4 `paused`, 5 `interrupted`, 6 `compacted`, 7 `nothing to fork`, 8 `not interactive`, 9 `capped`, 10 `late`, 11 `refused`, 12 `missed`, and 13 `short-ttl`. `idleCompacted` is 1 when idle compaction was seen in the pause, else 0. Records written before this field existed read as 0. The open pause, `refresh.pause`, holds the same as `idleCompactMs`, the time it was seen. A pause that ember left to idle compaction keeps the skip reason `idle compaction` when idle compaction runs in it. A rescued pause records the skip reason `none`, or a later stop reason, and its refreshes.
 
 ### License
 

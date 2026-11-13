@@ -1,6 +1,6 @@
 {
 	"name": "ember",
-	"version": "0.4.2",
+	"version": "0.5.0",
 	"description": "Measures how warm the prompt cache stays across your idle gaps, and refreshes it before it expires.",
 	"license": "AGPL-3.0-only",
 	"author": { "name": "David" },
