@@ -6,6 +6,7 @@ import {
 	band,
 	cacheTokens,
 	classify,
+	detectTtlMinutes,
 	duration,
 	emptyAgg,
 	emptyMain,
@@ -21,6 +22,7 @@ import {
 	parseAgg,
 	percent,
 	report,
+	resolveTtl,
 	savedPct,
 	statusText,
 	tokens,
@@ -84,6 +86,117 @@ describe("validTtlMinutes", () => {
 		]) {
 			expect(validTtlMinutes(bad)).toBe(60);
 		}
+	});
+});
+
+/** One transcript line: an assistant record whose usage wrote these 5-minute and 1-hour cache tokens. */
+const written = (m5: unknown, h1: unknown, over: object = {}) =>
+	JSON.stringify({
+		type: "assistant",
+		message: {
+			content: [{ type: "text", text: "secret answer" }],
+			usage: {
+				cache_creation: {
+					ephemeral_1h_input_tokens: h1,
+					ephemeral_5m_input_tokens: m5,
+				},
+			},
+		},
+		...over,
+	});
+/** A tail as `tail -c` cuts it: a partial first line, the records, a trailing newline. */
+const tail = (...lines: string[]) => ['ral"}', ...lines, ""].join("\n");
+
+describe("detectTtlMinutes", () => {
+	test("a 5-minute write is 5, a 1-hour write is 60, both is 5", () => {
+		expect(detectTtlMinutes(tail(written(1007, 0)))).toBe(5);
+		expect(detectTtlMinutes(tail(written(0, 1007)))).toBe(60);
+		expect(detectTtlMinutes(tail(written(3, 1007)))).toBe(5);
+	});
+
+	test("the newest record decides", () => {
+		expect(detectTtlMinutes(tail(written(0, 9), written(9, 0)))).toBe(5);
+		expect(detectTtlMinutes(tail(written(9, 0), written(0, 9)))).toBe(60);
+	});
+
+	test("a record that wrote nothing says nothing: the next older one decides", () => {
+		expect(detectTtlMinutes(tail(written(9, 0), written(0, 0)))).toBe(5);
+		expect(detectTtlMinutes(tail(written(0, 0)))).toBeUndefined();
+	});
+
+	test("a subagent's record is skipped", () => {
+		expect(
+			detectTtlMinutes(
+				tail(written(0, 9), written(9, 0, { isSidechain: true })),
+			),
+		).toBe(60);
+	});
+
+	test("the first line can be cut, so it is never read", () => {
+		expect(detectTtlMinutes(written(9, 0))).toBeUndefined();
+		expect(detectTtlMinutes(`${written(9, 0)}\n${written(0, 9)}`)).toBe(60);
+	});
+
+	test("broken JSON, other record types and wrong types are skipped", () => {
+		const user = JSON.stringify({
+			type: "user",
+			message: { usage: { cache_creation: { ephemeral_5m_input_tokens: 9 } } },
+		});
+		for (const bad of [
+			'{"type":"assistant","message":',
+			"not json",
+			"null",
+			"42",
+			'"assistant"',
+			"[]",
+			user,
+			JSON.stringify({ type: "assistant" }),
+			JSON.stringify({ type: "assistant", message: "x" }),
+			JSON.stringify({ type: "assistant", message: { usage: [] } }),
+			JSON.stringify({
+				type: "assistant",
+				message: { usage: { cache_creation: 7 } },
+			}),
+			written("9", "9"),
+			written(true, null),
+			written(-1, -1),
+			written(9, 0, { type: "system" }),
+		])
+			expect(detectTtlMinutes(tail(written(0, 9), bad))).toBe(60);
+	});
+
+	test("empty text, or only blank lines, is undefined", () => {
+		expect(detectTtlMinutes("")).toBeUndefined();
+		expect(detectTtlMinutes("\n\n\r\n")).toBeUndefined();
+	});
+});
+
+describe("resolveTtl", () => {
+	test("a detected TTL goes first, before the environment, the setting and the option", () => {
+		expect(
+			resolveTtl({
+				detected: 60,
+				force5m: "1",
+				envTtl: "5m",
+				settingTtl: "5m",
+				optionMinutes: 5,
+			}),
+		).toEqual({ minutes: 60, source: "detected" });
+		expect(resolveTtl({ detected: 5, optionMinutes: 60 })).toEqual({
+			minutes: 5,
+			source: "detected",
+		});
+	});
+
+	test("without one, the configured order holds", () => {
+		expect(resolveTtl({ settingTtl: "5m", optionMinutes: 60 })).toEqual({
+			minutes: 5,
+			source: "promptCacheTtl",
+		});
+		expect(resolveTtl({ optionMinutes: 30 })).toEqual({
+			minutes: 30,
+			source: "ttlMinutes option",
+		});
 	});
 });
 

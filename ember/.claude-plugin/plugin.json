@@ -8,7 +8,7 @@
 		"ttlMinutes": {
 			"type": "number",
 			"title": "Cache TTL (minutes)",
-			"description": "How long ember assumes Claude keeps the saved copy of your conversation (the cache), from 1 to 1440 minutes. Leave it empty to use 60, because a Claude subscription keeps the cache for 60 minutes while you are within your usage. Set 5 if you use an API key, a cloud provider, or usage credits, which keep it for 5 minutes. A Claude Code cache setting such as promptCacheTtl overrides this option.",
+			"description": "How long ember assumes Claude keeps the saved copy of your conversation (the cache), from 1 to 1440 minutes. Leave it empty to use 60, because a Claude subscription keeps the cache for 60 minutes while you are within your usage. Set 5 if you use an API key, a cloud provider, or usage credits, which keep it for 5 minutes. After the first reply of a session, ember detects the real time from your conversation and uses it instead. A Claude Code cache setting such as promptCacheTtl also overrides this option.",
 			"default": 60,
 			"min": 1,
 			"max": 1440

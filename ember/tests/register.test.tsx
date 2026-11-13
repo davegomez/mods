@@ -50,6 +50,19 @@ type World = {
 	isManualAllowed: boolean;
 	/** How long the next compaction runs before it answers. */
 	compactHoldMs: number;
+	/** The transcript file's text at any path; undefined: no such file. */
+	transcript?: string;
+	/** The file size `fs.stat` answers; absent, the transcript's length. */
+	transcriptSize?: number;
+	/** Each `process.run` argv, in order. */
+	runs: (readonly string[])[];
+	/** How long each next `process.run` waits before it answers, first first. */
+	runHolds: number[];
+	/** `deny`: the call is refused; `exit`: tail exits 1. */
+	runFails?: "deny" | "exit";
+	failStat: boolean;
+	/** Each `fs.read` path, in order. */
+	fsReads: string[];
 	engine?: Engine;
 };
 
@@ -94,7 +107,49 @@ function world(on: On, options: Options = {}): World {
 		forkSteps: [],
 		isManualAllowed: false,
 		compactHoldMs: 0,
+		runs: [],
+		runHolds: [],
+		failStat: false,
+		fsReads: [],
 	};
+
+	on("process.run", async (_, e) => {
+		w.runs.push(e.argv);
+		const text = w.transcript;
+		const holdMs = w.runHolds.shift() ?? 0;
+		if (holdMs > 0) await clock.sleep(holdMs);
+		if (w.runFails === "deny") return { deny: "not permitted" };
+		const bytes = Number(e.argv[2]);
+		const isRead = text !== undefined && w.runFails !== "exit";
+		return {
+			value: {
+				exitCode: isRead ? 0 : 1,
+				stdout: isRead ? text.slice(-bytes) : "",
+				stderr: "",
+				isStdoutTruncated: false,
+				isStderrTruncated: false,
+			},
+		};
+	});
+	on("fs.stat", () =>
+		w.failStat || w.transcript === undefined
+			? { deny: "ENOENT" }
+			: {
+					value: {
+						kind: "file",
+						size: w.transcriptSize ?? w.transcript.length,
+						mtimeMs: 0,
+						isLink: false,
+					},
+				},
+	);
+	on("fs.read", (_, e) => {
+		w.fsReads.push(e.path);
+		return w.transcript === undefined
+			? { deny: "ENOENT" }
+			: { value: w.transcript };
+	});
+	on("classic.Stop", () => ({ additionalContext: ["from core"] }));
 
 	on("store.get", async (_, e) => {
 		if (w.otherGetHoldMs > 0 && e.key !== `session:${w.id}`)
@@ -1054,6 +1109,7 @@ type StoredRefresh = {
 	pause?: { skip: number; refreshes: number };
 	missStreak: number;
 	isPaused: boolean;
+	coldAtMs?: number;
 };
 type LiveRefresh = {
 	lastStartMs: number;
@@ -1903,5 +1959,758 @@ describe("idle compaction evidence", () => {
 			"Idle compaction seen 2026-10-21, ember skips the pauses it applies to\nSample",
 		);
 		await ui.unmount();
+	});
+});
+
+describe("TTL detection", () => {
+	const PATH = "/Users/secret-user/.claude/projects/secret-project/S1.jsonl";
+	const TAIL = ["tail", "-c", "1048576", "--", PATH];
+	/** An assistant record whose usage wrote these 5-minute and 1-hour cache tokens, with private text around it. */
+	const written = (m5: number, h1: number) =>
+		JSON.stringify({
+			type: "assistant",
+			cwd: "/Users/secret-user/secret-project",
+			message: {
+				content: [{ type: "text", text: "the secret answer" }],
+				usage: {
+					cache_creation: {
+						ephemeral_1h_input_tokens: h1,
+						ephemeral_5m_input_tokens: m5,
+					},
+				},
+			},
+		});
+	const transcript = (...lines: string[]) =>
+		[
+			JSON.stringify({ type: "user", message: { content: "a secret prompt" } }),
+			...lines,
+			"",
+		].join("\n");
+	const FIVE = transcript(written(1007, 0));
+	const HOUR = transcript(written(0, 1007));
+	const stop = (
+		$: Engine,
+		over: {
+			agent_id?: string;
+			stop_hook_active?: boolean;
+			transcript_path?: string;
+		} = {},
+	) =>
+		$.classic.Stop({ stop_hook_active: false, transcript_path: PATH, ...over });
+	/** How long after a main turn's Stop the transcript read starts. */
+	const DELAY = 2000;
+	/** Whether any text of the transcript or its path reached the store, a log, a toast or the status line. */
+	const leaks = (w: World) =>
+		JSON.stringify([
+			[...w.store],
+			w.logs,
+			w.debug,
+			w.toasts,
+			w.statuses,
+		]).includes("secret");
+
+	test("after a main turn, the transcript's newest cache write sets the TTL, shown as detected", async ($, on) => {
+		const w = world(on);
+		w.transcript = FIVE;
+		await start($, w);
+		await turn($, w, "t1");
+		expect(await stop($)).toEqual({ additionalContext: ["from core"] });
+		await w.clock.advance(DELAY);
+		expect(w.runs).toEqual([TAIL]);
+		expect(w.fsReads).toEqual([]);
+		expect((await paneOf($)).ttl).toBe("TTL 5m (detected)");
+		expect(stored(w).live).toMatchObject({ ttlMinutes: 5 });
+		expect(leaks(w)).toBe(false);
+	});
+
+	test("a detected TTL goes before the environment and the setting", async ($, on) => {
+		const w = world(on, {
+			env: { CLAUDE_CODE_PROMPT_CACHE_TTL: "5m" },
+			settings: { promptCacheTtl: "5m" },
+		});
+		w.transcript = HOUR;
+		await start($, w);
+		await stop($);
+		await w.clock.advance(DELAY);
+		expect((await paneOf($)).ttl).toBe("TTL 60m (detected)");
+		await $.classic.SessionStart({ source: "clear" });
+		await w.clock.settle();
+		expect((await paneOf($)).ttl).toBe("TTL 60m (detected)");
+	});
+
+	test("a subagent's stop, a stop a stop hook continues, and no transcript read nothing", async ($, on) => {
+		const w = world(on);
+		w.transcript = FIVE;
+		await start($, w);
+		await stop($, { agent_id: "a1" });
+		await stop($, { stop_hook_active: true });
+		await stop($, { transcript_path: "" });
+		await $.classic.SessionStart({ source: "clear" });
+		await w.clock.advance(DELAY);
+		expect(w.runs).toEqual([]);
+		expect((await paneOf($)).ttl).toBe("TTL 60m (ttlMinutes option)");
+	});
+
+	test("the read starts 2 s after a main turn's stop: none before, one after", async ($, on) => {
+		const w = world(on);
+		w.transcript = FIVE;
+		await start($, w);
+		await turn($, w, "t1");
+		await stop($);
+		await w.clock.advance(DELAY - 1);
+		expect(w.runs).toEqual([]);
+		expect((await paneOf($)).ttl).toBe("TTL 60m (ttlMinutes option)");
+		await w.clock.advance(1);
+		expect(w.runs).toEqual([TAIL]);
+		expect((await paneOf($)).ttl).toBe("TTL 5m (detected)");
+		await w.clock.advance(10 * MIN);
+		expect(w.runs).toEqual([TAIL]);
+	});
+
+	test("a second stop inside the delay replaces the pending read: one read, 2 s after the last stop", async ($, on) => {
+		const w = world(on);
+		w.transcript = HOUR;
+		await start($, w);
+		await stop($);
+		await w.clock.advance(DELAY / 2);
+		w.transcript = FIVE;
+		await stop($);
+		await w.clock.advance(DELAY - 1);
+		expect(w.runs).toEqual([]);
+		await w.clock.advance(1);
+		expect(w.runs).toEqual([TAIL]);
+		expect((await paneOf($)).ttl).toBe("TTL 5m (detected)");
+		await w.clock.advance(10 * MIN);
+		expect(w.runs.length).toBe(1);
+	});
+
+	const leaves: [string, ($: Engine) => Promise<unknown>][] = [
+		[
+			"a session end",
+			($) =>
+				$.session.end({
+					reason: "prompt_input_exit",
+					sessionId: "S1",
+					resume: { id: "S1" },
+				}),
+		],
+		["a clear", ($) => $.classic.SessionStart({ source: "clear" })],
+		[
+			"a reload",
+			($) =>
+				$.session.start({ cwd: "/", surface: "terminal", isInteractive: true }),
+		],
+	];
+	for (const [name, leave] of leaves) {
+		test(`${name} inside the delay drops the pending read`, async ($, on) => {
+			const w = world(on);
+			w.transcript = FIVE;
+			await start($, w);
+			await turn($, w, "t1");
+			await stop($);
+			await w.clock.advance(DELAY / 2);
+			await leave($);
+			await w.clock.advance(10 * MIN);
+			expect(w.runs).toEqual([]);
+			expect((await paneOf($)).ttl).toBe("TTL 60m (ttlMinutes option)");
+		});
+	}
+
+	test("a turn that starts inside the delay keeps the read; the returned pause keeps its TTL, the next pause takes the new one", async ($, on) => {
+		const w = world(on);
+		w.transcript = FIVE;
+		await start($, w);
+		await turn($, w, "t1");
+		await stop($);
+		await w.clock.advance(DELAY / 2);
+		await $.turn.start({ text: "back", turnId: "t2" });
+		await w.clock.advance(DELAY / 2);
+		expect(w.runs).toEqual([TAIL]);
+		expect((await paneOf($)).ttl).toBe("TTL 5m (detected)");
+		expect(refreshOf(w).pause).toMatchObject({
+			ttlMinutes: 60,
+			source: 0,
+			returnMs: T0 + DELAY / 2,
+		});
+		await step($, w, { turnId: "t2", index: 0 }, { usage: bigUsage() });
+		await $.turn.complete({
+			answer: "",
+			durationMs: 1,
+			isAborted: false,
+			turnId: "t2",
+			reason: "answer",
+		});
+		await w.clock.settle();
+		expect(refreshOf(w).pause).toMatchObject({ ttlMinutes: 5, source: 6 });
+	});
+
+	test("a read logs to debug, as fixed text, whether the tail held a cache write and the TTL it found", async ($, on) => {
+		const w = world(on);
+		w.transcript = transcript(written(0, 0));
+		await start($, w);
+		await stop($);
+		await w.clock.advance(DELAY);
+		expect(w.debug).toEqual(["ember: no cache write in the transcript tail"]);
+		w.transcript = FIVE;
+		await stop($);
+		await w.clock.advance(DELAY);
+		w.transcript = HOUR;
+		await stop($);
+		await w.clock.advance(DELAY);
+		expect(w.debug).toEqual([
+			"ember: no cache write in the transcript tail",
+			"ember: detected TTL 5m",
+			"ember: detected TTL 60m",
+		]);
+		expect(w.logs).toEqual([]);
+		expect(leaks(w)).toBe(false);
+	});
+
+	test("a resume reads the resumed transcript", async ($, on) => {
+		const w = world(on);
+		w.transcript = FIVE;
+		await start($, w);
+		await $.classic.SessionStart({ source: "resume", transcript_path: PATH });
+		await w.clock.settle();
+		expect(w.runs).toEqual([TAIL]);
+		expect((await paneOf($)).ttl).toBe("TTL 5m (detected)");
+	});
+
+	test("a change in the middle of the session plans the open pause and the next with the new TTL", async ($, on) => {
+		const w = world(on);
+		w.transcript = HOUR;
+		await start($, w);
+		await turn($, w, "t1");
+		await stop($);
+		await w.clock.advance(DELAY);
+		await turn($, w, "t2");
+		expect(refreshOf(w).pause).toMatchObject({ ttlMinutes: 60, source: 6 });
+		w.transcript = transcript(written(0, 1007), written(1007, 0));
+		await stop($);
+		await w.clock.advance(DELAY);
+		expect((await paneOf($)).ttl).toBe("TTL 5m (detected)");
+		expect(refreshOf(w).pause).toMatchObject({ ttlMinutes: 5, source: 6 });
+		await turn($, w, "t3");
+		expect(refreshOf(w).pause).toMatchObject({ ttlMinutes: 5, source: 6 });
+		// The automatic lead at 5 min is 1 min: the refresh runs 4 min after the request.
+		await w.clock.advance(4 * MIN);
+		await w.clock.settle();
+		expect(w.forks).toEqual([REFRESH_PROMPT]);
+		expect(w.runs.length).toBe(2);
+	});
+
+	test("a read that finds no cache write keeps the last detected TTL, and no tick reads", async ($, on) => {
+		const w = world(on);
+		w.transcript = FIVE;
+		await start($, w);
+		await stop($);
+		await w.clock.advance(DELAY);
+		w.transcript = transcript(written(0, 0));
+		await stop($);
+		await w.clock.advance(10 * MIN);
+		expect(w.runs.length).toBe(2);
+		expect((await paneOf($)).ttl).toBe("TTL 5m (detected)");
+	});
+
+	for (const fails of ["deny", "exit"] as const) {
+		test(`a process call that fails (${fails}) falls back to reading a transcript up to 1 MiB whole`, async ($, on) => {
+			const w = world(on);
+			w.transcript = FIVE;
+			w.runFails = fails;
+			await start($, w);
+			w.transcriptSize = 1_048_576;
+			await stop($);
+			await w.clock.advance(DELAY);
+			expect(w.fsReads).toEqual([PATH]);
+			expect((await paneOf($)).ttl).toBe("TTL 5m (detected)");
+			expect(leaks(w)).toBe(false);
+		});
+	}
+
+	test("a fallback never reads a transcript over 1 MiB, and the configured TTL stays", async ($, on) => {
+		const w = world(on, { settings: { promptCacheTtl: "1h" } });
+		w.transcript = FIVE;
+		w.transcriptSize = 1_048_577;
+		w.runFails = "deny";
+		await start($, w);
+		await stop($);
+		await w.clock.advance(DELAY);
+		expect(w.fsReads).toEqual([]);
+		expect((await paneOf($)).ttl).toBe("TTL 60m (promptCacheTtl)");
+		expect(w.debug).toEqual([
+			"ember: could not read the transcript for the TTL",
+		]);
+		expect(leaks(w)).toBe(false);
+	});
+
+	test("with neither the process nor the file, detection returns nothing and logs no path", async ($, on) => {
+		const w = world(on);
+		w.transcript = FIVE;
+		w.runFails = "deny";
+		w.failStat = true;
+		await start($, w);
+		await stop($);
+		await w.clock.advance(DELAY);
+		expect(w.fsReads).toEqual([]);
+		expect((await paneOf($)).ttl).toBe("TTL 60m (ttlMinutes option)");
+		expect(w.debug).toEqual([
+			"ember: could not read the transcript for the TTL",
+		]);
+		expect(leaks(w)).toBe(false);
+	});
+
+	test("a read that lands after the session changed is dropped", async ($, on) => {
+		const w = world(on);
+		w.transcript = FIVE;
+		await start($, w);
+		w.runHolds = [5000];
+		await stop($);
+		await w.clock.advance(DELAY);
+		await $.classic.SessionStart({ source: "clear" });
+		await w.clock.advance(5000);
+		await w.clock.settle();
+		expect(w.runs).toEqual([TAIL]);
+		expect((await paneOf($)).ttl).toBe("TTL 60m (ttlMinutes option)");
+	});
+
+	test("an older read that lands after a newer one is dropped", async ($, on) => {
+		const w = world(on);
+		w.transcript = HOUR;
+		await start($, w);
+		w.runHolds = [5000, 0];
+		await stop($);
+		await w.clock.advance(DELAY);
+		w.transcript = FIVE;
+		await stop($);
+		await w.clock.advance(DELAY);
+		expect((await paneOf($)).ttl).toBe("TTL 5m (detected)");
+		await w.clock.advance(5000);
+		await w.clock.settle();
+		expect(w.runs.length).toBe(2);
+		expect((await paneOf($)).ttl).toBe("TTL 5m (detected)");
+	});
+
+	type OpenPause = Record<string, number>;
+	const openOf = (w: World) => refreshOf(w).pause as OpenPause | undefined;
+	const liveOf = (w: World) =>
+		stored(w).live as LiveRefresh & { ttlMinutes: number };
+
+	test("a read that lands after the pause opened plans it again on 5 min, with one save", async ($, on) => {
+		const w = world(on);
+		w.transcript = FIVE;
+		await start($, w);
+		await turn($, w, "t1");
+		const opened = openOf(w);
+		expect(opened).toMatchObject({
+			ttlMinutes: 60,
+			source: 0,
+			leadMs: 5 * MIN,
+		});
+		const sets = w.sets.length;
+		await stop($);
+		await w.clock.advance(DELAY);
+		expect(w.sets.length).toBe(sets + 1);
+		expect(openOf(w)).toEqual({
+			...opened,
+			ttlMinutes: 5,
+			source: 6,
+			leadMs: MIN,
+		});
+		const live = liveOf(w);
+		expect(live).toMatchObject({
+			ttlMinutes: 5,
+			nextRefreshMs: live.lastStartMs + 4 * MIN,
+		});
+		expect(live).not.toHaveProperty("refreshSkip");
+		await w.clock.advance(4 * MIN);
+		await w.clock.settle();
+		expect(w.forks).toEqual([REFRESH_PROMPT]);
+		expect(w.toasts).toEqual([]);
+	});
+
+	test("a read of 60 min after a pause opened on 5 min moves its refresh to 5 min before the hour", async ($, on) => {
+		const w = world(on, { settings: { promptCacheTtl: "5m" } });
+		w.transcript = HOUR;
+		await start($, w);
+		await turn($, w, "t1");
+		expect(openOf(w)).toMatchObject({ ttlMinutes: 5, leadMs: MIN });
+		await stop($);
+		await w.clock.advance(DELAY);
+		expect(openOf(w)).toMatchObject({
+			ttlMinutes: 60,
+			source: 6,
+			leadMs: 5 * MIN,
+			skip: 0,
+		});
+		const live = liveOf(w);
+		expect(live).toMatchObject({
+			ttlMinutes: 60,
+			nextRefreshMs: live.lastStartMs + 55 * MIN,
+		});
+		await w.clock.advance(4 * MIN);
+		expect(w.forks).toEqual([]);
+	});
+
+	test("a read of the TTL already detected changes nothing and saves nothing", async ($, on) => {
+		const w = world(on);
+		w.transcript = FIVE;
+		await start($, w);
+		await turn($, w, "t1");
+		await stop($);
+		await w.clock.advance(DELAY);
+		await turn($, w, "t2");
+		const opened = openOf(w);
+		const sets = w.sets.length;
+		await stop($);
+		await w.clock.advance(DELAY);
+		expect(w.runs.length).toBe(2);
+		expect(w.sets.length).toBe(sets);
+		expect(openOf(w)).toEqual(opened);
+	});
+
+	const refused: ModelForkResult = {
+		isAnswered: false,
+		reason: "api-error",
+		status: 529,
+		error: "overloaded",
+		usage: {
+			input_tokens: 0,
+			output_tokens: 0,
+			cache_read_input_tokens: 0,
+			cache_creation_input_tokens: 0,
+		},
+	};
+	const touches: {
+		name: string;
+		atMs: number;
+		options?: Options;
+		fork?: ModelForkResult;
+		reply?: Partial<World["reply"]>;
+		touch: ($: Engine, w: World) => Promise<unknown>;
+		after: OpenPause;
+	}[] = [
+		{
+			name: "one refresh done",
+			atMs: 55 * MIN,
+			touch: async (_, w) => w.clock.settle(),
+			after: { refreshes: 1 },
+		},
+		{
+			name: "one refused try",
+			atMs: 55 * MIN,
+			fork: refused,
+			touch: async (_, w) => w.clock.settle(),
+			after: { refreshes: 0, tries: 1 },
+		},
+		{
+			name: "the person returned",
+			atMs: MIN,
+			touch: ($) => $.turn.start({ text: "back", turnId: "t2" }),
+			after: { returnMs: T0 + MIN },
+		},
+		{
+			name: "idle compaction seen",
+			atMs: 20 * MIN,
+			options: { entries: { idleCompactionSeenMs: T0 - DAY } },
+			reply: { usage: prefixUsage(0, 250_000) },
+			touch: ($) => $.session.compact({ trigger: "auto", messages: SUMMARY }),
+			after: { skip: 3, idleCompactMs: T0 + 20 * MIN },
+		},
+	];
+	for (const c of touches) {
+		test(`a pause with work done in it (${c.name}) keeps its TTL; the next pause takes the new one`, async ($, on) => {
+			const w = world(on, c.options);
+			w.transcript = FIVE;
+			if (c.fork !== undefined) w.fork = c.fork;
+			await start($, w);
+			await turn($, w, "t1", c.reply);
+			await w.clock.advance(c.atMs);
+			await c.touch($, w);
+			// The read lands after the touch: started here, it reads as one held from the turn's end.
+			await stop($);
+			await w.clock.advance(DELAY);
+			expect(w.runs.length).toBe(1);
+			expect((await paneOf($)).ttl).toBe("TTL 5m (detected)");
+			expect(openOf(w)).toMatchObject({ ttlMinutes: 60, ...c.after });
+			await turn($, w, "t3", c.reply);
+			expect(openOf(w)).toMatchObject({ ttlMinutes: 5, source: 6 });
+		});
+	}
+
+	test(
+		"with refreshShortTtl: false a detected 5 min skips the open pause as short-ttl, and the cold toast shows",
+		{ options: { refreshShortTtl: false } },
+		async ($, on) => {
+			const w = world(on);
+			w.transcript = FIVE;
+			await start($, w);
+			await turn($, w, "t1");
+			await stop($);
+			await w.clock.advance(DELAY);
+			expect(openOf(w)).toMatchObject({ ttlMinutes: 5, skip: 13 });
+			expect(liveOf(w)).toMatchObject({ refreshSkip: 13 });
+			expect(liveOf(w)).not.toHaveProperty("nextRefreshMs");
+			await w.clock.advance(6 * MIN);
+			expect(w.forks).toEqual([]);
+			expect(w.toasts).toEqual(["cache goes cold in ~1m (142k tokens)"]);
+		},
+	);
+
+	test("a detected 60 min with idle compaction evidence leaves the open pause to idle compaction", async ($, on) => {
+		const w = world(on, {
+			settings: { promptCacheTtl: "5m" },
+			entries: { idleCompactionSeenMs: T0 - DAY },
+		});
+		w.transcript = HOUR;
+		await start($, w);
+		await turn($, w, "t1", { usage: prefixUsage(0, 250_000) });
+		expect(openOf(w)).toMatchObject({ ttlMinutes: 5, skip: 0 });
+		await stop($);
+		await w.clock.advance(DELAY);
+		expect(openOf(w)).toMatchObject({ ttlMinutes: 60, skip: 3 });
+		const live = liveOf(w);
+		expect(live).toMatchObject({
+			refreshSkip: 3,
+			nextRefreshMs: live.lastStartMs + 57.5 * MIN,
+		});
+	});
+
+	test("an interrupted turn's pause stays interrupted on the new TTL", async ($, on) => {
+		const w = world(on);
+		w.transcript = FIVE;
+		await start($, w);
+		await turn($, w, "t1", {}, true);
+		await stop($);
+		await w.clock.advance(DELAY);
+		expect(openOf(w)).toMatchObject({ ttlMinutes: 5, skip: 5 });
+		expect(liveOf(w)).not.toHaveProperty("nextRefreshMs");
+	});
+
+	test("a read that lands after the new TTL expired stops the pause late: no fork and no cold toast", async ($, on) => {
+		const w = world(on);
+		w.transcript = FIVE;
+		await start($, w);
+		await turn($, w, "t1");
+		w.runHolds = [6 * MIN];
+		await stop($);
+		await w.clock.advance(DELAY);
+		await w.clock.advance(6 * MIN);
+		await w.clock.settle();
+		expect(openOf(w)).toMatchObject({ ttlMinutes: 5 });
+		await w.clock.advance(1000);
+		await w.clock.settle();
+		expect(openOf(w)).toMatchObject({ ttlMinutes: 5, skip: 10 });
+		expect(liveOf(w)).toMatchObject({ refreshSkip: 10 });
+		expect(liveOf(w)).not.toHaveProperty("nextRefreshMs");
+		await w.clock.advance(10 * MIN);
+		expect(w.forks).toEqual([]);
+		expect(w.toasts).toEqual([]);
+	});
+
+	test("a read that lands after the session changed leaves the new session's pause as it is", async ($, on) => {
+		const w = world(on);
+		w.transcript = FIVE;
+		await start($, w);
+		await turn($, w, "t1");
+		w.runHolds = [5000];
+		await stop($);
+		await w.clock.advance(DELAY);
+		await $.classic.SessionStart({ source: "clear" });
+		await turn($, w, "t2");
+		const opened = openOf(w);
+		await w.clock.advance(5000);
+		await w.clock.settle();
+		expect(openOf(w)).toEqual(opened);
+		expect(opened).toMatchObject({ ttlMinutes: 60, source: 0 });
+	});
+
+	test("an older read that lands after a newer one leaves the pause the newer one planned", async ($, on) => {
+		const w = world(on);
+		w.transcript = FIVE;
+		await start($, w);
+		await turn($, w, "t1");
+		w.runHolds = [5000, 0];
+		await stop($);
+		await w.clock.advance(DELAY);
+		w.transcript = HOUR;
+		await stop($);
+		await w.clock.advance(DELAY);
+		const planned = openOf(w);
+		expect(planned).toMatchObject({
+			ttlMinutes: 60,
+			source: 6,
+			leadMs: 5 * MIN,
+		});
+		await w.clock.advance(5000);
+		await w.clock.settle();
+		expect(openOf(w)).toEqual(planned);
+	});
+
+	describe("a refresh miss and a later 60 min read", () => {
+		const read = async ($: Engine, w: World) => {
+			await stop($);
+			await w.clock.advance(DELAY);
+			return (await paneOf($)).ttl;
+		};
+		const probe = ($: Engine) =>
+			$.command.run({
+				command: "ember-probe",
+				args: "",
+				origin: { kind: "composer" },
+				presentation: { isFullscreen: false, columns: 80 },
+			});
+		/** 60 min detected after t1, then the refresh at 55 min finds the entry gone. */
+		async function missAfterHour($: Engine, w: World) {
+			w.transcript = HOUR;
+			await start($, w);
+			await turn($, w, "t1");
+			expect(await read($, w)).toBe("TTL 60m (detected)");
+			w.fork = forkHit(0, 141_600);
+			await w.clock.advance(55 * MIN);
+			await w.clock.settle();
+			w.fork = forkHit();
+			expect((await paneOf($)).ttl).toBe("TTL 5m (refresh miss)");
+			expect(refreshOf(w)).toMatchObject({ coldAtMs: 55 * MIN, missStreak: 1 });
+			// The person comes back a minute later: the next main request starts after the miss.
+			await w.clock.advance(MIN);
+		}
+
+		test("a main turn after the miss that reads 60 again ends the override: the open pause and the next plan on 60, with one save", async ($, on) => {
+			const w = world(on);
+			await missAfterHour($, w);
+			await turn($, w, "t2");
+			const opened = openOf(w);
+			expect(opened).toMatchObject({ ttlMinutes: 5, source: 5, leadMs: MIN });
+			const sets = w.sets.length;
+			await stop($);
+			await w.clock.advance(DELAY);
+			expect(w.sets.length).toBe(sets + 1);
+			expect((await paneOf($)).ttl).toBe("TTL 60m (detected)");
+			expect(refreshOf(w)).not.toHaveProperty("coldAtMs");
+			expect(refreshOf(w).missStreak).toBe(1);
+			expect(openOf(w)).toEqual({
+				...opened,
+				ttlMinutes: 60,
+				source: 6,
+				leadMs: 5 * MIN,
+			});
+			expect(liveOf(w)).toMatchObject({ ttlMinutes: 60 });
+			await w.clock.advance(4 * MIN);
+			expect(w.forks.length).toBe(1);
+			await turn($, w, "t3");
+			expect(openOf(w)).toMatchObject({ ttlMinutes: 60, source: 6 });
+		});
+
+		test("reads with no main turn after the miss keep the override: a Stop the fork raises, one after a probe hit, a resume", async ($, on) => {
+			const w = world(on);
+			w.transcript = HOUR;
+			await start($, w);
+			await turn($, w, "t1");
+			expect(await read($, w)).toBe("TTL 60m (detected)");
+			w.fork = forkHit(0, 141_600);
+			w.forkHoldMs = 10_000;
+			w.runHolds = [20_000];
+			await w.clock.advance(55 * MIN);
+			// A Stop raised while the fork runs; its read lands after the miss.
+			await stop($);
+			await w.clock.advance(DELAY + 20_000);
+			await w.clock.settle();
+			expect((await paneOf($)).ttl).toBe("TTL 5m (refresh miss)");
+			w.fork = forkHit();
+			w.forkHoldMs = 0;
+			expect(await read($, w)).toBe("TTL 5m (refresh miss)");
+			// A probe hit moves the countdown to the fork; that is no main request.
+			await probe($);
+			await w.clock.settle();
+			expect(w.toasts.at(-1)).toMatch(/^ember probe: hit/);
+			expect(await read($, w)).toBe("TTL 5m (refresh miss)");
+			await $.classic.SessionStart({ source: "resume", transcript_path: PATH });
+			await w.clock.settle();
+			expect((await paneOf($)).ttl).toBe("TTL 5m (refresh miss)");
+			expect(refreshOf(w).coldAtMs).toBe(55 * MIN);
+			await turn($, w, "t2");
+			expect(await read($, w)).toBe("TTL 60m (detected)");
+		});
+
+		test("the main start is taken when the delayed read starts: a main turn inside the delay ends the override", async ($, on) => {
+			const w = world(on);
+			await missAfterHour($, w);
+			// A Stop with no main turn after the miss; its read waits, and a main turn ends meanwhile.
+			await stop($);
+			await turn($, w, "t2");
+			expect((await paneOf($)).ttl).toBe("TTL 5m (refresh miss)");
+			await w.clock.advance(DELAY);
+			expect(w.runs.length).toBe(2);
+			expect((await paneOf($)).ttl).toBe("TTL 60m (detected)");
+			expect(refreshOf(w)).not.toHaveProperty("coldAtMs");
+		});
+
+		test("after a reload with a stored miss, a read before any main turn keeps it and one after a main turn ends it", async ($, on) => {
+			const w = world(on, {
+				entries: {
+					"session:S1": {
+						updatedAt: T0 - MIN,
+						refresh: {
+							log: [],
+							missStreak: 1,
+							isPaused: false,
+							saved: 0,
+							coldAtMs: 55 * MIN,
+						},
+					},
+				},
+			});
+			w.transcript = HOUR;
+			await start($, w);
+			expect((await paneOf($)).ttl).toBe("TTL 5m (refresh miss)");
+			expect(await read($, w)).toBe("TTL 5m (refresh miss)");
+			await turn($, w, "t1");
+			expect(await read($, w)).toBe("TTL 60m (detected)");
+			expect(refreshOf(w)).not.toHaveProperty("coldAtMs");
+			expect(refreshOf(w).missStreak).toBe(1);
+		});
+
+		test("a detected 5 min ends nothing; a later 60 min read after a main turn does", async ($, on) => {
+			const w = world(on);
+			await missAfterHour($, w);
+			w.transcript = FIVE;
+			await turn($, w, "t2");
+			expect(await read($, w)).toBe("TTL 5m (detected)");
+			expect(refreshOf(w).coldAtMs).toBe(55 * MIN);
+			w.transcript = HOUR;
+			await turn($, w, "t3");
+			expect(await read($, w)).toBe("TTL 60m (detected)");
+			expect(refreshOf(w)).not.toHaveProperty("coldAtMs");
+		});
+
+		test("with no detection the override stays", async ($, on) => {
+			const w = world(on);
+			await missAfterHour($, w);
+			w.transcript = transcript(written(0, 0));
+			await turn($, w, "t2");
+			expect(await read($, w)).toBe("TTL 5m (refresh miss)");
+			delete w.transcript;
+			await turn($, w, "t3");
+			expect(await read($, w)).toBe("TTL 5m (refresh miss)");
+			expect(refreshOf(w).coldAtMs).toBe(55 * MIN);
+		});
+
+		test("a second miss after the end sets the override again, and the breaker trips at 2 misses in a row", async ($, on) => {
+			const w = world(on);
+			await missAfterHour($, w);
+			await turn($, w, "t2");
+			expect(await read($, w)).toBe("TTL 60m (detected)");
+			w.fork = forkHit(0, 141_600);
+			await w.clock.advance(55 * MIN);
+			await w.clock.settle();
+			expect(w.forks.length).toBe(2);
+			expect((await paneOf($)).ttl).toBe("TTL 5m (refresh miss)");
+			expect(refreshOf(w)).toMatchObject({
+				coldAtMs: 55 * MIN,
+				missStreak: 2,
+				isPaused: true,
+			});
+			expect(w.toasts).toContain(REFRESH_TOAST);
+		});
 	});
 });

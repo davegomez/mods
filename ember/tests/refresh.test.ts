@@ -16,6 +16,7 @@ import {
 	effectiveTtl,
 	emptyRefresh,
 	encodeRec,
+	endColdOverride,
 	IDLE_COMPACTION_LATEST_SHARE,
 	idleCompactionApplies,
 	idleCompactionLapsed,
@@ -33,9 +34,12 @@ import {
 	planRefresh,
 	pushLog,
 	refreshConfig,
+	replanPause,
 	rescueAtMs,
 	SKIPS,
+	SOURCES,
 	skipCode,
+	sourceCode,
 	writeWeight,
 } from "../hooks/refresh";
 
@@ -357,6 +361,31 @@ describe("miss detection and the circuit breaker", () => {
 		expect(written.coldAtMs).toBeUndefined();
 	});
 
+	test("a 60 min read after a main request newer than the override ends it; anything else keeps it", () => {
+		const s = applyRefresh(
+			{ ...emptyRefresh, pause: pauseAt() },
+			fired(pauseAt(), T0 + 55 * MIN),
+			miss,
+			true,
+		).state;
+		const sinceMs = T0 + 55 * MIN;
+		const ended = endColdOverride(s, 60, sinceMs + 1, sinceMs);
+		expect(ended).toEqual({ ...s, coldAtMs: undefined });
+		expect(ended).not.toHaveProperty("coldAtMs");
+		expect(ended?.missStreak).toBe(1);
+		// Unset since: the main thread started over at the load, so any main request is newer.
+		expect(endColdOverride(s, 60, T0, undefined)).toEqual(ended);
+		expect(endColdOverride(s, 60, sinceMs, sinceMs)).toBeUndefined();
+		expect(endColdOverride(s, 60, undefined, undefined)).toBeUndefined();
+		expect(endColdOverride(s, 5, sinceMs + 1, sinceMs)).toBeUndefined();
+		expect(
+			endColdOverride(emptyRefresh, 60, sinceMs + 1, sinceMs),
+		).toBeUndefined();
+		expect(
+			endColdOverride(undefined, 60, sinceMs + 1, sinceMs),
+		).toBeUndefined();
+	});
+
 	test("a probe moves neither the cap nor the breaker", () => {
 		const out = applyRefresh(
 			{ ...emptyRefresh, pause: pauseAt() },
@@ -429,6 +458,37 @@ describe("pauses", () => {
 		const ttl = effectiveTtl({ minutes: 60, source: "ttlMinutes option" }, s);
 		expect(SKIPS[pauseAt(ttl.minutes, SHORT_OFF).skip]).toBe("short-ttl");
 		expect(SKIPS[pauseAt(ttl.minutes).skip]).toBe("none");
+	});
+
+	test("detected is appended to the source list, so stored indexes keep their meaning", () => {
+		expect(SOURCES).toEqual([
+			"ttlMinutes option",
+			"FORCE_PROMPT_CACHING_5M",
+			"CLAUDE_CODE_PROMPT_CACHE_TTL",
+			"promptCacheTtl",
+			"ENABLE_PROMPT_CACHING_1H",
+			"refresh miss",
+			"detected",
+		]);
+		expect(sourceCode("detected")).toBe(6);
+		expect(pauseAt(5, { source: "detected" }).source).toBe(6);
+	});
+
+	test("a refresh miss below a detected 60 min still moves the plan to 5 min; a detected 5 min stays", () => {
+		const s = applyRefresh(
+			{ ...emptyRefresh, pause: pauseAt() },
+			fired(pauseAt(), T0 + 55 * MIN),
+			miss,
+			true,
+		).state;
+		expect(effectiveTtl({ minutes: 60, source: "detected" }, s)).toEqual({
+			minutes: 5,
+			source: "refresh miss",
+		});
+		expect(effectiveTtl({ minutes: 5, source: "detected" }, s)).toEqual({
+			minutes: 5,
+			source: "detected",
+		});
 	});
 
 	test("short-ttl is appended to the skip list, so stored indexes keep their meaning", () => {
@@ -834,5 +894,47 @@ describe("next refresh time", () => {
 		expect(nextRefreshAtMs({ ...p, returnMs: T0 + MIN })).toBeUndefined();
 		expect(nextRefreshAtMs({ ...idle, returnMs: T0 + MIN })).toBeUndefined();
 		expect(nextRefreshAtMs(undefined)).toBeUndefined();
+	});
+});
+
+describe("a pause planned again on a TTL read after it opened", () => {
+	const opened = pauseAt(60);
+	const again = pauseAt(5, { source: "detected" });
+
+	test("an untouched pause takes the new plan", () => {
+		expect(replanPause(opened, opened, again)).toBe(again);
+		expect(replanPause({ ...opened }, opened, again)).toBe(again);
+	});
+
+	test("a plan with nothing new changes nothing", () => {
+		expect(replanPause(opened, opened, pauseAt(60))).toBeUndefined();
+	});
+
+	test("a pause with work done in it, or another pause, or none, stays", () => {
+		const touched: Partial<Pause>[] = [
+			{ returnMs: T0 + MIN },
+			{ refreshes: 1 },
+			{ tries: 1 },
+			{ retryAtMs: T0 + MIN },
+			{ idleCompactMs: T0 + MIN },
+			// A probe: it costs, and a hit restarts the TTL, without a counted refresh.
+			{ cost: 10 },
+			{ readMs: T0 + MIN },
+			// A compaction, a late or capped stop, or a fork with nothing to fork.
+			{ skip: skipCode("compacted") },
+			{ startMs: T0 + MIN },
+		];
+		for (const over of touched)
+			expect(
+				replanPause({ ...opened, ...over }, opened, again),
+			).toBeUndefined();
+		expect(replanPause(undefined, opened, again)).toBeUndefined();
+	});
+
+	test("a plan that lands after the new TTL expired stops late", () => {
+		expect(planRefresh(again, T0 + 6 * MIN)).toEqual({
+			kind: "stop",
+			skip: "late",
+		});
 	});
 });

@@ -128,6 +128,7 @@ export function validTtlMinutes(value: unknown): number {
 }
 
 export type TtlInputs = {
+	detected?: number;
 	force5m?: string;
 	envTtl?: string;
 	settingTtl?: unknown;
@@ -138,8 +139,10 @@ export type Ttl = { minutes: number; source: string };
 
 const ttlWord = (v: unknown) => (v === "5m" ? 5 : v === "1h" ? 60 : undefined);
 
-/** Claude Code's main-conversation TTL order; the plan default is not visible, so the option stands in. */
+/** A TTL detected from the transcript is measured, so it goes first; then Claude Code's main-conversation order, the option standing in for the plan default. */
 export function resolveTtl(i: TtlInputs): Ttl {
+	if (i.detected !== undefined)
+		return { minutes: i.detected, source: "detected" };
 	if (i.force5m === "1")
 		return { minutes: 5, source: "FORCE_PROMPT_CACHING_5M" };
 	const env = ttlWord(i.envTtl);
@@ -151,6 +154,33 @@ export function resolveTtl(i: TtlInputs): Ttl {
 	if (i.enable1h === "1")
 		return { minutes: 60, source: "ENABLE_PROMPT_CACHING_1H" };
 	return { minutes: i.optionMinutes, source: "ttlMinutes option" };
+}
+
+const isPositive = (v: unknown) => typeof v === "number" && v > 0;
+
+/**
+ * The TTL of the newest main-thread cache write in a transcript tail: 5 when it wrote 5-minute tokens (that part
+ * goes cold first), else 60 when it wrote 1-hour ones. The first line may be cut, so it is skipped. The text is
+ * input from outside the mod: only the number leaves this function.
+ */
+export function detectTtlMinutes(text: string): 5 | 60 | undefined {
+	const lines = text.split("\n").slice(1);
+	for (let i = lines.length - 1; i >= 0; i--) {
+		let r: unknown;
+		try {
+			r = JSON.parse(lines[i] ?? "");
+		} catch {
+			continue;
+		}
+		if (!isRecord(r) || r.type !== "assistant" || r.isSidechain === true)
+			continue;
+		const usage = isRecord(r.message) ? r.message.usage : undefined;
+		const c = isRecord(usage) ? usage.cache_creation : undefined;
+		if (!isRecord(c)) continue;
+		if (isPositive(c.ephemeral_5m_input_tokens)) return 5;
+		if (isPositive(c.ephemeral_1h_input_tokens)) return 60;
+	}
+	return undefined;
 }
 
 export function cacheTokens(

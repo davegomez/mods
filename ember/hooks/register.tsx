@@ -24,6 +24,7 @@ import {
 	closePause,
 	effectiveTtl,
 	emptyRefresh,
+	endColdOverride,
 	idleCompactionApplies,
 	idleCompactionLapsed,
 	isIdleCompactionEvidence,
@@ -34,10 +35,12 @@ import {
 	planRefresh,
 	REFRESH_PROMPT,
 	refreshConfig,
+	replanPause,
 	skipCode,
 } from "./refresh";
 import type { Agg, Main, StatusView, Ttl } from "./stats";
 import {
+	detectTtlMinutes,
 	emptyAgg,
 	emptyMain,
 	keysToPrune,
@@ -63,12 +66,28 @@ const KEY_PREFIX = "session:";
 const IDLE_KEY = "idleCompactionSeenMs";
 const PANE = "ember";
 const REFRESH_PANE = "ember-refresh";
+/** Bytes read from the end of the transcript: room for the newest records past a large tool result, well under the 4 MiB a read returns. */
+const TAIL_BYTES = 1_048_576;
+/** The wait after a main turn's Stop before the transcript read: the engine writes the transcript through a queue, so its last records can land after the Stop. */
+const TAIL_READ_DELAY_MS = 2000;
 
 type Tab = "session" | "all";
+
+/** What a main turn's end gives its pause, apart from the TTL. */
+type TurnEnd = {
+	last: { startMs: number; endMs: number; prefix: number };
+	isAborted: boolean;
+	isCompactPending: boolean;
+	isPaused: boolean;
+};
 
 type Live = {
 	optionMinutes: number;
 	ttl: Ttl;
+	/** The TTL last read from a transcript; kept across a clear, since the account sets it. */
+	detected?: number;
+	/** Bumped at each transcript read; a read that lands after a newer one started is dropped. */
+	reads: number;
 	agg: Agg;
 	main: Main;
 	/** The measured session's store key; undefined until its aggregate is read. */
@@ -81,6 +100,8 @@ type Live = {
 	/** The main request start the cold warning was last shown for. */
 	warnedStartMs?: number;
 	timer?: Timer;
+	/** The transcript read a main turn's Stop scheduled; a newer Stop, a bind or a session end cancels it. */
+	tailTimer?: Timer;
 	/** The latest unsaved aggregate per key, written one `store.set` at a time. */
 	pending: Map<string, Agg>;
 	isWriting: boolean;
@@ -100,6 +121,10 @@ type Live = {
 	refreshing?: Fired;
 	/** The clock at the last tick, for the places that cannot wait for it. */
 	nowMs: number;
+	/** The open pause as planned at its turn's end, with that turn's inputs, so a TTL read after it can plan it again. */
+	opened?: TurnEnd & { pause: Pause };
+	/** The start of the last ember fork while the refresh miss override held; unset at a bind, which starts the main thread over. */
+	coldSinceMs?: number;
 };
 
 const stateOf = (live: Live): RefreshState => live.agg.refresh ?? emptyRefresh;
@@ -154,10 +179,12 @@ function close(
 /** Binds the current session: its key, its stored aggregate or an empty one, and a fresh main thread. */
 async function bind($: EngineInterface, live: Live): Promise<void> {
 	endPause($, live, "exit", live.nowMs);
+	live.tailTimer?.cancel();
 	const gen = ++live.gen;
 	live.key = undefined;
 	live.agg = emptyAgg(0);
 	live.main = emptyMain;
+	live.coldSinceMs = undefined;
 	live.others = [];
 	live.turnId = undefined;
 	$.ui.invalidate("ui.render");
@@ -211,6 +238,7 @@ async function readTtl($: EngineInterface, live: Live): Promise<void> {
 		$.env.get("CLAUDE_CODE_IDLE_COMPACT_MIN_TOKENS").catch(unset),
 	]);
 	live.ttl = resolveTtl({
+		...(live.detected === undefined ? {} : { detected: live.detected }),
 		...(force5m === undefined ? {} : { force5m }),
 		...(envTtl === undefined ? {} : { envTtl }),
 		settingTtl,
@@ -223,6 +251,67 @@ async function readTtl($: EngineInterface, live: Live): Promise<void> {
 		...(disableAuto === undefined ? {} : { disableAuto }),
 		...(minTokens === undefined ? {} : { minTokens }),
 	};
+}
+
+/** The transcript's last TAIL_BYTES through `tail`; where no process runs, the whole file up to the same size. */
+async function readTail(
+	$: EngineInterface,
+	path: string,
+): Promise<string | undefined> {
+	const run = await $.process
+		.run(["tail", "-c", String(TAIL_BYTES), "--", path])
+		.catch(() => undefined);
+	if (run?.exitCode === 0) return run.stdout;
+	const stat = await $.fs.stat(path).catch(() => undefined);
+	if (stat?.kind !== "file" || stat.size > TAIL_BYTES) return undefined;
+	return $.fs.read(path).catch(() => undefined);
+}
+
+/** Reads the TTL from the transcript; never awaited. Only the number leaves it: no text, no path, not even in a log. */
+async function detectTtl(
+	$: EngineInterface,
+	live: Live,
+	path: string,
+): Promise<void> {
+	if (path === "") return;
+	const gen = live.gen;
+	const read = ++live.reads;
+	// The newest main request when the read starts: the transcript it reads holds nothing newer.
+	const mainStartMs = live.main.lastStartMs;
+	try {
+		const text = await readTail($, path);
+		if (gen !== live.gen || read !== live.reads) return;
+		if (text === undefined) {
+			$.ui.log("ember: could not read the transcript for the TTL", {
+				to: "debug",
+			});
+			return;
+		}
+		const minutes = detectTtlMinutes(text);
+		if (minutes === undefined) {
+			$.ui.log("ember: no cache write in the transcript tail", {
+				to: "debug",
+			});
+			return;
+		}
+		$.ui.log(`ember: detected TTL ${minutes}m`, { to: "debug" });
+		const ended = endColdOverride(
+			live.agg.refresh,
+			minutes,
+			mainStartMs,
+			live.coldSinceMs,
+		);
+		if (minutes === live.detected && ended === undefined) return;
+		live.detected = minutes;
+		live.ttl = resolveTtl({
+			detected: minutes,
+			optionMinutes: live.optionMinutes,
+		});
+		retime($, live, ended);
+		$.ui.invalidate("ui.render");
+	} catch {
+		$.ui.log("ember: could not detect the TTL", { to: "debug" });
+	}
 }
 
 async function prune($: EngineInterface, live: Live): Promise<void> {
@@ -268,6 +357,21 @@ function applyTtl($: EngineInterface, live: Live): void {
 	if (agg === live.agg) return;
 	live.agg = agg;
 	save($, live);
+}
+
+/** After a TTL read, with `ended` when it ended the refresh miss override: an open pause nothing was done in yet is planned again as its turn's end would plan it now. One save. */
+function retime($: EngineInterface, live: Live, ended?: RefreshState): void {
+	const s = ended ?? stateOf(live);
+	const o = live.opened;
+	const pause =
+		o === undefined
+			? undefined
+			: replanPause(s.pause, o.pause, pauseOf(live, o, ttlOf(live, s)));
+	if (o !== undefined && pause !== undefined) {
+		live.opened = { ...o, pause };
+		setRefresh($, live, { ...s, pause }, live.nowMs);
+	} else if (ended !== undefined) setRefresh($, live, ended, live.nowMs);
+	else applyTtl($, live);
 }
 
 /** Sets the refresh state with the live fields the status line reads, then saves. */
@@ -405,6 +509,26 @@ async function idleCompacted(
 	}
 }
 
+/** The pause a main turn's end opens on this TTL; a first open and a later replan share it. */
+const pauseOf = (live: Live, t: TurnEnd, ttl: Ttl): Pause =>
+	openPause(t.last, {
+		config: live.config,
+		ttlMinutes: ttl.minutes,
+		source: ttl.source,
+		isInteractive: live.isInteractive,
+		isAborted: t.isAborted,
+		isIdleCompaction:
+			live.idleSeenMs !== undefined &&
+			idleCompactionApplies(
+				live.idle,
+				ttl.minutes,
+				live.isInteractive,
+				t.last.prefix,
+			),
+		isCompactPending: t.isCompactPending,
+		isPaused: t.isPaused,
+	});
+
 /** Opens the pause after a main turn ends; a return the turn's steps did not settle closes as unknown first. */
 function turnEnded(
 	$: EngineInterface,
@@ -414,29 +538,17 @@ function turnEnded(
 ): void {
 	let s = stateOf(live);
 	if (s.pause !== undefined) s = close($, live, s, "unknown", nowMs);
+	live.opened = undefined;
 	const { lastStartMs, lastEndMs, lastPrefix = 0 } = live.main;
 	if (lastStartMs !== undefined && lastEndMs !== undefined) {
-		const ttl = ttlOf(live, s);
-		const pause = openPause(
-			{ startMs: lastStartMs, endMs: lastEndMs, prefix: lastPrefix },
-			{
-				config: live.config,
-				ttlMinutes: ttl.minutes,
-				source: ttl.source,
-				isInteractive: live.isInteractive,
-				isAborted,
-				isIdleCompaction:
-					live.idleSeenMs !== undefined &&
-					idleCompactionApplies(
-						live.idle,
-						ttl.minutes,
-						live.isInteractive,
-						lastPrefix,
-					),
-				isCompactPending: live.main.isCompactPending,
-				isPaused: s.isPaused,
-			},
-		);
+		const t: TurnEnd = {
+			last: { startMs: lastStartMs, endMs: lastEndMs, prefix: lastPrefix },
+			isAborted,
+			isCompactPending: live.main.isCompactPending,
+			isPaused: s.isPaused,
+		};
+		const pause = pauseOf(live, t, ttlOf(live, s));
+		live.opened = { ...t, pause };
 		s = { ...s, pause };
 	}
 	setRefresh($, live, s, nowMs);
@@ -506,6 +618,8 @@ async function forkRefresh(
 			s.pause !== undefined && s.pause.startMs === pause.startMs;
 		const j = judgeFork(result, pause.prefix);
 		const out = applyRefresh(s, run, j, isCurrent);
+		// A fork is no main request: a hit below moves the main start to it, and a read it raises sees only older ones.
+		if (out.state.coldAtMs !== undefined) live.coldSinceMs = firedMs;
 		if (out.isHit && isCurrent && live.main.lastStartMs !== undefined) {
 			// The read restarted the entry's TTL: the countdown and the next TTL evidence run from here.
 			live.main = {
@@ -607,6 +721,7 @@ export const register: Register = (on, options) => {
 	const live: Live = {
 		optionMinutes,
 		ttl: { minutes: optionMinutes, source: "ttlMinutes option" },
+		reads: 0,
 		agg: emptyAgg(0),
 		main: emptyMain,
 		gen: 0,
@@ -670,11 +785,26 @@ export const register: Register = (on, options) => {
 			void readIdleSeen($, live);
 			await Promise.all([bind($, live), readTtl($, live)]);
 			applyTtl($, live);
+			void detectTtl($, live, e.transcript_path);
 			return next(e);
 		},
 	).catch((_, e, next) => next(e));
 
+	// After a main turn the transcript holds its usage, with the TTL each cache write used. A stop a stop hook
+	// continues is the same turn, already read.
+	on("classic.Stop", ($, e, next) => {
+		if (e.agent_id === undefined && !e.stop_hook_active) {
+			live.tailTimer?.cancel();
+			live.tailTimer = $.clock.after(TAIL_READ_DELAY_MS, () => {
+				live.tailTimer = undefined;
+				void detectTtl($, live, e.transcript_path);
+			});
+		}
+		return next(e);
+	}).catch((_, e, next) => next(e));
+
 	on("session.end", async ($, e, next) => {
+		live.tailTimer?.cancel();
 		try {
 			endPause($, live, "exit", await $.clock.now());
 		} catch {

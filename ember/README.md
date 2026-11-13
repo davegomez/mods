@@ -25,7 +25,7 @@ In this tutorial, we start a session with ember, send 2 short prompts, and read 
    Reply with the word hello.
    ```
 
-3. Run `/ember`. A pane opens. Its `Status` section shows the TTL that ember uses, for example `TTL 60m (ttlMinutes option)`. The `Cache hit by gap type` table has 1 row, `first`, with 1 request.
+3. Run `/ember`. A pane opens. Its `Status` section shows the TTL that ember uses, for example `TTL 60m (detected)`. The `Cache hit by gap type` table has 1 row, `first`, with 1 request.
 
 4. Click `Close` at the top right of the pane.
 
@@ -66,13 +66,13 @@ To change when the refresh runs instead, set `refreshLeadSeconds` in the same `o
 
 ### How to set the TTL for your plan
 
-ember cannot see your plan, so it assumes 60 minutes unless a Claude Code setting says otherwise.
+ember detects the TTL from your conversation after each reply, and uses it, also for the pause that follows that reply. Before the first reply of a session, and when it cannot detect the TTL, ember assumes 60 minutes unless a Claude Code setting or the `ttlMinutes` option says otherwise. Set the TTL so that ember plans with the right one when it cannot detect it.
 
 - If you use a Claude subscription within its usage, change nothing. Claude Code uses a 60-minute TTL.
 - If you use an API key, a cloud provider, or usage credits, Claude Code uses a 5-minute TTL. Set `"promptCacheTtl": "5m"` in `~/.claude/settings.json`, or set the `ttlMinutes` option to `5` in the install screen or in `/config`. At 5 minutes the refresh stays on unless you set the `refreshShortTtl` option to `false`.
 - If you want the 60-minute TTL everywhere, set `"promptCacheTtl": "1h"`. Cache writes then cost 2 times the input price instead of 1.25 times.
 
-Run `/ember` to check the result. The `TTL` row of the `Status` section names the TTL and its source.
+Run `/ember` to check the result. The `TTL` row of the `Status` section names the TTL and its source, for example `TTL 5m (detected)`.
 
 ### How to show the cache in your status line
 
@@ -153,7 +153,7 @@ Below it come 3 sections, each under a bold title. They stand side by side in a 
 
 | Section | What it shows |
 | :- | :- |
-| `Status` | `TTL <minutes>m (<source>)`; `Observed TTL warm up to <duration> · cold from <duration>`, with `–` for a bound not yet seen; `Compactions <n>`; `Model switches <n>`. |
+| `Status` | `TTL <minutes>m (<source>)`, the source named in [TTL resolution](#ttl-resolution); `Observed TTL warm up to <duration> · cold from <duration>`, with `–` for a bound not yet seen; `Compactions <n>`; `Model switches <n>`. |
 | `Cache hit by gap type` | A table `Gap type`, `Requests`, `Hit` with each gap type that has requests, or `No requests yet.` |
 | `Cache hit by user gap` | A table `User gap`, `Requests`, `Hit` with each `user` gap band that has requests, or `No user gaps yet.` |
 
@@ -163,7 +163,7 @@ Labels are dim and values bold. A hit ratio is green from 80%, yellow from 50%, 
 ember  1: This session  2: All sessions                       q: Close
 
 Status
-TTL              60m (ttlMinutes option)
+TTL              60m (detected)
 Observed TTL     warm up to 2m · cold from –
 Compactions      0
 Model switches   0
@@ -216,7 +216,7 @@ ember refresh                                                 q: Close
 Status
 Refresh          on
 Lead             5m (auto)
-TTL              60m (ttlMinutes option)
+TTL              60m (detected)
 Idle compaction  not seen, ember refreshes long conversations too
 Sample           30 pauses (28 returned, 2 exits) · 5 refreshes · 4
                  sessions
@@ -303,15 +303,20 @@ Set the options in the install screen, in `/config`, or under `pluginConfigs` in
 
 ### TTL resolution
 
-ember takes the first match, in Claude Code's own order:
+ember takes the first match. The detected TTL comes first, because it is measured. The other rules follow Claude Code's own order.
 
-1. `FORCE_PROMPT_CACHING_5M=1`: 5 minutes.
-2. `CLAUDE_CODE_PROMPT_CACHE_TTL` set to `5m` or `1h`.
-3. The `promptCacheTtl` setting set to `5m` or `1h`.
-4. `ENABLE_PROMPT_CACHING_1H=1`: 60 minutes.
-5. The `ttlMinutes` option.
+1. The detected TTL, shown as `detected`: 5 minutes when the newest cache write of the main conversation wrote 5-minute cache tokens, else 60 minutes when it wrote 1-hour cache tokens.
+2. `FORCE_PROMPT_CACHING_5M=1`: 5 minutes.
+3. `CLAUDE_CODE_PROMPT_CACHE_TTL` set to `5m` or `1h`.
+4. The `promptCacheTtl` setting set to `5m` or `1h`.
+5. `ENABLE_PROMPT_CACHING_1H=1`: 60 minutes.
+6. The `ttlMinutes` option.
 
-Other values, and a read that fails, go to the next rule. ember reads the TTL at session start and after `/clear`, `/resume`, and `/branch`. After a refresh miss that read less than half of the prefix, the session uses 5 minutes, shown as `TTL 5m (refresh miss)`.
+Other values, and a read that fails, go to the next rule. ember reads the settings and the environment at session start and after `/clear`, `/resume`, and `/branch`.
+
+ember detects the TTL from the end of the session transcript, after each reply in the main conversation and after `/resume` and `/branch`. It skips subagent records. A pause starts before ember reads its reply. When the read finds a changed TTL, ember plans that pause again with it. A pause that already had a refresh, a refused refresh, your return, or an idle compaction keeps its TTL; the change applies from the next pause. When the changed TTL has already run out, ember does not refresh that pause. When a read finds no cache write, or fails, ember keeps the TTL it last detected, also after `/clear`. Before the first detection since Claude Code started, it uses rules 2 to 6.
+
+After a refresh miss that read less than half of the prefix, the session uses 5 minutes, shown as `TTL 5m (refresh miss)`. This holds even when ember detected 60 minutes before the miss. The session goes back to `TTL 60m (detected)` when ember detects 60 minutes after a reply that started after the miss. ember's own refreshes are not replies. After `/resume` or a restart, every new reply counts. A read that finds no cache write keeps `TTL 5m (refresh miss)`. A new miss sets it again.
 
 ### Refresh policy
 
@@ -455,7 +460,7 @@ Text that a command returns goes into the conversation that the model reads. Tha
 
 ### Why ember stores only numbers
 
-Every session on the machine shares the store file, and other tools, such as a status line, read it. Counts, token totals, and timestamps are enough to measure the cache. Prompt text, file paths, model output, and tool inputs stay out of the store.
+Every session on the machine shares the store file, and other tools, such as a status line, read it. Counts, token totals, and timestamps are enough to measure the cache. Prompt text, file paths, model output, and tool inputs stay out of the store. To detect the TTL, ember reads the session transcript, which holds that text, and keeps only the number of minutes.
 
 ### Further reading
 

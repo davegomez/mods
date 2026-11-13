@@ -28,6 +28,7 @@ export const SOURCES = [
 	"promptCacheTtl",
 	"ENABLE_PROMPT_CACHING_1H",
 	"refresh miss",
+	"detected",
 ] as const;
 export const SKIPS = [
 	"none",
@@ -344,6 +345,33 @@ export function openPause(
 	};
 }
 
+/** Nothing was done in the pause since it opened as `opened`: no return, refresh, probe, refused try, idle compaction, or later skip. */
+export const isUntouched = (p: Pause, opened: Pause): boolean =>
+	p.startMs === opened.startMs &&
+	p.returnMs === undefined &&
+	p.refreshes === 0 &&
+	p.tries === 0 &&
+	p.retryAtMs === undefined &&
+	p.idleCompactMs === undefined &&
+	p.cost === 0 &&
+	p.readMs === opened.readMs &&
+	p.skip === opened.skip;
+
+/** `again`, the open pause's turn opened on a TTL read since, when the pause is untouched and the plan changes; else undefined. */
+export function replanPause(
+	p: Pause | undefined,
+	opened: Pause,
+	again: Pause,
+): Pause | undefined {
+	if (p === undefined || !isUntouched(p, opened)) return undefined;
+	const isSame =
+		again.ttlMinutes === p.ttlMinutes &&
+		again.source === p.source &&
+		again.leadMs === p.leadMs &&
+		again.skip === p.skip;
+	return isSame ? undefined : again;
+}
+
 /** `rescue`: idle compaction did not come; clear the evidence and refresh now with `pause`, a refreshable pause from here on. */
 export type Plan =
 	| { kind: "wait" }
@@ -579,6 +607,28 @@ export function effectiveTtl<T extends { minutes: number; source: string }>(
 	return cold !== undefined && ttl.minutes > 5 && cold < ttl.minutes * MIN
 		? { minutes: 5, source: "refresh miss" }
 		: ttl;
+}
+
+/**
+ * The state without the refresh miss override when a TTL read ends it, else undefined. It ends at a 60-minute
+ * read taken after a main request that started after `sinceMs`, the last ember fork while it held; unset since:
+ * the main thread started over when the state was loaded, so any main request is newer.
+ */
+export function endColdOverride(
+	s: RefreshState | undefined,
+	minutes: number,
+	mainStartMs: number | undefined,
+	sinceMs: number | undefined,
+): RefreshState | undefined {
+	if (
+		s?.coldAtMs === undefined ||
+		minutes <= SHORT_TTL_MINUTES ||
+		mainStartMs === undefined ||
+		mainStartMs <= (sinceMs ?? Number.NEGATIVE_INFINITY)
+	)
+		return undefined;
+	const { coldAtMs: _ended, ...rest } = s;
+	return rest;
 }
 
 const optNum = (v: unknown, min = 0) => (isNum(v) && v >= min ? v : undefined);
