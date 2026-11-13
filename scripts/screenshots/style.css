@@ -1,0 +1,149 @@
+/* Claude Code dark theme keys that ember's pane uses, and the greys of a dark terminal. */
+:root {
+	--bg: #151b2b;
+	--text: #dde2ee;
+	--dim: #9a9eaa;
+	--border: #7c8292;
+	--rule: #3a4152;
+	--claude: #d77757;
+	--suggestion: #b1b9f9;
+	--good: #4eba65;
+	--bad: #ff6b80;
+	--warn: #ffc107;
+	--orange: #ff9e3d;
+}
+
+html {
+	background: var(--bg);
+}
+
+body {
+	display: inline-block;
+	margin: 0;
+	padding: 14px;
+	color: var(--text);
+	font:
+		14px / 1.35 "SF Mono",
+		SFMono-Regular,
+		Menlo,
+		monospace;
+	font-variant-ligatures: none;
+}
+
+pre {
+	margin: 0;
+	font: inherit;
+}
+
+b {
+	font-weight: 700;
+}
+
+/* The pane frame that Claude Code draws around a docked pane, with its close mark on the top border. */
+.frame {
+	position: relative;
+	width: 100ch;
+	padding: 0.5lh 1.5ch;
+	border: 1px solid var(--border);
+	border-radius: 6px;
+}
+
+.frame::after {
+	content: "×";
+	position: absolute;
+	top: 0;
+	right: 1.5ch;
+	padding: 0 3px;
+	transform: translateY(-55%);
+	background: var(--bg);
+	color: var(--border);
+	line-height: 1;
+}
+
+.dim {
+	color: var(--dim);
+}
+
+.title {
+	color: var(--claude);
+	font-weight: 700;
+}
+
+.key {
+	color: var(--suggestion);
+}
+
+.good {
+	color: var(--good);
+}
+
+.bad {
+	color: var(--bad);
+}
+
+.warn {
+	color: var(--warn);
+}
+
+/* The selected tab in inverse, its hotkey on the hint color. */
+.selected {
+	background: var(--text);
+	color: var(--bg);
+}
+
+.selected .key {
+	background: var(--suggestion);
+	color: var(--bg);
+}
+
+/* A recommendation box: its border through the middle of the cells that `╭│╰` would fill, 1 cell of padding inside. */
+.pick {
+	display: inline-block;
+	vertical-align: top;
+	margin: 0.5lh 0.5ch;
+	padding: calc(0.5lh - 1px) calc(1.5ch - 1px);
+	border: 1px solid var(--suggestion);
+	border-radius: 6px;
+}
+
+.mark {
+	color: var(--suggestion);
+	font-weight: 700;
+}
+
+/* A terminal's prompt area: rules around the prompt, the status line under it. */
+.term {
+	width: 100ch;
+	padding: 0.5lh 1.5ch;
+	border: 1px solid var(--rule);
+	border-radius: 8px;
+}
+
+.term + .term {
+	margin-top: 12px;
+}
+
+.rule {
+	height: 1px;
+	margin: calc(0.5lh - 0.5px) 0;
+	background: var(--rule);
+}
+
+.cursor {
+	display: inline-block;
+	width: 1ch;
+	height: 1.15em;
+	vertical-align: -0.2em;
+	background: #c8cdf0;
+}
+
+/* The elapsed share of the TTL: a thin line, the elapsed part thicker and colored. */
+.bar {
+	display: inline-block;
+	width: 10ch;
+	height: 3px;
+	vertical-align: middle;
+	background:
+		linear-gradient(var(--c), var(--c)) left center / var(--p) 2px no-repeat,
+		linear-gradient(var(--dim), var(--dim)) right center / 100% 1px no-repeat;
+}

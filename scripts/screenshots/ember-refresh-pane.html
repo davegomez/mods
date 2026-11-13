@@ -1,0 +1,51 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="screenshot-size" content="900x805">
+<title>ember refresh pane</title>
+<link rel="stylesheet" href="style.css">
+</head>
+<body>
+<div class="frame">
+<pre><span class="title">ember refresh</span>                                                                               <span class="key">q</span>: Close
+
+<span class="pick"><b>Recommendation:</b> keep refresh on, keep the current lead (lead 5m (auto)): about <b class="good">10k tokens</b> saved
+per pause versus refresh off.</span>
+
+<span class="title">Status</span>
+<span class="dim">Refresh</span>          <b class="good">on</b>
+<span class="dim">Lead</span>             <b>5m</b><span class="dim"> (auto)</span>
+<span class="dim">TTL</span>              <b>60m</b><span class="dim"> (detected)</span>
+<span class="dim">Idle compaction</span>  <b>not seen</b>, ember refreshes long conversations too
+<span class="dim">Sample</span>           <b>30 pauses</b> (28 returned, 2 exits) · <b>5 refreshes</b> · <b>4 sessions</b>
+
+<span class="title">Refreshes</span>
+<b class="good">5</b> hit · <b>0</b> miss · <b>0</b> refused · hit rate <b>100%</b>
+<b>Refresh age  Hit  Miss</b>
+30-60m         <span class="good">4</span>     0
+&gt;60m           <span class="good">1</span>     0
+
+<span class="title">Savings</span>
+<span class="dim">Net saved</span>        <b class="good">~620k tokens</b> (4 cold rewrites avoided)
+<span class="dim">                 API-price estimate in input-token units: Anthropic does not publish how fork cache
+                 reads count toward plan limits.</span>
+
+<span class="title">Idle time (survival)</span>
+<span class="dim">Share of pauses still idle after each time</span>
+<b>Idle for     5m  30m  55m   1h   2h  8h</b>
+Still idle  83%  20%  20%  20%  10%  7%
+
+<span class="title">Lead options</span>
+<b>   Policy                   Saved/pause  Replay cost  Saved vs off</b>
+   off                                –         1.0M             –
+   lead 1m                          <span class="good">10k</span>         420k          <span class="good">620k</span>
+   lead 2m                          <span class="good">10k</span>         420k          <span class="good">620k</span>
+<span class="mark">▸</span><b>  lead 5m (auto, current)          <span class="good">10k</span>         420k          <span class="good">620k</span></b>
+   lead 10m                         <span class="good">10k</span>         430k          <span class="good">610k</span>
+<span class="dim">▸ recommended · • current
+Saved vs off replays every pause in the sample, skipped ones too, as if each refresh hit; Net saved
+counts only the refreshes ember ran.</span></pre>
+</div>
+</body>
+</html>

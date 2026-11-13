@@ -2,6 +2,10 @@
 
 ember is a Claude Code mod that measures how warm your prompt cache stays across idle pauses, and refreshes the cache shortly before it expires. It changes no request, prompt, or tool call, and it never submits a prompt. Its only model calls are the refresh forks, which are on by default.
 
+![The /ember pane: a TTL of 60m (detected), the observed TTL, and the cache hit ratio by gap type and by user gap, with hits of 90% and 98% in green.](../docs/screenshots/ember-pane.png)
+
+The images in this README are illustrations with sample data.
+
 > **Verified.** A [live session](#live-test-results) showed that the refresh keeps the main cache warm through a long pause without a new full write. Results can differ by account and plan, and each refresh spends plan usage or API credit.
 
 Tested with Claude Code v2.1.325.
@@ -92,6 +96,10 @@ Run `/ember` to check the result. The `TTL` row of the `Status` section names th
 
 If your shell runs with `set -f`, use `find` instead of the glob. If you use the VS Code extension, skip this guide: ember sets a status line there for you.
 
+The image shows an example of a status line that your own script can build on the `live` data, in 3 states: a refresh planned, no refresh, and a cold cache. The snippet in this guide prints a simpler line, such as `3000s left · 142000 cached · hit 97%`.
+
+![3 terminal prompts, each with a cache row under it. First: a bar at 17%, the next refresh at 2:55pm, 142k cached, hit 97%, saved 71%, refreshed 2x. Second: a bar at 92%, expiry at 3:00pm, no refresh: capped. Third: a full bar at 100%, cold.](../docs/screenshots/status-line.png)
+
 ### How to tune the refresh
 
 1. Use Claude Code as usual until `/ember-refresh` has at least 20 returned pauses.
@@ -151,6 +159,8 @@ The first row holds the title `ember`, the tabs `1: This session` and `2: All se
 
 Below it come 3 sections, each under a bold title. They stand side by side in a wide pane and wrap to the next row in a narrow one.
 
+![The /ember pane in a wide pane: the title ember, the tabs 1: This session and 2: All sessions, and q: Close, then the Status, Cache hit by gap type, and Cache hit by user gap sections side by side.](../docs/screenshots/ember-pane.png)
+
 | Section | What it shows |
 | :- | :- |
 | `Status` | `TTL <minutes>m (<source>)`, the source named in [TTL resolution](#ttl-resolution); `Observed TTL warm up to <duration> · cold from <duration>`, with `–` for a bound not yet seen; `Compactions <n>`; `Model switches <n>`. |
@@ -202,6 +212,8 @@ The first row holds the title `ember refresh` and `q: Close` at the right. Below
 | `Lead options` | For each lead and for `off`: `Saved/pause`, the expected saving per pause; `Replay cost`, the cost of the recorded pauses replayed under that policy; and `Saved vs off`, the saving against `off` in that replay. The replay covers every pause in the sample, skipped ones included, and counts each refresh as a hit, so `Saved vs off` can exceed `Net saved`. |
 
 Values are bold. Green marks a hit and a positive saving, red a miss and a negative saving, yellow a refusal, a refresh that is off, and a warning. Caveats are dim, under the value they qualify. In the `Lead options` table, `▸` marks the recommended row, and `•` and `(current)` in the name mark the policy that runs now. When the recommended row is also the current one, `(current)` still shows. Durations drop a zero part: `5m`, `1h`, but `59m59s` and `1h05m`. The table keeps its numbers whole in a narrow pane and shortens the policy names instead.
+
+![The /ember-refresh pane: the recommendation in a box, then the Status, Refreshes, Savings, Idle time (survival), and Lead options sections, with the recommended lead 5m (auto, current) row marked by ▸.](../docs/screenshots/ember-refresh-pane.png)
 
 `Idle time (survival)` and `Lead options` show only with at least 20 returned pauses. Below that, the recommendation says `Not enough data`. Example on a sample log, in a 70-column pane:
 

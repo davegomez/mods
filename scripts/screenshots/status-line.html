@@ -1,0 +1,27 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="screenshot-size" content="900x284">
+<title>status line from ember's live data</title>
+<link rel="stylesheet" href="style.css">
+</head>
+<body>
+<!-- TTL 60m, lead 5m. Last cache read at 2:00pm, so expiry is 3:00pm and a refresh is due at 2:55pm. -->
+<div class="term">
+<pre>❯ <span class="cursor"></span></pre>
+<div class="rule"></div>
+<pre>  cache   <span class="bar" style="--p: 20%; --c: var(--good)"></span>  <span class="good">17%</span> <span class="dim">⟳</span> 2:55pm <span class="dim">·</span> 142k <span class="dim">cached · hit</span> 97% <span class="dim">· saved</span> 71% <span class="dim">· refreshed</span> 2x (~250k)</pre>
+</div>
+<div class="term">
+<pre>❯ <span class="cursor"></span></pre>
+<div class="rule"></div>
+<pre>  cache   <span class="bar" style="--p: 90%; --c: var(--bad)"></span>  <span class="bad">92%</span> <span class="dim">❄&#xFE0E;</span> 3:00pm <span class="dim">· no refresh:</span> capped <span class="dim">·</span> 142k <span class="dim">cached · hit</span> 97%</pre>
+</div>
+<div class="term">
+<pre>❯ <span class="cursor"></span></pre>
+<div class="rule"></div>
+<pre>  cache   <span class="bar" style="--p: 100%; --c: var(--bad)"></span> <span class="bad">100%</span> <span class="dim">⟳</span> cold <span class="dim">·</span> 142k <span class="dim">cached · hit</span> 97% <span class="dim">· saved</span> 71%</pre>
+</div>
+</body>
+</html>
