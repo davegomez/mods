@@ -14,8 +14,8 @@ import type {
 	SkillPromptResult,
 	ToolCallResult,
 } from "claude-code";
-import type { Clock, Hit, KnownSet, Scan, Unscannable } from "./detect.ts";
-import { DEFAULT_LIMITS, scanText, scanValue } from "./detect.ts";
+import type { Clock, Hit, KnownSet, Scan, Unscannable } from "./detect";
+import { DEFAULT_LIMITS, scanText, scanValue } from "./detect";
 import {
 	ENV_FILES_KEY,
 	type Enrollment,
@@ -24,7 +24,7 @@ import {
 	load,
 	parseList,
 	refreshIfNamed,
-} from "./enroll.ts";
+} from "./enroll";
 
 export type Verdict<T> =
 	| { kind: "pass" }

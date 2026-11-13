@@ -1,5 +1,5 @@
 import { describe, expect, test } from "claude-code/testing";
-import type { Agg, Main, Step } from "../hooks/stats.ts";
+import type { Agg, Main, Step } from "../hooks/stats";
 import {
 	band,
 	cacheTokens,
@@ -27,8 +27,8 @@ import {
 	withLive,
 	withSavedPct,
 	withTtl,
-} from "../hooks/stats.ts";
-import { textOf } from "./pane-text.ts";
+} from "../hooks/stats";
+import { textOf } from "./pane-text";
 
 const MIN = 60_000;
 

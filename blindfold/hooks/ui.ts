@@ -15,7 +15,7 @@ import {
 	load,
 	rootOf,
 	type Status,
-} from "./enroll.ts";
+} from "./enroll";
 import {
 	detectPlatform,
 	type Entered,
@@ -23,15 +23,15 @@ import {
 	type Method,
 	type Platform,
 	pickMethod,
-} from "./entry.ts";
+} from "./entry";
 import {
 	continueRequest,
 	type Request,
 	type Requests,
 	redacted,
 	validName,
-} from "./request.ts";
-import { clockFor, guardText, rewriteCounts } from "./shield.ts";
+} from "./request";
+import { clockFor, guardText, rewriteCounts } from "./shield";
 import {
 	type GitProbe,
 	probeGit,
@@ -40,7 +40,7 @@ import {
 	type Step,
 	saveValue,
 	spellingOk,
-} from "./write.ts";
+} from "./write";
 
 export type Command =
 	| { kind: "open" }

@@ -3,7 +3,7 @@ import { describe, expect, test } from "bun:test";
 import { appendFileSync, mkdirSync, mkdtempSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 
-import type { FileRef } from "./bench.ts";
+import type { FileRef } from "./bench";
 import {
 	classifyPrompt,
 	deleteAll,
@@ -15,7 +15,7 @@ import {
 	statusText,
 	takeLock,
 	writeRecord,
-} from "./bench.ts";
+} from "./bench";
 
 const S = "0b4f5c1e-2d3a-4b5c-8d9e-0f1a2b3c4d5e";
 const S2 = "9c8b7a6f-5e4d-4c3b-8a29-1f0e0d0c0b0a";

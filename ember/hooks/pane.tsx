@@ -6,15 +6,7 @@ import type {
 	TextProps,
 } from "claude-code";
 
-import type {
-	Block,
-	Cell,
-	Line,
-	Run,
-	Section,
-	Table,
-	Tone,
-} from "./sections.ts";
+import type { Block, Cell, Line, Run, Section, Table, Tone } from "./sections";
 
 type Elements = {
 	Box: ElementConstructor<BoxProps>;

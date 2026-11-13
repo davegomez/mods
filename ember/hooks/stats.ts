@@ -1,8 +1,8 @@
 import type { TurnUsage } from "claude-code";
-import type { RefreshState } from "./refresh.ts";
-import { parseRefresh } from "./refresh.ts";
-import type { Block, Line, Section, Tone } from "./sections.ts";
-import { bold, dim, line, plain } from "./sections.ts";
+import type { RefreshState } from "./refresh";
+import { parseRefresh } from "./refresh";
+import type { Block, Line, Section, Tone } from "./sections";
+import { bold, dim, line, plain } from "./sections";
 
 export const BUCKETS = [
 	"first",

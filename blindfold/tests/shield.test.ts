@@ -1,7 +1,7 @@
 import type { EngineInterface } from "claude-code";
 import { describe, expect, test } from "claude-code/testing";
-import { buildKnownSet, DEFAULT_LIMITS } from "../hooks/detect.ts";
-import { createEnrollment, type Enrollment, load } from "../hooks/enroll.ts";
+import { buildKnownSet, DEFAULT_LIMITS } from "../hooks/detect";
+import { createEnrollment, type Enrollment, load } from "../hooks/enroll";
 import {
 	type ArgsVerdict,
 	clockFor,
@@ -44,8 +44,8 @@ import {
 	type Verdict,
 	WITHHELD_CONTENT,
 	WITHHELD_DELIVERY,
-} from "../hooks/shield.ts";
-import { fakeApi, fakes, gate } from "./fakes.ts";
+} from "../hooks/shield";
+import { fakeApi, fakes, gate } from "./fakes";
 
 const fake = fakes(11);
 const NAME = "FAKE_SHIELD_KEY";

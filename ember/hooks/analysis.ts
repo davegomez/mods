@@ -3,7 +3,7 @@ import type {
 	RefreshConfig,
 	RefreshRec,
 	RefreshState,
-} from "./refresh.ts";
+} from "./refresh";
 import {
 	decodeRec,
 	ENDS,
@@ -17,10 +17,10 @@ import {
 	SHORT_TTL_MINUTES,
 	SKIPS,
 	writeWeight,
-} from "./refresh.ts";
-import type { Block, Cell, Line, Section, Table, Tone } from "./sections.ts";
-import { bold, dim, line, pick, plain } from "./sections.ts";
-import { BANDS, band, duration, percent, tokens, ttlLine } from "./stats.ts";
+} from "./refresh";
+import type { Block, Cell, Line, Section, Table, Tone } from "./sections";
+import { bold, dim, line, pick, plain } from "./sections";
+import { BANDS, band, duration, percent, tokens, ttlLine } from "./stats";
 
 const MIN = 60_000;
 /** Below this many returned pauses the survival estimate near the TTL rests on a handful of points. */

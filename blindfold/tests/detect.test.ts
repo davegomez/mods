@@ -1,5 +1,5 @@
 import { describe, expect, test } from "claude-code/testing";
-import type { Known } from "../hooks/detect.ts";
+import type { Known } from "../hooks/detect";
 import {
 	buildKnownSet,
 	DEFAULT_LIMITS,
@@ -7,8 +7,8 @@ import {
 	marker,
 	scanText,
 	scanValue,
-} from "../hooks/detect.ts";
-import { BASE62, chars, fakes, random } from "./fakes.ts";
+} from "../hooks/detect";
+import { BASE62, chars, fakes, random } from "./fakes";
 
 const fake = fakes(7);
 const never = { now: () => 0, deadline: Number.POSITIVE_INFINITY };

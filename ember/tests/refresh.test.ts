@@ -8,7 +8,7 @@ import type {
 	PauseRec,
 	RefreshRec,
 	RefreshState,
-} from "../hooks/refresh.ts";
+} from "../hooks/refresh";
 import {
 	applyRefresh,
 	closePause,
@@ -36,7 +36,7 @@ import {
 	SKIPS,
 	skipCode,
 	writeWeight,
-} from "../hooks/refresh.ts";
+} from "../hooks/refresh";
 
 const MIN = 60_000;
 const T0 = 1_800_000_000_000;

@@ -1,18 +1,14 @@
 import { describe, expect, test } from "claude-code/testing";
-import { buildKnownSet } from "../hooks/detect.ts";
+import { buildKnownSet } from "../hooks/detect";
 import {
 	createEnrollment,
 	type FileState,
 	type FileStatus,
 	type Status,
 	statusOf,
-} from "../hooks/enroll.ts";
-import type { Entered, Platform } from "../hooks/entry.ts";
-import {
-	createRequests,
-	REASON_HIDDEN,
-	type Request,
-} from "../hooks/request.ts";
+} from "../hooks/enroll";
+import type { Entered, Platform } from "../hooks/entry";
+import { createRequests, REASON_HIDDEN, type Request } from "../hooks/request";
 import {
 	BUSY,
 	type Command,
@@ -30,9 +26,9 @@ import {
 	startFlow,
 	statusLine,
 	targetFile,
-} from "../hooks/ui.ts";
-import type { Saved } from "../hooks/write.ts";
-import { fakes, gate } from "./fakes.ts";
+} from "../hooks/ui";
+import type { Saved } from "../hooks/write";
+import { fakes, gate } from "./fakes";
 
 const fake = fakes(41);
 const noValue = () => false;

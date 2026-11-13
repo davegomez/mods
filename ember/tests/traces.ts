@@ -1,4 +1,4 @@
-import type { Trace } from "../hooks/analysis.ts";
+import type { Trace } from "../hooks/analysis";
 
 const MIN = 60_000;
 const HOUR = 60 * MIN;

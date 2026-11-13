@@ -10,8 +10,8 @@ import {
 	load,
 	type NameState,
 	type Status,
-} from "../hooks/enroll.ts";
-import { enrollment, register, requests } from "../hooks/register.ts";
+} from "../hooks/enroll";
+import { enrollment, register, requests } from "../hooks/register";
 import {
 	cleanReason,
 	continueRequest,
@@ -25,8 +25,8 @@ import {
 	statusText,
 	TOOL_NAME,
 	validName,
-} from "../hooks/request.ts";
-import { fakeApi, fakes, gate, hooksOf } from "./fakes.ts";
+} from "../hooks/request";
+import { fakeApi, fakes, gate, hooksOf } from "./fakes";
 
 const fake = fakes(41);
 const value = fake.secret(24);

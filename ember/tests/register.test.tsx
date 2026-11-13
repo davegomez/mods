@@ -9,10 +9,10 @@ import type {
 import type { Engine, MockClock } from "claude-code/testing";
 import { describe, expect, mock, test } from "claude-code/testing";
 
-import { decodeRec, REFRESH_PROMPT } from "../hooks/refresh.ts";
-import type { Sums } from "../hooks/stats.ts";
-import { savedPct } from "../hooks/stats.ts";
-import { flat, layout } from "./pane-text.ts";
+import { decodeRec, REFRESH_PROMPT } from "../hooks/refresh";
+import type { Sums } from "../hooks/stats";
+import { savedPct } from "../hooks/stats";
+import { flat, layout } from "./pane-text";
 
 const T0 = 1_800_000_000_000;
 const MIN = 60_000;

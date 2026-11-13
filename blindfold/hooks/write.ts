@@ -1,6 +1,6 @@
 /** Saves 1 value under 1 name in 1 env file in the session root, in an order that keeps the value off disk until git ignores the file and a new file has mode 600. */
 import type { EngineInterface } from "claude-code";
-import { parse, setValue } from "./dotenv.ts";
+import { parse, setValue } from "./dotenv";
 import {
 	type Enrollment,
 	type FileState,
@@ -10,8 +10,8 @@ import {
 	parseList,
 	type Root,
 	rootOf,
-} from "./enroll.ts";
-import { detectPlatform, type Platform } from "./entry.ts";
+} from "./enroll";
+import { detectPlatform, type Platform } from "./entry";
 
 export type Step =
 	| "path"

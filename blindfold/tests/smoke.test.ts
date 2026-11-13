@@ -1,9 +1,9 @@
 import type { EngineInterface, PluginOptions } from "claude-code";
 import { describe, expect, test } from "claude-code/testing";
-import { DEFAULT_LIMITS, scanText } from "../hooks/detect.ts";
-import { addFile } from "../hooks/enroll.ts";
-import { enrollment, register } from "../hooks/register.ts";
-import { rewriteCounts } from "../hooks/shield.ts";
+import { DEFAULT_LIMITS, scanText } from "../hooks/detect";
+import { addFile } from "../hooks/enroll";
+import { enrollment, register } from "../hooks/register";
+import { rewriteCounts } from "../hooks/shield";
 import {
 	type FakeFile,
 	fakeApi,
@@ -12,7 +12,7 @@ import {
 	hooksOf as hooksOfModule,
 	REAL_ROOT,
 	stubFs,
-} from "./fakes.ts";
+} from "./fakes";
 
 const fake = fakes(31);
 const never = { now: () => 0, deadline: Number.POSITIVE_INFINITY };

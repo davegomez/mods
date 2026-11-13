@@ -14,8 +14,8 @@ import {
 	readNative,
 	TERMINAL_FIELD,
 	TIMEOUT_MS,
-} from "../hooks/entry.ts";
-import { fakes } from "./fakes.ts";
+} from "../hooks/entry";
+import { fakes } from "./fakes";
 
 const fake = fakes(31);
 const NAME = "API_TOKEN";

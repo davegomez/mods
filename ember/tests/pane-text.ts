@@ -1,4 +1,4 @@
-import type { Block, Line, Section } from "../hooks/sections.ts";
+import type { Block, Line, Section } from "../hooks/sections";
 
 /** A line as plain text: `label: ` then the runs, then the caveat after a space. */
 export const lineText = (l: Line) =>

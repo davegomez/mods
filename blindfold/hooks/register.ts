@@ -1,12 +1,12 @@
 import type { Register } from "claude-code";
-import { createEnrollment, load } from "./enroll.ts";
+import { createEnrollment, load } from "./enroll";
 import {
 	createRequests,
 	isOwnPrompt,
 	onRequestSecret,
 	TOOL_NAME,
 	TOOL_SPEC,
-} from "./request.ts";
+} from "./request";
 import {
 	onAgentSpawn,
 	onAgentSpawnCatch,
@@ -33,7 +33,7 @@ import {
 	onToolCallCatch,
 	resetRewriteCounts,
 	watchRewrites,
-} from "./shield.ts";
+} from "./shield";
 import {
 	COMMAND,
 	COMMAND_SPEC,
@@ -45,7 +45,7 @@ import {
 	onPane,
 	rescan,
 	screenOf,
-} from "./ui.ts";
+} from "./ui";
 
 /** The session's env files and known values, shared by every hook of this module instance. */
 export const enrollment = createEnrollment();

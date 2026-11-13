@@ -1,19 +1,15 @@
 import type { EngineInterface } from "claude-code";
 import { describe, expect, test } from "claude-code/testing";
-import { createEnrollment } from "../hooks/enroll.ts";
-import { enrollment, register, requests, ui } from "../hooks/register.ts";
-import {
-	createRequests,
-	DROPPED_TOAST,
-	REASON_HIDDEN,
-} from "../hooks/request.ts";
-import { resetRewriteCounts } from "../hooks/shield.ts";
+import { createEnrollment } from "../hooks/enroll";
+import { enrollment, register, requests, ui } from "../hooks/register";
+import { createRequests, DROPPED_TOAST, REASON_HIDDEN } from "../hooks/request";
+import { resetRewriteCounts } from "../hooks/shield";
 import {
 	CONTINUE_NOTHING,
 	createUi,
 	type GitState,
 	REFUSED_COMMAND,
-} from "../hooks/ui.ts";
+} from "../hooks/ui";
 import {
 	type FakeCall,
 	type FakeElement,
@@ -24,7 +20,7 @@ import {
 	gate,
 	hooksOf,
 	REAL_ROOT,
-} from "./fakes.ts";
+} from "./fakes";
 
 const fake = fakes(21);
 const NAME = "STRIPE_API_KEY";

@@ -1,7 +1,7 @@
 import type { On, RenderSurface } from "claude-code";
 import type { Engine } from "claude-code/testing";
 import { describe, expect, test } from "claude-code/testing";
-import type { SessionLog, Trace } from "../hooks/analysis.ts";
+import type { SessionLog, Trace } from "../hooks/analysis";
 import {
 	analyze,
 	defaultPolicy,
@@ -15,9 +15,9 @@ import {
 	replay,
 	statusLines,
 	survivalAt,
-} from "../hooks/analysis.ts";
-import { pane } from "../hooks/pane.tsx";
-import type { PauseRec, RefreshRec } from "../hooks/refresh.ts";
+} from "../hooks/analysis";
+import { pane } from "../hooks/pane";
+import type { PauseRec, RefreshRec } from "../hooks/refresh";
 import {
 	decodeRec,
 	emptyRefresh,
@@ -26,10 +26,10 @@ import {
 	maxRefreshes,
 	READ_WEIGHT,
 	writeWeight,
-} from "../hooks/refresh.ts";
-import type { Section, Table } from "../hooks/sections.ts";
-import { flat, layout, lineText, textOf } from "./pane-text.ts";
-import { EXIT_TRACES, TRACES } from "./traces.ts";
+} from "../hooks/refresh";
+import type { Section, Table } from "../hooks/sections";
+import { flat, layout, lineText, textOf } from "./pane-text";
+import { EXIT_TRACES, TRACES } from "./traces";
 
 const MIN = 60_000;
 const T0 = 1_800_000_000_000;

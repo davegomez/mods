@@ -1,6 +1,6 @@
 import type { ModelForkResult, SessionRateLimit } from "claude-code";
 
-import type { ForkRecord, SessionRecord } from "./record.ts";
+import type { ForkRecord, SessionRecord } from "./record";
 
 export const EMBER = "ember";
 /** Store key prefix of a session's arm; the value is 0 for off. Unset is on. */

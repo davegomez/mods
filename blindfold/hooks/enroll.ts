@@ -7,8 +7,8 @@ import {
 	type KnownSet,
 	MIN_KNOWN_LENGTH,
 	scanText,
-} from "./detect.ts";
-import { type Entry, parse } from "./dotenv.ts";
+} from "./detect";
+import { type Entry, parse } from "./dotenv";
 
 export type StaleReason = "read-failed" | "too-large" | "not-a-file";
 export type RefusedReason =

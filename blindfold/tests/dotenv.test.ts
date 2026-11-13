@@ -1,5 +1,5 @@
 import { describe, expect, test } from "claude-code/testing";
-import type { Entry, Parsed } from "../hooks/dotenv.ts";
+import type { Entry, Parsed } from "../hooks/dotenv";
 import {
 	isValidName,
 	MAX_FILE_CHARS,
@@ -7,10 +7,10 @@ import {
 	MAX_WRITE_CHARS,
 	parse,
 	setValue,
-} from "../hooks/dotenv.ts";
-import { parseCases, setValueCases } from "./dotenv-cases.ts";
-import { parseExpected, setValueExpected } from "./dotenv-expected.ts";
-import { fakes } from "./fakes.ts";
+} from "../hooks/dotenv";
+import { parseCases, setValueCases } from "./dotenv-cases";
+import { parseExpected, setValueExpected } from "./dotenv-expected";
+import { fakes } from "./fakes";
 
 const fake = fakes(11);
 

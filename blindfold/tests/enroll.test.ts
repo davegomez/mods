@@ -1,6 +1,6 @@
 import { describe, expect, test } from "claude-code/testing";
-import { DEFAULT_LIMITS, scanText } from "../hooks/detect.ts";
-import { type Entry, MAX_FILE_CHARS } from "../hooks/dotenv.ts";
+import { DEFAULT_LIMITS, scanText } from "../hooks/detect";
+import { type Entry, MAX_FILE_CHARS } from "../hooks/dotenv";
 import {
 	type ApplyFile,
 	addFile,
@@ -15,7 +15,7 @@ import {
 	refreshIfNamed,
 	type Status,
 	statusOf,
-} from "../hooks/enroll.ts";
+} from "../hooks/enroll";
 import {
 	type FakeFile,
 	fakeApi,
@@ -23,7 +23,7 @@ import {
 	gate,
 	REAL_ROOT,
 	textRead,
-} from "./fakes.ts";
+} from "./fakes";
 
 const fake = fakes(23);
 const never = { now: () => 0, deadline: Number.POSITIVE_INFINITY };

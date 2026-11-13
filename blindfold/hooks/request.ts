@@ -6,9 +6,9 @@ import type {
 	ToolCallResult,
 	ToolSpec,
 } from "claude-code";
-import { isValidName } from "./dotenv.ts";
-import { type Enrollment, ensureLoaded, type Status } from "./enroll.ts";
-import { clockFor, guardText } from "./shield.ts";
+import { isValidName } from "./dotenv";
+import { type Enrollment, ensureLoaded, type Status } from "./enroll";
+import { clockFor, guardText } from "./shield";
 
 export const TOOL_NAME = "request_secret";
 

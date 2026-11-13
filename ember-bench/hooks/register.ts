@@ -6,7 +6,7 @@ import type {
 	Timer,
 } from "claude-code";
 
-import type { Ember } from "./bench.ts";
+import type { Ember } from "./bench";
 import {
 	ARM_PREFIX,
 	armKey,
@@ -22,9 +22,9 @@ import {
 	sessionRecord,
 	UNKNOWN_EMBER,
 	USAGE,
-} from "./bench.ts";
-import type { BenchRecord } from "./record.ts";
-import { isRecord, isSessionId } from "./record.ts";
+} from "./bench";
+import type { BenchRecord } from "./record";
+import { isRecord, isSessionId } from "./record";
 
 type Live = { timer?: Timer; ember: Ember; isSeen: boolean };
 

@@ -2,7 +2,7 @@ import type { ModelForkResult, On } from "claude-code";
 import type { Engine, MockClock } from "claude-code/testing";
 import { describe, expect, mock, test } from "claude-code/testing";
 
-import { INGEST_EVERY_MS, OFF_FORK } from "../hooks/bench.ts";
+import { INGEST_EVERY_MS, OFF_FORK } from "../hooks/bench";
 
 const SID = "0b4f5c1e-2d3a-4b5c-8d9e-0f1a2b3c4d5e";
 const T0 = 1_800_000_000_000;

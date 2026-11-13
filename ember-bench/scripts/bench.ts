@@ -12,8 +12,8 @@ import { Database } from "bun:sqlite";
 import { chmodSync, mkdirSync, readFileSync, statSync } from "node:fs";
 import { homedir } from "node:os";
 
-import type { BenchRecord } from "../hooks/record.ts";
-import { isRecord, isSessionId } from "../hooks/record.ts";
+import type { BenchRecord } from "../hooks/record";
+import { isRecord, isSessionId } from "../hooks/record";
 
 const DIR = `${homedir()}/.claude/ember-bench`;
 const PROJECTS = `${homedir()}/.claude/projects`;

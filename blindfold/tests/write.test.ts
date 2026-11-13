@@ -1,8 +1,8 @@
 import type { ProcessRunInit, ProcessRunResult } from "claude-code";
 import { describe, expect, test } from "claude-code/testing";
-import { DEFAULT_LIMITS, scanText } from "../hooks/detect.ts";
-import { createEnrollment, load } from "../hooks/enroll.ts";
-import { type Saved, saveValue } from "../hooks/write.ts";
+import { DEFAULT_LIMITS, scanText } from "../hooks/detect";
+import { createEnrollment, load } from "../hooks/enroll";
+import { type Saved, saveValue } from "../hooks/write";
 import {
 	type FakeCall,
 	type FakeFile,
@@ -10,7 +10,7 @@ import {
 	fakeApi,
 	fakes,
 	REAL_ROOT,
-} from "./fakes.ts";
+} from "./fakes";
 
 const VALUE = fakes(31).secret(32);
 const TARGET = `${REAL_ROOT}/.env`;

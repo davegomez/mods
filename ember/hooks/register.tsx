@@ -7,8 +7,8 @@ import type {
 	TurnStepResult,
 } from "claude-code";
 
-import { analyze } from "./analysis.ts";
-import { pane } from "./pane.tsx";
+import { analyze } from "./analysis";
+import { pane } from "./pane";
 import type {
 	End,
 	Fired,
@@ -17,7 +17,7 @@ import type {
 	Pause,
 	RefreshConfig,
 	RefreshState,
-} from "./refresh.ts";
+} from "./refresh";
 import {
 	applyRefresh,
 	COLD_READ_SHARE,
@@ -35,8 +35,8 @@ import {
 	REFRESH_PROMPT,
 	refreshConfig,
 	skipCode,
-} from "./refresh.ts";
-import type { Agg, Main, StatusView, Ttl } from "./stats.ts";
+} from "./refresh";
+import type { Agg, Main, StatusView, Ttl } from "./stats";
 import {
 	emptyAgg,
 	emptyMain,
@@ -56,7 +56,7 @@ import {
 	withRefreshLive,
 	withSavedPct,
 	withTtl,
-} from "./stats.ts";
+} from "./stats";
 
 const KEY_PREFIX = "session:";
 /** Store-wide, read by every session: when idle compaction was last seen running on this machine. */
